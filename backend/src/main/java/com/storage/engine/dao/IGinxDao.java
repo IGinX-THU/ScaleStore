@@ -3,10 +3,11 @@ package com.storage.engine.dao;
 import cn.edu.tsinghua.iginx.exception.SessionException;
 import cn.edu.tsinghua.iginx.session.Session;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import org.springframework.stereotype.Repository;
 
-import java.util.Locale;
+import java.util.*;
 
 @Repository
 public class IGinxDao {
@@ -100,7 +101,87 @@ public class IGinxDao {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
   }
 
-  private SessionExecuteSqlResult executeSql(String sql) {
+  // ==================== Storage Metadata Operations ====================
+
+  public void insertMeta(long key, String logicalPath, String dataType, String fileName,
+                          long fileSize, String fileFormat, String createTime) {
+      String sql = String.format(Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid) " +
+              "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
+              IGinxConstants.STORAGE_META_PATH,
+              key, escapeSql(logicalPath), escapeSql(dataType), escapeSql(fileName),
+              fileSize, escapeSql(fileFormat), escapeSql(createTime));
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllMeta() {
+      return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + ";");
+  }
+
+  public long getMaxMetaId() {
+      SessionExecuteSqlResult result = executeSql(
+              "select last(logicalPath) from " + IGinxConstants.STORAGE_META_PATH + ";");
+      if (result.getKeys() != null && result.getKeys().length > 0) {
+          long[] keys = result.getKeys();
+          return keys[keys.length - 1];
+      }
+      return -1;
+  }
+
+  public void deleteMeta(long key) {
+      String sql = String.format("insert into %s(key, isValid) values (%d, false);",
+              IGinxConstants.STORAGE_META_PATH, key);
+      executeSql(sql);
+  }
+
+  // ==================== Data Insertion using Programmatic API ====================
+
+  /**
+   * Insert column-oriented records into IGinX.
+   * Used for time series, relational, and other structured data.
+   */
+  public void insertColumnRecords(List<String> paths, long[] timestamps,
+                                   Object[] valuesList, List<DataType> dataTypeList) {
+      try {
+          session.insertColumnRecords(paths, timestamps, valuesList, dataTypeList, null);
+      } catch (SessionException e) {
+          throw new RuntimeException("Failed to insert column records: " + e.getMessage(), e);
+      }
+  }
+
+  // ==================== Data Query Operations ====================
+
+  /**
+   * Query data by path prefix using SQL. Returns all columns under the path.
+   */
+  public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
+      return executeSql("select * from " + pathPrefix + ";");
+  }
+
+  /**
+   * Query data with a row limit for preview purposes.
+   */
+  public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
+      return executeSql("select * from " + pathPrefix + " limit " + limit + ";");
+  }
+
+  /**
+   * Delete data by path prefix.
+   */
+  public void deleteDataByPath(String pathPrefix) {
+      executeSql("delete from " + pathPrefix + ".*;");
+  }
+
+  private String escapeSql(String value) {
+      if (value == null) return "";
+      return value.replace("'", "\\'");
+  }
+
+  /**
+   * Execute an arbitrary SQL statement on the IGinX session.
+   * Made public so adapters can use SQL batch inserts directly.
+   */
+  public SessionExecuteSqlResult executeSql(String sql) {
     SessionExecuteSqlResult sqlResult;
     try {
       sqlResult = session.executeSql(sql);

@@ -1,6 +1,9 @@
 // ===== 可扩展存储引擎 - 可视化大屏 =====
 import * as echarts from 'echarts';
 
+// ==================== 配置 ====================
+const API_BASE = ''; // Use relative path (proxied by Vite in dev, same origin in production)
+
 // ==================== 数据 ====================
 const clusterData = [
   { id: 1, name: 'node-master-01', ip: '192.168.1.100', port: '8080', desc: '主节点 - 集群管理与协调' },
@@ -559,6 +562,38 @@ $('metadata-search-input').addEventListener('keydown', e => {
 const uploadZone = $('storage-upload');
 const fileInput = $('file-input');
 
+// File extension accept map per data type
+const acceptMap = {
+  relational: '.csv,.txt',
+  timeseries: '.csv,.txt',
+  document:   '.json,.xml',
+  image:      '.jpg,.jpeg,.png,.bmp',
+  keyvalue:   '.json,.yaml,.yml',
+};
+
+function updateFileAccept() {
+  const type = $('storage-type-select').value;
+  fileInput.accept = acceptMap[type] || '';
+  // Update hint text
+  const hint = uploadZone.querySelector('.upload-hint');
+  if (hint) {
+    hint.textContent = '支持格式: ' + (acceptMap[type] || '所有文件').replace(/\./g, '').toUpperCase();
+  }
+}
+
+// Set initial accept & update on type change
+updateFileAccept();
+$('storage-type-select').addEventListener('change', () => {
+  updateFileAccept();
+  // Clear already selected files when type changes
+  if (selectedFiles.length > 0) {
+    if (confirm('切换数据类型后已选文件将被清除，是否继续？')) {
+      selectedFiles = [];
+      renderFileList();
+    }
+  }
+});
+
 uploadZone.addEventListener('click', (e) => {
   if (e.target === fileInput) return;
   fileInput.click();
@@ -570,10 +605,16 @@ uploadZone.addEventListener('drop', e => {
   uploadZone.classList.remove('dragover');
   handleFiles(Array.from(e.dataTransfer.files));
 });
-fileInput.addEventListener('change', e => handleFiles(Array.from(e.target.files)));
+fileInput.addEventListener('change', e => {
+  handleFiles(Array.from(e.target.files));
+  // Reset value so the same file can be re-selected after removal/storage
+  fileInput.value = '';
+});
 
 function handleFiles(files) {
-  selectedFiles = [...selectedFiles, ...files];
+  if (files.length === 0) return;
+  // Only keep the last selected file (single file mode)
+  selectedFiles = [files[0]];
   renderFileList();
 }
 
@@ -597,77 +638,288 @@ function renderFileList() {
   });
 }
 
-$('storage-save-btn').addEventListener('click', () => {
+$('storage-save-btn').addEventListener('click', async () => {
   const type = $('storage-type-select').value;
   const path = $('storage-path-input').value.trim();
   if (!path) { alert('请输入逻辑路径'); return; }
   if (selectedFiles.length === 0) { alert('请选择要上传的文件'); return; }
-  console.log('存储数据:', { type, path, files: selectedFiles.map(f => f.name) });
-  alert('存储成功！');
-  selectedFiles = [];
-  renderFileList();
-});
 
-// ==================== 访问服务 ====================
-$('access-visit-btn').addEventListener('click', () => {
-  const path = $('access-path-input').value.trim();
-  if (!path) { alert('请输入逻辑路径'); return; }
-  const preview = $('access-preview');
+  const btn = $('storage-save-btn');
+  btn.disabled = true;
+  btn.textContent = '存储中...';
 
-  if (path.includes('img') || path.includes('image') || path.includes('图像')) {
-    $('access-data-type').textContent = '图像数据';
-    $('access-data-size').textContent = '2.3 MB';
-    $('access-data-time').textContent = '2026-02-25 10:30:00';
-    preview.innerHTML = `<div style="text-align:center;padding:16px;">
-      <div style="width:200px;height:140px;margin:0 auto;background:linear-gradient(135deg,#0a2e4a,#1a4a6a);border-radius:8px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(0,180,255,0.2);">
-        <span style="font-size:48px;opacity:0.4;">🖼️</span>
-      </div>
-      <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">示例图像预览</p>
-    </div>`;
-  } else if (path.includes('rel') || path.includes('关系')) {
-    $('access-data-type').textContent = '关系数据';
-    $('access-data-size').textContent = '156 KB';
-    $('access-data-time').textContent = '2026-02-25 09:15:00';
-    preview.innerHTML = `<div class="table-wrapper"><table style="font-size:11px;">
-      <thead><tr><th>ID</th><th>名称</th><th>类型</th><th>数值</th><th>时间</th></tr></thead>
-      <tbody>
-        <tr><td>1</td><td>数据项A</td><td>类型1</td><td>123.45</td><td>2026-02-25 08:00</td></tr>
-        <tr><td>2</td><td>数据项B</td><td>类型2</td><td>678.90</td><td>2026-02-25 09:00</td></tr>
-        <tr><td>3</td><td>数据项C</td><td>类型1</td><td>234.56</td><td>2026-02-25 10:00</td></tr>
-      </tbody></table></div>`;
-  } else if (path.includes('ts') || path.includes('时序')) {
-    $('access-data-type').textContent = '时序数据';
-    $('access-data-size').textContent = '89 KB';
-    $('access-data-time').textContent = '2026-02-25 11:00:00';
-    preview.innerHTML = `<div class="table-wrapper"><table style="font-size:11px;">
-      <thead><tr><th>时间戳</th><th>设备ID</th><th>温度</th><th>湿度</th><th>状态</th></tr></thead>
-      <tbody>
-        <tr><td>2026-02-25 08:00</td><td>DEV-001</td><td>23.5°C</td><td>65%</td><td>正常</td></tr>
-        <tr><td>2026-02-25 08:05</td><td>DEV-001</td><td>23.8°C</td><td>64%</td><td>正常</td></tr>
-        <tr><td>2026-02-25 08:10</td><td>DEV-002</td><td>25.1°C</td><td>70%</td><td>警告</td></tr>
-      </tbody></table></div>`;
-  } else if (path.includes('doc') || path.includes('文档')) {
-    $('access-data-type').textContent = '文档数据';
-    $('access-data-size').textContent = '45 KB';
-    $('access-data-time').textContent = '2026-02-25 11:20:00';
-    preview.innerHTML = `<pre class="code-block" style="white-space:pre-wrap;font-size:11px;">这是一份示例文档内容。\n\n标题：可扩展存储引擎技术文档\n作者：系统管理员\n日期：2026-02-25\n\n本文档描述了存储引擎的核心架构设计，包括分布式数据存储、多模态数据管理、以及高可用集群部署方案等内容。</pre>`;
-  } else if (path.includes('kv') || path.includes('键值')) {
-    $('access-data-type').textContent = '键值数据';
-    $('access-data-size').textContent = '12 KB';
-    $('access-data-time').textContent = '2026-02-25 12:00:00';
-    preview.innerHTML = `<pre class="code-block" style="white-space:pre-wrap;font-size:11px;">{\n  "config.max_connections": "1000",\n  "config.timeout": "30s",\n  "config.cache_size": "512MB",\n  "status.node_count": "8",\n  "status.uptime": "72h",\n  "version": "2.1.0"\n}</pre>`;
-  } else {
-    $('access-data-type').textContent = '文本数据';
-    $('access-data-size').textContent = '28 KB';
-    $('access-data-time').textContent = '2026-02-25 12:30:00';
-    preview.innerHTML = `<pre class="code-block" style="white-space:pre-wrap;font-size:11px;">{\n  "id": "12345",\n  "type": "document",\n  "content": "示例数据内容...",\n  "metadata": {\n    "author": "system",\n    "created": "2026-02-25T12:30:00Z"\n  }\n}</pre>`;
+  try {
+    const formData = new FormData();
+    formData.append('file', selectedFiles[0]);
+    formData.append('logicalPath', path);
+    formData.append('dataType', type);
+
+    const response = await fetch(`${API_BASE}/storage`, {
+      method: 'POST',
+      body: formData,
+    });
+
+    const result = await response.json();
+    if (result.code !== 200 && result.code !== 201) {
+      throw new Error(result.message || '存储失败');
+    }
+    alert('存储成功！文件已保存到 ' + path);
+    selectedFiles = [];
+    renderFileList();
+  } catch (e) {
+    alert('存储失败: ' + e.message);
+    console.error('Storage error:', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '存储';
   }
 });
 
-$('access-download-btn').addEventListener('click', () => {
+// ==================== 访问服务 ====================
+$('access-visit-btn').addEventListener('click', async () => {
+  const path = $('access-path-input').value.trim();
+  if (!path) { alert('请输入逻辑路径'); return; }
+  const preview = $('access-preview');
+  const btn = $('access-visit-btn');
+
+  btn.disabled = true;
+  btn.textContent = '访问中...';
+  preview.innerHTML = '<div class="preview-placeholder">加载中...</div>';
+
+  try {
+    const response = await fetch(`${API_BASE}/access/data?logicalPath=${encodeURIComponent(path)}`);
+    const result = await response.json();
+
+    if (result.code !== 200 || !result.data) {
+      $('access-data-type').textContent = '-';
+      $('access-data-size').textContent = '-';
+      $('access-data-time').textContent = '-';
+      preview.innerHTML = '<div class="preview-placeholder">未找到该路径对应的数据</div>';
+      return;
+    }
+
+    const item = result.data;
+    const dataType = item.dataType;
+    const previewData = item.previewData;
+
+    // Show metadata
+    const typeLabels = {
+      timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+      document: '文档数据', keyvalue: '键值数据', directory: '目录'
+    };
+    $('access-data-type').textContent = typeLabels[dataType] || dataType;
+    $('access-data-size').textContent = dataType === 'directory' ? '-' : formatFileSize(item.fileSize);
+    $('access-data-time').textContent = item.createTime || '-';
+
+    // Render preview based on data type
+    if (dataType === 'directory') {
+      renderDirectoryListing(preview, previewData, item.logicalPath);
+    } else if (dataType === 'image') {
+      renderImagePreview(preview, previewData, item);
+    } else if (dataType === 'timeseries' || dataType === 'relational') {
+      renderTablePreview(preview, previewData, dataType);
+    } else if (dataType === 'document') {
+      renderDocumentPreview(preview, previewData, item);
+    } else if (dataType === 'keyvalue') {
+      renderKeyValuePreview(preview, previewData);
+    } else {
+      preview.innerHTML = '<div class="preview-placeholder">不支持预览此数据类型</div>';
+    }
+  } catch (e) {
+    console.error('Access error:', e);
+    preview.innerHTML = `<div class="preview-placeholder">访问失败: ${e.message}</div>`;
+    $('access-data-type').textContent = '-';
+    $('access-data-size').textContent = '-';
+    $('access-data-time').textContent = '-';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '访问';
+  }
+});
+
+function renderImagePreview(container, previewData, meta) {
+  if (!previewData || !previewData.base64) {
+    container.innerHTML = '<div class="preview-placeholder">无法加载图像数据</div>';
+    return;
+  }
+  const format = (meta.fileFormat || 'png').toLowerCase();
+  const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp' };
+  const mime = mimeMap[format] || 'image/png';
+  container.innerHTML = `<div style="text-align:center;padding:12px;overflow:auto;max-height:100%;">
+    <img src="data:${mime};base64,${previewData.base64}" 
+         style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
+         alt="${meta.fileName || 'image'}">
+    <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${meta.fileName || '图像预览'}</p>
+  </div>`;
+}
+
+function renderTablePreview(container, previewData, dataType) {
+  if (!previewData || !previewData.columns || !previewData.rows) {
+    container.innerHTML = '<div class="preview-placeholder">无数据</div>';
+    return;
+  }
+  const cols = previewData.columns;
+  const rows = previewData.rows;
+  const maxRows = Math.min(rows.length, 50);
+
+  let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr>';
+  cols.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
+  html += '</tr></thead><tbody>';
+  for (let i = 0; i < maxRows; i++) {
+    html += '<tr>';
+    const row = rows[i];
+    for (let j = 0; j < cols.length; j++) {
+      const val = j < row.length ? row[j] : '';
+      html += `<td>${escapeHtml(String(val != null ? val : ''))}</td>`;
+    }
+    html += '</tr>';
+  }
+  html += '</tbody></table>';
+  if (rows.length > maxRows) {
+    html += `<p style="color:var(--text-dim);font-size:11px;padding:4px 8px;">显示前 ${maxRows} 行，共 ${previewData.totalRows} 行</p>`;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderDocumentPreview(container, content, meta) {
+  if (!content) {
+    container.innerHTML = '<div class="preview-placeholder">无文档内容</div>';
+    return;
+  }
+  const format = (meta.fileFormat || '').toLowerCase();
+  let displayContent = content;
+  // Try to pretty-format JSON
+  if (format === 'json') {
+    try {
+      displayContent = JSON.stringify(JSON.parse(content), null, 2);
+    } catch (e) { /* keep original */ }
+  }
+  container.innerHTML = `<pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:100%;margin:0;padding:8px;">${escapeHtml(displayContent)}</pre>`;
+}
+
+function renderKeyValuePreview(container, kvData) {
+  if (!kvData || Object.keys(kvData).length === 0) {
+    container.innerHTML = '<div class="preview-placeholder">无键值数据</div>';
+    return;
+  }
+  let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr><th>键 (Key)</th><th>值 (Value)</th></tr></thead><tbody>';
+  for (const [key, value] of Object.entries(kvData)) {
+    html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(String(value))}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  container.innerHTML = html;
+}
+
+/**
+ * Render directory listing when a parent path is accessed.
+ * Shows a clickable list of child items under the given path.
+ */
+function renderDirectoryListing(container, children, parentPath) {
+  if (!children || !Array.isArray(children) || children.length === 0) {
+    container.innerHTML = '<div class="preview-placeholder">该目录下无数据</div>';
+    return;
+  }
+  const typeLabels = {
+    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    document: '文档数据', keyvalue: '键值数据', directory: '📁 子目录'
+  };
+  const typeColors = {
+    timeseries: '#00cfff', relational: '#00e68a', image: '#ff6b9d',
+    document: '#ffa800', keyvalue: '#a78bfa', directory: '#8cb8d0'
+  };
+
+  let html = '<div style="padding:8px;overflow:auto;max-height:100%;">';
+  html += `<p style="color:var(--text-dim);font-size:11px;margin-bottom:8px;">📂 路径: ${escapeHtml(parentPath)} (共 ${children.length} 项)</p>`;
+  html += '<div style="display:flex;flex-direction:column;gap:4px;">';
+
+  for (const child of children) {
+    const dt = child.dataType || 'directory';
+    const label = typeLabels[dt] || dt;
+    const color = typeColors[dt] || '#8cb8d0';
+    const icon = dt === 'directory' ? '📁' : '📄';
+    const nameDisplay = escapeHtml(child.name);
+    const pathDisplay = escapeHtml(child.fullPath);
+    const extra = child.fileName ? ` · ${escapeHtml(child.fileName)}` : '';
+    const timeInfo = child.createTime ? ` · ${escapeHtml(child.createTime)}` : '';
+
+    html += `<div class="dir-listing-item" data-path="${pathDisplay}" 
+      style="padding:6px 10px;background:rgba(0,40,80,0.4);border:1px solid rgba(0,180,255,0.15);border-radius:4px;cursor:pointer;transition:all 0.2s;"
+      onmouseover="this.style.borderColor='rgba(0,180,255,0.5)';this.style.background='rgba(0,60,120,0.5)'"
+      onmouseout="this.style.borderColor='rgba(0,180,255,0.15)';this.style.background='rgba(0,40,80,0.4)'"
+    >
+      <span style="font-size:12px;">${icon} <strong style="color:#cce4f5;">${nameDisplay}</strong></span>
+      <span style="float:right;font-size:10px;color:${color};border:1px solid ${color};padding:0 4px;border-radius:3px;">${label}</span>
+      <div style="font-size:10px;color:var(--text-dim);margin-top:2px;">${pathDisplay}${extra}${timeInfo}</div>
+    </div>`;
+  }
+
+  html += '</div></div>';
+  container.innerHTML = html;
+
+  // Bind click events – navigate into the child path
+  container.querySelectorAll('.dir-listing-item').forEach(item => {
+    item.addEventListener('click', function() {
+      const childPath = this.getAttribute('data-path');
+      $('access-path-input').value = childPath;
+      $('access-visit-btn').click();
+    });
+  });
+}
+
+function escapeHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+function formatFileSize(bytes) {
+  if (!bytes || bytes === 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(1024));
+  return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
+}
+
+$('access-download-btn').addEventListener('click', async () => {
   const path = $('access-path-input').value.trim();
   if (!path) { alert('请先访问数据'); return; }
-  alert('数据下载已开始...');
+
+  const btn = $('access-download-btn');
+  btn.disabled = true;
+  btn.textContent = '下载中...';
+
+  try {
+    const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(path)}`);
+    if (!response.ok) {
+      throw new Error('下载失败: HTTP ' + response.status);
+    }
+
+    // Get filename from Content-Disposition header
+    const disposition = response.headers.get('Content-Disposition');
+    let fileName = 'download';
+    if (disposition) {
+      const match = disposition.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
+      if (match && match[1]) {
+        fileName = decodeURIComponent(match[1]);
+      }
+    }
+
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = fileName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert('下载失败: ' + e.message);
+    console.error('Download error:', e);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '点击下载数据';
+  }
 });
 
 // ==================== 多样化接口服务 ====================
