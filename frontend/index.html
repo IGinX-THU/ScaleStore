@@ -46,7 +46,7 @@
         <div class="table-wrapper flex-1">
           <table>
             <thead>
-              <tr><th>节点名</th><th>节点IP</th><th>端口</th><th>操作</th></tr>
+              <tr><th>节点名</th><th>节点IP</th><th>端口</th><th>状态</th><th>操作</th></tr>
             </thead>
             <tbody id="cluster-table-body"></tbody>
           </table>
@@ -256,17 +256,42 @@
           <input type="text" id="cluster-ip-input" class="input" placeholder="192.168.1.100">
         </div>
         <div class="form-group">
-          <label class="form-label">节点Port</label>
-          <input type="text" id="cluster-port-input" class="input" placeholder="8080">
+          <label class="form-label">IGinX端口（可选，默认6888）</label>
+          <input type="text" id="cluster-port-input" class="input" placeholder="6888">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH用户名</label>
+          <input type="text" id="cluster-ssh-user-input" class="input" placeholder="ubuntu">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH密码</label>
+          <input type="password" id="cluster-ssh-password-input" class="input" placeholder="请输入目标节点登录密码">
+        </div>
+        <div class="form-group">
+          <label class="form-label">远程部署目录</label>
+          <input type="text" id="cluster-deploy-dir-input" class="input" placeholder="/opt/iginx">
+        </div>
+        <div class="form-group">
+          <label class="form-label">部署包路径（可选）</label>
+          <input type="text" id="cluster-package-path-input" class="input" placeholder="/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz">
+        </div>
+        <div class="form-group">
+          <label class="form-label">ZooKeeper连接串</label>
+          <input type="text" id="cluster-zk-input" class="input" placeholder="192.168.1.100:2181">
         </div>
         <div class="form-group">
           <label class="form-label">描述</label>
           <textarea id="cluster-desc-input" class="input" rows="2" placeholder="节点描述信息"></textarea>
         </div>
+        <div class="form-group hidden" id="cluster-deploy-progress-wrap">
+          <label class="form-label">部署进度</label>
+          <div id="cluster-deploy-current-step" class="code-block" style="white-space:normal;padding:8px 10px;">等待开始...</div>
+          <pre id="cluster-deploy-log" class="code-block" style="max-height:150px;overflow:auto;">暂无日志</pre>
+        </div>
       </div>
       <div class="modal-footer">
         <button id="cluster-modal-cancel" class="btn btn-secondary">取消</button>
-        <button id="cluster-modal-save" class="btn btn-primary">保存</button>
+        <button id="cluster-modal-save" class="btn btn-primary">确认</button>
       </div>
     </div>
   </div>

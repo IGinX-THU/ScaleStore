@@ -5,16 +5,7 @@ import * as echarts from 'echarts';
 const API_BASE = ''; // Use relative path (proxied by Vite in dev, same origin in production)
 
 // ==================== 数据 ====================
-const clusterData = [
-  { id: 1, name: 'node-master-01', ip: '192.168.1.100', port: '8080', desc: '主节点 - 集群管理与协调' },
-  { id: 2, name: 'node-worker-01', ip: '192.168.1.101', port: '8080', desc: '工作节点1 - 数据存储' },
-  { id: 3, name: 'node-worker-02', ip: '192.168.1.102', port: '8080', desc: '工作节点2 - 数据存储' },
-  { id: 4, name: 'node-worker-03', ip: '192.168.1.103', port: '8081', desc: '工作节点3 - 计算处理' },
-  { id: 5, name: 'node-worker-04', ip: '192.168.1.104', port: '8081', desc: '工作节点4 - 计算处理' },
-  { id: 6, name: 'node-backup-01', ip: '192.168.1.110', port: '8080', desc: '备份节点 - 数据冗余' },
-  { id: 7, name: 'node-gateway-01', ip: '192.168.1.200', port: '9090', desc: '网关节点 - 请求路由' },
-  { id: 8, name: 'node-monitor-01', ip: '192.168.1.201', port: '9091', desc: '监控节点 - 状态监测' },
-];
+let clusterData = [];
 
 const userData = [
   { id: 1, name: 'admin', type: 'admin', email: 'admin@storage.com', phone: '13800138000', password: '' },
@@ -101,6 +92,7 @@ let selectedFiles = [];
 let currentInterfaceType = 'rest';
 let metadataChart = null;
 let topologyChart = null;
+let clusterHeartbeatTimer = null;
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -159,19 +151,26 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
 function renderClusterTable() {
   const { items, page, totalPages, total } = paginate(clusterData, paginationState.cluster.page, PAGE_SIZE);
   paginationState.cluster.page = page;
+  const onlineCount = clusterData.filter(n => n.status === 'ONLINE').length;
+  $('online-nodes').textContent = onlineCount;
   const tbody = $('cluster-table-body');
-  tbody.innerHTML = items.map(n => `
+  tbody.innerHTML = items.map(n => {
+    const statusClass = n.status === 'ONLINE' ? 'status-online' : 'status-offline';
+    const statusLabel = n.status === 'ONLINE' ? '在线' : '离线';
+    const typeLabel = n.nodeType === 'iginx' ? 'IGinX' : (n.nodeType || 'IGinX');
+    return `
     <tr>
       <td title="${n.name}">${n.name}</td>
       <td>${n.ip}</td>
       <td>${n.port}</td>
+      <td><span class="node-status ${statusClass}">${statusLabel}</span></td>
       <td>
         <button class="btn-text-action view cluster-view-detail-btn" data-id="${n.id}">查看</button>
         <button class="btn-text-action edit cluster-set-btn" data-id="${n.id}">设置</button>
         <button class="btn-text-action delete cluster-delete-btn" data-id="${n.id}">删除</button>
       </td>
-    </tr>
-  `).join('');
+    </tr>`;
+  }).join('');
   renderPagination('cluster-pagination', 'cluster', totalPages, total, renderClusterTable);
   bindClusterRowEvents();
 }
@@ -192,11 +191,15 @@ function bindClusterRowEvents() {
     });
   });
   document.querySelectorAll('.cluster-delete-btn').forEach(btn => {
-    btn.addEventListener('click', function () {
+    btn.addEventListener('click', async function () {
       const id = +this.dataset.id;
       if (confirm('确定要删除该节点吗？')) {
-        const idx = clusterData.findIndex(n => n.id === id);
-        if (idx >= 0) clusterData.splice(idx, 1);
+        try {
+          await deleteClusterNodeById(id);
+          await loadClusterNodes();
+        } catch (e) {
+          alert('删除失败: ' + e.message);
+        }
         renderClusterTable();
         initClusterTopology();
       }
@@ -209,11 +212,30 @@ function openClusterModal(title, data, readonly) {
   $('cluster-name-input').value = data ? data.name : '';
   $('cluster-ip-input').value = data ? data.ip : '';
   $('cluster-port-input').value = data ? data.port : '';
-  $('cluster-desc-input').value = data ? data.desc : '';
-  const inputs = ['cluster-name-input', 'cluster-ip-input', 'cluster-port-input', 'cluster-desc-input'];
+  $('cluster-desc-input').value = data ? (data.description || data.desc || '') : '';
+  $('cluster-ssh-user-input').value = '';
+  $('cluster-ssh-password-input').value = '';
+  $('cluster-deploy-dir-input').value = '/opt/iginx';
+  $('cluster-package-path-input').value = '/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz';
+  $('cluster-zk-input').value = '127.0.0.1:2181';
+  const inputs = [
+    'cluster-name-input', 'cluster-ip-input', 'cluster-port-input', 'cluster-desc-input',
+    'cluster-ssh-user-input', 'cluster-ssh-password-input', 'cluster-deploy-dir-input',
+    'cluster-package-path-input', 'cluster-zk-input'
+  ];
   inputs.forEach(id => $(id).disabled = readonly);
   $('cluster-modal-save').classList.toggle('hidden', readonly);
   $('cluster-modal-save').dataset.editId = data ? data.id : '';
+  $('cluster-deploy-progress-wrap').classList.add('hidden');
+  $('cluster-deploy-current-step').textContent = '等待开始...';
+  $('cluster-deploy-log').textContent = '暂无日志';
+  if (readonly) {
+    $('cluster-ssh-user-input').value = '-';
+    $('cluster-ssh-password-input').value = '';
+    $('cluster-deploy-dir-input').value = '-';
+    $('cluster-package-path-input').value = '-';
+    $('cluster-zk-input').value = '-';
+  }
   showModal('modal-cluster');
 }
 
@@ -222,24 +244,209 @@ $('cluster-add-btn').addEventListener('click', () => openClusterModal('添加节
 $('cluster-modal-cancel').addEventListener('click', () => hideModal('modal-cluster'));
 $('cluster-modal-close-x').addEventListener('click', () => hideModal('modal-cluster'));
 
-$('cluster-modal-save').addEventListener('click', () => {
+$('cluster-modal-save').addEventListener('click', async () => {
   const name = $('cluster-name-input').value.trim();
   const ip = $('cluster-ip-input').value.trim();
   const port = $('cluster-port-input').value.trim();
   const desc = $('cluster-desc-input').value.trim();
-  if (!name || !ip || !port) { alert('请填写完整信息'); return; }
-  const editId = $('cluster-modal-save').dataset.editId;
-  if (editId) {
-    const node = clusterData.find(n => n.id === +editId);
-    if (node) { Object.assign(node, { name, ip, port, desc }); }
-  } else {
-    const maxId = clusterData.reduce((m, n) => Math.max(m, n.id), 0);
-    clusterData.push({ id: maxId + 1, name, ip, port, desc });
+  const sshUsername = $('cluster-ssh-user-input').value.trim();
+  const sshPassword = $('cluster-ssh-password-input').value;
+  const deployDirectory = $('cluster-deploy-dir-input').value.trim();
+  const packagePath = $('cluster-package-path-input').value.trim();
+  const zookeeperConnectionString = $('cluster-zk-input').value.trim();
+
+  if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
+    alert('请填写完整信息（SSH密码为必填）');
+    return;
   }
-  hideModal('modal-cluster');
-  renderClusterTable();
-  initClusterTopology();
+
+  const saveBtn = $('cluster-modal-save');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '部署中...';
+
+  const editId = $('cluster-modal-save').dataset.editId;
+  try {
+    if (editId) {
+      await updateClusterNode(editId, { name, ip, port, description: desc });
+      await refreshClusterView(true);
+      hideModal('modal-cluster');
+    } else {
+      $('cluster-deploy-progress-wrap').classList.remove('hidden');
+      renderDeployTaskProgress({
+        currentStep: '已提交部署任务，等待执行...',
+        logs: ['[INIT] 已创建部署任务'],
+      });
+
+      const task = await createClusterNodeTask({
+        name,
+        ip,
+        port: port || '6888',
+        description: desc,
+        sshUsername,
+        sshPassword,
+        deployDirectory,
+        packagePath,
+        zookeeperConnectionString,
+      });
+
+      await waitForDeployTask(task.taskId);
+      await refreshClusterView(true);
+      hideModal('modal-cluster');
+    }
+  } catch (e) {
+    alert('操作失败: ' + e.message);
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '确认';
+  }
 });
+
+async function loadClusterNodes() {
+  const response = await fetch(`${API_BASE}/config/nodes`);
+  const result = await response.json();
+  if (result.code !== 200 || !Array.isArray(result.data)) {
+    throw new Error(result.message || '获取节点列表失败');
+  }
+  clusterData = result.data.map(item => ({
+    id: item.id,
+    name: item.name,
+    ip: item.ip,
+    port: item.port,
+    desc: item.description || '',
+    description: item.description || '',
+    status: item.status || 'ONLINE',
+    nodeType: item.nodeType || 'iginx',
+  }));
+}
+
+async function createClusterNodeTask(payload) {
+  const response = await fetch(`${API_BASE}/config/nodes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok || result.code >= 400) {
+    throw new Error(result.message || '新增节点失败');
+  }
+  if (!result.data || !result.data.taskId) {
+    throw new Error('部署任务创建失败：缺少任务ID');
+  }
+  return result.data;
+}
+
+async function queryDeployTask(taskId) {
+  const response = await fetch(`${API_BASE}/config/nodes/deploy/${encodeURIComponent(taskId)}`);
+  const result = await response.json();
+  if (!response.ok || result.code >= 400 || !result.data) {
+    throw new Error(result.message || '查询部署任务失败');
+  }
+  return result.data;
+}
+
+async function waitForDeployTask(taskId) {
+  while (true) {
+    const task = await queryDeployTask(taskId);
+    renderDeployTaskProgress(task);
+    if (task.completed) {
+      if (task.status !== 'SUCCESS') {
+        throw new Error(task.errorMessage || '部署失败');
+      }
+      return task;
+    }
+    await sleep(1200);
+  }
+}
+
+function renderDeployTaskProgress(task) {
+  // Parse steps from logs: lines containing [INFO] or [STEP] are steps
+  const allLogs = Array.isArray(task.logs) ? task.logs : [];
+  const steps = allLogs.filter(l => l.includes('[INFO]') || l.includes('[STEP]') || l.includes('[DONE]') || l.includes('[WAIT]'));
+  const knownSteps = [
+    { key: '测试', label: '测试SSH连接' },
+    { key: '拷贝', label: '拷贝安装包' },
+    { key: '解压', label: '远程解压' },
+    { key: 'ZooKeeper', label: '修改配置' },
+    { key: '执行权限', label: '赋予权限' },
+    { key: '启动 IGinX', label: '启动IGinX' },
+    { key: '等待 IGinX', label: '等待启动' },
+    { key: '校验', label: '校验集群' },
+  ];
+
+  // Build step indicator
+  let stepHtml = '<div class="deploy-steps">';
+  const currentStep = task.currentStep || '执行中...';
+  // Find the last completed step index
+  let lastDoneIdx = -1;
+  knownSteps.forEach((s, i) => {
+    if (steps.some(l => l.includes(s.key))) {
+      lastDoneIdx = i;
+    }
+  });
+  knownSteps.forEach((s, i) => {
+    let cls = 'step-pending';
+    if (task.completed && task.status === 'SUCCESS') {
+      cls = 'step-done';
+    } else if (i < lastDoneIdx) {
+      cls = 'step-done';
+    } else if (i === lastDoneIdx) {
+      // If next step has started, this one is done; otherwise it's active
+      const nextStarted = (i + 1 < knownSteps.length) && steps.some(l => l.includes(knownSteps[i + 1].key));
+      cls = nextStarted ? 'step-done' : 'step-active';
+    }
+    stepHtml += '<div class="deploy-step ' + cls + '"><span class="step-num">' + (i + 1) + '</span><span class="step-label">' + s.label + '</span></div>';
+  });
+  stepHtml += '</div>';
+
+  $('cluster-deploy-current-step').innerHTML = stepHtml + '<div class="deploy-current-info">' + escapeHtml(currentStep) + '</div>';
+  const logEl = $('cluster-deploy-log');
+  logEl.textContent = allLogs.length > 0 ? allLogs.join('\n') : '暂无日志';
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function refreshClusterView(silent) {
+  try {
+    await loadClusterNodes();
+    renderClusterTable();
+    initClusterTopology();
+  } catch (e) {
+    if (!silent) {
+      throw e;
+    }
+    console.error('Cluster heartbeat refresh failed:', e);
+  }
+}
+
+async function updateClusterNode(id, payload) {
+  const formData = new FormData();
+  formData.append('name', payload.name);
+  formData.append('ip', payload.ip);
+  formData.append('port', payload.port);
+  formData.append('description', payload.description || '');
+  const response = await fetch(`${API_BASE}/config/nodes/${id}`, {
+    method: 'PUT',
+    body: formData,
+  });
+  const result = await response.json();
+  if (!response.ok || result.code >= 400) {
+    throw new Error(result.message || '更新节点失败');
+  }
+  return result.data;
+}
+
+async function deleteClusterNodeById(id) {
+  const response = await fetch(`${API_BASE}/config/nodes/${id}`, {
+    method: 'DELETE',
+  });
+  const result = await response.json();
+  if (!response.ok || result.code >= 400) {
+    throw new Error(result.message || '删除节点失败');
+  }
+}
 
 // ==================== 拓扑图 ====================
 function initClusterTopology() {
@@ -248,22 +455,33 @@ function initClusterTopology() {
   if (!topologyChart) {
     topologyChart = echarts.init(container);
   }
-  const masters = clusterData.filter(n => n.name.includes('master'));
-  const others = clusterData.filter(n => !n.name.includes('master'));
-  const nodes = clusterData.map((n, i) => ({
-    name: n.name,
-    symbolSize: n.name.includes('master') ? 45 : 30,
-    category: n.name.includes('master') ? 0 : (n.name.includes('worker') ? 1 : 2),
-    itemStyle: {
-      color: n.name.includes('master') ? '#00e68a' : (n.name.includes('worker') ? '#00cfff' : '#ffa800'),
-      shadowBlur: 8,
-      shadowColor: n.name.includes('master') ? 'rgba(0,230,138,0.4)' : 'rgba(0,207,255,0.3)',
-    },
-  }));
+  if (clusterData.length === 0) {
+    topologyChart.clear();
+    return;
+  }
+  // First node is considered the master (the one running the web server)
+  const masterNode = clusterData.length > 0 ? clusterData[0] : null;
+  const nodes = clusterData.map((n, i) => {
+    const isMaster = (i === 0);
+    const isOnline = n.status === 'ONLINE';
+    return {
+      name: n.name + '\n' + n.ip + ':' + n.port,
+      symbolSize: isMaster ? 50 : 35,
+      category: isMaster ? 0 : 1,
+      itemStyle: {
+        color: !isOnline ? '#666' : (isMaster ? '#00e68a' : '#00cfff'),
+        shadowBlur: 8,
+        shadowColor: !isOnline ? 'rgba(100,100,100,0.3)' : (isMaster ? 'rgba(0,230,138,0.4)' : 'rgba(0,207,255,0.3)'),
+      },
+    };
+  });
   const links = [];
-  const masterName = masters.length > 0 ? masters[0].name : null;
-  if (masterName) {
-    others.forEach(n => links.push({ source: masterName, target: n.name }));
+  if (masterNode && clusterData.length > 1) {
+    const masterLabel = masterNode.name + '\n' + masterNode.ip + ':' + masterNode.port;
+    for (let i = 1; i < clusterData.length; i++) {
+      const n = clusterData[i];
+      links.push({ source: masterLabel, target: n.name + '\n' + n.ip + ':' + n.port });
+    }
   }
   const option = {
     backgroundColor: 'transparent',
@@ -273,7 +491,7 @@ function initClusterTopology() {
       textStyle: { color: '#cce4f5', fontSize: 11 },
     },
     legend: {
-      data: ['主节点', '工作节点', '其他节点'],
+      data: ['主节点', 'IGinX节点'],
       top: 4, right: 4,
       textStyle: { color: '#4d7a99', fontSize: 10 },
       itemWidth: 10, itemHeight: 10,
@@ -283,7 +501,7 @@ function initClusterTopology() {
       layout: 'force',
       data: nodes,
       links,
-      categories: [{ name: '主节点' }, { name: '工作节点' }, { name: '其他节点' }],
+      categories: [{ name: '主节点' }, { name: 'IGinX节点' }],
       roam: true,
       draggable: true,
       label: { show: true, position: 'bottom', color: '#8cb8d0', fontSize: 9 },
@@ -995,9 +1213,16 @@ window.addEventListener('resize', () => {
 });
 
 // ==================== 初始化 ====================
-function init() {
+async function init() {
   updateTime();
   setInterval(updateTime, 1000);
+
+  try {
+    await loadClusterNodes();
+  } catch (e) {
+    console.error('Load cluster nodes failed:', e);
+    alert('加载节点列表失败: ' + e.message);
+  }
 
   renderClusterTable();
   renderUserTable();
@@ -1010,7 +1235,13 @@ function init() {
     initMetadataGraph();
   });
 
-  $('online-nodes').textContent = clusterData.length;
+  if (clusterHeartbeatTimer) {
+    clearInterval(clusterHeartbeatTimer);
+  }
+  clusterHeartbeatTimer = setInterval(() => {
+    refreshClusterView(true);
+  }, 15000);
+
 }
 
 init();

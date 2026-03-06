@@ -2,6 +2,8 @@ package com.storage.engine.controller;
 
 import com.storage.engine.constant.ResultCode;
 import com.storage.engine.model.Node;
+import com.storage.engine.model.NodeDeployRequest;
+import com.storage.engine.model.NodeDeployTaskStatus;
 import com.storage.engine.model.Response;
 import com.storage.engine.service.NodeService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,15 +25,27 @@ public class ClusterController {
     }
 
     @PostMapping("/config/nodes")
-    public ResponseEntity<Response<Node>> createNode(@ModelAttribute Node node) {
+    public ResponseEntity<Response<NodeDeployTaskStatus>> createNode(@RequestBody NodeDeployRequest request) {
         try {
-            return ResponseEntity.status(HttpStatus.CREATED).body(Response.success(nodeService.createNode(node)));
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(Response.success(nodeService.createNodeAsync(request)));
         } catch (RuntimeException e) {
              if (ResultCode.NODE_LIMIT_EXCEEDED.getMessage().equals(e.getMessage())) {
-                 return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Response.error(ResultCode.NODE_LIMIT_EXCEEDED));
+                 return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                         .body(Response.error(ResultCode.NODE_LIMIT_EXCEEDED));
              }
-             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Response.error(ResultCode.INTERNAL_SERVER_ERROR));
+             return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                     .body(Response.error(ResultCode.PARAM_ERROR.getCode(), e.getMessage()));
         }
+    }
+
+    @GetMapping("/config/nodes/deploy/{taskId}")
+    public ResponseEntity<Response<NodeDeployTaskStatus>> getDeployTaskStatus(@PathVariable String taskId) {
+        NodeDeployTaskStatus taskStatus = nodeService.getDeployTaskStatus(taskId);
+        if (taskStatus == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Response.error(ResultCode.NOT_FOUND.getCode(), "部署任务不存在"));
+        }
+        return ResponseEntity.ok(Response.success(taskStatus));
     }
 
     @GetMapping("/config/nodes/{id}")

@@ -3,12 +3,16 @@ package com.storage.engine.service;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Node;
+import com.storage.engine.model.NodeDeployRequest;
+import com.storage.engine.model.NodeDeployTaskStatus;
 import com.storage.engine.constant.ResultCode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Service
 public class NodeService {
@@ -16,32 +20,81 @@ public class NodeService {
     @Autowired
     private IGinxDao iginxDao;
 
+    @Autowired
+    private NodeDeployService nodeDeployService;
+
     public List<Node> getAllNodes() {
-        List<Node> nodes = new ArrayList<>();
+        List<Node> merged = new ArrayList<Node>();
         try {
-            SessionExecuteSqlResult result = iginxDao.getAllNodes();
-            if (result != null) {
-                nodes = parseNodes(result);
+            List<Node> metadataNodes = getMetadataNodes();
+            Map<String, Node> metadataByIpPort = new HashMap<String, Node>();
+            Map<String, Node> metadataByIp = new HashMap<String, Node>();
+            for (Node meta : metadataNodes) {
+                if (!isBlank(meta.getIp()) && !isBlank(meta.getPort())) {
+                    metadataByIpPort.put(meta.getIp() + ":" + meta.getPort(), meta);
+                }
+                if (!isBlank(meta.getIp()) && !metadataByIp.containsKey(meta.getIp())) {
+                    metadataByIp.put(meta.getIp(), meta);
+                }
+            }
+
+            List<NodeDeployService.ClusterNodeInfo> clusterInfos = nodeDeployService.getClusterNodeInfos();
+            for (NodeDeployService.ClusterNodeInfo info : clusterInfos) {
+                String key = info.getIp() + ":" + info.getPort();
+                Node meta = metadataByIpPort.get(key);
+                if (meta == null) {
+                    meta = metadataByIp.get(info.getIp());
+                }
+
+                Node node = new Node();
+                node.setId(meta != null && meta.getId() != null ? meta.getId() : info.getClusterId());
+                node.setIp(info.getIp());
+                node.setPort(info.getPort());
+                node.setName(meta != null && !isBlank(meta.getName())
+                        ? meta.getName()
+                        : "iginx-" + info.getClusterId());
+                node.setDescription(meta != null ? defaultString(meta.getDescription()) : "");
+                node.setStatus("ONLINE");
+                node.setIsValid(true);
+                node.setNodeType(info.getNodeType() != null ? info.getNodeType() : "iginx");
+                merged.add(node);
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return nodes;
+        return merged;
     }
 
-    public synchronized Node createNode(Node node) {
+    public synchronized NodeDeployTaskStatus createNodeAsync(NodeDeployRequest request) {
         List<Node> currentNodes = getAllNodes();
         if (currentNodes.size() >= 24) {
             throw new RuntimeException(ResultCode.NODE_LIMIT_EXCEEDED.getMessage());
         }
 
+        validateCreateRequest(request);
+
+        Node node = new Node();
+        node.setName(request.getName().trim());
+        node.setIp(request.getIp().trim());
+        node.setPort(isBlank(request.getPort()) ? "6888" : request.getPort().trim());
+        node.setDescription(request.getDescription());
+
         if (node.getId() == null) {
             long maxId = iginxDao.getMaxNodeId();
             node.setId((int) (maxId + 1));
         }
-        node.setIsValid(true);
-        iginxDao.insertNode(node.getId(), node.getName(), node.getIp(), node.getPort(), node.getDescription(), true);
-        return node;
+
+        return nodeDeployService.startDeployTask(request, node.getId(), node.getPort(), new Runnable() {
+            @Override
+            public void run() {
+                iginxDao.insertNode(node.getId(), node.getName(), node.getIp(), node.getPort(),
+                        defaultString(node.getDescription()), "ONLINE", true);
+            }
+        });
+    }
+
+    public NodeDeployTaskStatus getDeployTaskStatus(String taskId) {
+        return nodeDeployService.getTaskStatus(taskId);
     }
 
     public Node getNodeById(Integer id) {
@@ -61,8 +114,13 @@ public class NodeService {
         Node existing = getNodeById(id);
         if (existing != null) {
             node.setId(id);
-            iginxDao.updateNode(id, node.getName(), node.getIp(), node.getPort(), node.getDescription());
+            String status = node.getStatus() == null || node.getStatus().trim().isEmpty()
+                ? defaultString(existing.getStatus())
+                : node.getStatus();
+            iginxDao.updateNode(id, node.getName(), node.getIp(), node.getPort(),
+                defaultString(node.getDescription()), status);
             node.setIsValid(true);
+            node.setStatus(status);
             return node;
         }
         return null;
@@ -130,5 +188,39 @@ public class NodeService {
            return Boolean.parseBoolean(new String((byte[])obj));
        }
        return false;
+    }
+
+    private void validateCreateRequest(NodeDeployRequest request) {
+        if (request == null) {
+            throw new RuntimeException("请求体不能为空");
+        }
+        if (isBlank(request.getName())) {
+            throw new RuntimeException("节点名不能为空");
+        }
+        if (isBlank(request.getIp())) {
+            throw new RuntimeException("节点IP不能为空");
+        }
+        if (isBlank(request.getSshUsername())) {
+            throw new RuntimeException("SSH用户名不能为空");
+        }
+        if (isBlank(request.getSshPassword())) {
+            throw new RuntimeException("SSH密码不能为空");
+        }
+    }
+
+    private List<Node> getMetadataNodes() {
+        SessionExecuteSqlResult result = iginxDao.getAllNodes();
+        if (result == null) {
+            return new ArrayList<Node>();
+        }
+        return parseNodes(result);
+    }
+
+    private boolean isBlank(String value) {
+        return value == null || value.trim().isEmpty();
+    }
+
+    private String defaultString(String value) {
+        return value == null ? "" : value;
     }
 }

@@ -1,6 +1,7 @@
 package com.storage.engine.dao;
 
 import cn.edu.tsinghua.iginx.exception.SessionException;
+import cn.edu.tsinghua.iginx.session.ClusterInfo;
 import cn.edu.tsinghua.iginx.session.Session;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
@@ -55,15 +56,15 @@ public class IGinxDao {
 
   // Node operations
 
-  public void insertNode(long key, String name, String ip, String port, String description, boolean isValid) {
-      String sql = String.format("insert into %s(key, name, ip, port, description, isValid) values (%d, '%s', '%s', '%s', '%s', %b);",
+  public void insertNode(long key, String name, String ip, String port, String description, String status, boolean isValid) {
+      String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', %b);",
               IGinxConstants.NODES_PATH,
-              key, name, ip, port, description, isValid);
+              key, name, ip, port, description, status, isValid);
       executeSql(sql);
   }
 
-  public void updateNode(long key, String name, String ip, String port, String description) {
-      insertNode(key, name, ip, port, description, true);
+  public void updateNode(long key, String name, String ip, String port, String description, String status) {
+      insertNode(key, name, ip, port, description, status, true);
   }
 
   public void deleteNode(long key) {
@@ -172,6 +173,20 @@ public class IGinxDao {
       executeSql("delete from " + pathPrefix + ".*;");
   }
 
+
+  // ==================== Cluster Info Operations ====================
+
+  /**
+   * Get cluster info using the structured IGinX API directly.
+   * Returns a ClusterInfo object with getIginxInfos() and getStorageEngineInfos().
+   */
+  public ClusterInfo getClusterInfo() {
+      try {
+          return session.getClusterInfo();
+      } catch (SessionException e) {
+          throw new RuntimeException("Failed to get cluster info: " + e.getMessage(), e);
+      }
+  }
   private String escapeSql(String value) {
       if (value == null) return "";
       return value.replace("'", "\\'");

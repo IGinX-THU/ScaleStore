@@ -8,6 +8,7 @@ public class Node {
     private String description;
     private String status;
     private Boolean isValid;
+    private String nodeType;
 
     public Integer getId() {
         return id;
@@ -63,6 +64,14 @@ public class Node {
 
     public void setIsValid(Boolean valid) {
         isValid = valid;
+    }
+
+    public String getNodeType() {
+        return nodeType;
+    }
+
+    public void setNodeType(String nodeType) {
+        this.nodeType = nodeType;
     }
 }
 
