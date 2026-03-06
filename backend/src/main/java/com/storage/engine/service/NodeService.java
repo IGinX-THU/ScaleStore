@@ -23,6 +23,11 @@ public class NodeService {
     @Autowired
     private NodeDeployService nodeDeployService;
 
+    /**
+     * Get all nodes by merging show cluster info (live) with sys.node (metadata).
+     * Uses ip:port as the "foreign key" to link cluster nodes with their stored name/description.
+     * Always uses clusterId as the node id.
+     */
     public List<Node> getAllNodes() {
         List<Node> merged = new ArrayList<Node>();
         try {
@@ -47,7 +52,8 @@ public class NodeService {
                 }
 
                 Node node = new Node();
-                node.setId(meta != null && meta.getId() != null ? meta.getId() : info.getClusterId());
+                // Always use cluster id as the canonical node id
+                node.setId(info.getClusterId());
                 node.setIp(info.getIp());
                 node.setPort(info.getPort());
                 node.setName(meta != null && !isBlank(meta.getName())
@@ -65,6 +71,22 @@ public class NodeService {
         return merged;
     }
 
+    /**
+     * Get a single node by cluster id from the merged view.
+     */
+    public Node getNodeById(Integer clusterId) {
+        List<Node> allNodes = getAllNodes();
+        for (Node node : allNodes) {
+            if (node.getId() != null && node.getId().equals(clusterId)) {
+                return node;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Create a new node asynchronously (deploy via SSH).
+     */
     public synchronized NodeDeployTaskStatus createNodeAsync(NodeDeployRequest request) {
         List<Node> currentNodes = getAllNodes();
         if (currentNodes.size() >= 24) {
@@ -73,70 +95,150 @@ public class NodeService {
 
         validateCreateRequest(request);
 
-        Node node = new Node();
-        node.setName(request.getName().trim());
-        node.setIp(request.getIp().trim());
-        node.setPort(isBlank(request.getPort()) ? "6888" : request.getPort().trim());
-        node.setDescription(request.getDescription());
+        final String nodeName = request.getName().trim();
+        final String nodeIp = request.getIp().trim();
+        final String nodePort = isBlank(request.getPort()) ? "6888" : request.getPort().trim();
+        final String nodeDesc = defaultString(request.getDescription());
 
-        if (node.getId() == null) {
-            long maxId = iginxDao.getMaxNodeId();
-            node.setId((int) (maxId + 1));
-        }
-
-        return nodeDeployService.startDeployTask(request, node.getId(), node.getPort(), new Runnable() {
+        return nodeDeployService.startDeployTask(request, 0, nodePort, new Runnable() {
             @Override
             public void run() {
-                iginxDao.insertNode(node.getId(), node.getName(), node.getIp(), node.getPort(),
-                        defaultString(node.getDescription()), "ONLINE", true);
+                long maxId = iginxDao.getMaxNodeId();
+                iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true);
             }
         });
+    }
+
+    /**
+     * Update a node's name and description only (linked by ip:port foreign key).
+     * The clusterId is used to find the node in show cluster info,
+     * then the corresponding sys.node entry is found/created by ip:port.
+     */
+    public Node updateNode(Integer clusterId, String name, String description) {
+        // Find the cluster node by clusterId
+        List<NodeDeployService.ClusterNodeInfo> clusterInfos = nodeDeployService.getClusterNodeInfos();
+        NodeDeployService.ClusterNodeInfo target = null;
+        for (NodeDeployService.ClusterNodeInfo info : clusterInfos) {
+            if (info.getClusterId().equals(clusterId)) {
+                target = info;
+                break;
+            }
+        }
+        if (target == null) {
+            return null;
+        }
+
+        // Find existing sys.node entry by ip:port (foreign key)
+        List<Node> metaNodes = getMetadataNodes();
+        Node existingMeta = null;
+        for (Node meta : metaNodes) {
+            if (target.getIp().equals(meta.getIp()) && target.getPort().equals(meta.getPort())) {
+                existingMeta = meta;
+                break;
+            }
+        }
+
+        if (existingMeta != null) {
+            // Update existing sys.node entry
+            iginxDao.updateNode(existingMeta.getId(), name, target.getIp(), target.getPort(),
+                    defaultString(description), "ONLINE");
+        } else {
+            // Create new sys.node entry for this cluster node
+            long newKey = iginxDao.getMaxNodeId() + 1;
+            iginxDao.insertNode(newKey, name, target.getIp(), target.getPort(),
+                    defaultString(description), "ONLINE", true);
+        }
+
+        Node result = new Node();
+        result.setId(clusterId);
+        result.setName(name);
+        result.setIp(target.getIp());
+        result.setPort(target.getPort());
+        result.setDescription(description);
+        result.setStatus("ONLINE");
+        result.setIsValid(true);
+        return result;
+    }
+
+    /**
+     * Delete (stop) a node asynchronously via SSH stop script.
+     */
+    public synchronized NodeDeployTaskStatus deleteNodeAsync(Integer clusterId,
+            String sshUsername, String sshPassword, String deployDirectory) {
+        final Node node = getNodeById(clusterId);
+        if (node == null) {
+            throw new RuntimeException("节点不存在");
+        }
+
+        return nodeDeployService.startStopTask(
+                node.getIp(), sshUsername, sshPassword, deployDirectory,
+                new Runnable() {
+                    @Override
+                    public void run() {
+                        cleanupSysNode(node.getIp(), node.getPort());
+                    }
+                });
+    }
+
+    /**
+     * Simple soft-delete of sys.node entry (mark isValid=false).
+     */
+    public boolean deleteNode(Integer clusterId) {
+        cleanupSysNode(clusterId);
+        return true;
     }
 
     public NodeDeployTaskStatus getDeployTaskStatus(String taskId) {
         return nodeDeployService.getTaskStatus(taskId);
     }
 
-    public Node getNodeById(Integer id) {
+    // ==================== Internal Helpers ====================
+
+    /**
+     * Clean up sys.node entry by matching ip:port.
+     */
+    private void cleanupSysNode(String ip, String port) {
         try {
-            SessionExecuteSqlResult result = iginxDao.getNodeById(id);
-            List<Node> nodes = parseNodes(result);
-            if (!nodes.isEmpty()) {
-                return nodes.get(0);
+            List<Node> metaNodes = getMetadataNodes();
+            for (Node meta : metaNodes) {
+                if (ip.equals(meta.getIp()) && port.equals(meta.getPort())) {
+                    iginxDao.deleteNode(meta.getId());
+                    break;
+                }
+            }
+        } catch (Exception e) {
+            // Best effort cleanup
+            e.printStackTrace();
+        }
+    }
+
+    /**
+     * Clean up sys.node entry by cluster id (find ip:port first).
+     */
+    private void cleanupSysNode(Integer clusterId) {
+        try {
+            List<NodeDeployService.ClusterNodeInfo> infos = nodeDeployService.getClusterNodeInfos();
+            for (NodeDeployService.ClusterNodeInfo info : infos) {
+                if (info.getClusterId().equals(clusterId)) {
+                    cleanupSysNode(info.getIp(), info.getPort());
+                    return;
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        return null;
     }
 
-    public Node updateNode(Integer id, Node node) {
-        Node existing = getNodeById(id);
-        if (existing != null) {
-            node.setId(id);
-            String status = node.getStatus() == null || node.getStatus().trim().isEmpty()
-                ? defaultString(existing.getStatus())
-                : node.getStatus();
-            iginxDao.updateNode(id, node.getName(), node.getIp(), node.getPort(),
-                defaultString(node.getDescription()), status);
-            node.setIsValid(true);
-            node.setStatus(status);
-            return node;
+    private List<Node> getMetadataNodes() {
+        SessionExecuteSqlResult result = iginxDao.getAllNodes();
+        if (result == null) {
+            return new ArrayList<Node>();
         }
-        return null;
-    }
-
-    public boolean deleteNode(Integer id) {
-        Node existing = getNodeById(id);
-        if (existing != null) {
-            iginxDao.deleteNode(id);
-            return true;
-        }
-        return false;
+        return parseNodes(result);
     }
 
     private List<Node> parseNodes(SessionExecuteSqlResult result) {
-        List<Node> nodes = new ArrayList<>();
+        List<Node> nodes = new ArrayList<Node>();
         long[] keys = result.getKeys();
         List<List<Object>> values = result.getValues();
         List<String> paths = result.getPaths();
@@ -163,7 +265,7 @@ public class NodeService {
             if (portIdx != -1) node.setPort(getValueAsString(row.get(portIdx)));
             if (descIdx != -1) node.setDescription(getValueAsString(row.get(descIdx)));
             if (statusIdx != -1) node.setStatus(getValueAsString(row.get(statusIdx)));
-            
+
             boolean isValid = true;
             if (isValidIdx != -1) {
                 isValid = getValueAsBoolean(row.get(isValidIdx));
@@ -180,7 +282,7 @@ public class NodeService {
     private String getValueAsString(Object obj) {
         return obj == null ? null : new String((byte[])obj);
     }
-    
+
     private Boolean getValueAsBoolean(Object obj) {
        if (obj == null) return false;
        if (obj instanceof Boolean) return (Boolean)obj;
@@ -206,14 +308,6 @@ public class NodeService {
         if (isBlank(request.getSshPassword())) {
             throw new RuntimeException("SSH密码不能为空");
         }
-    }
-
-    private List<Node> getMetadataNodes() {
-        SessionExecuteSqlResult result = iginxDao.getAllNodes();
-        if (result == null) {
-            return new ArrayList<Node>();
-        }
-        return parseNodes(result);
     }
 
     private boolean isBlank(String value) {

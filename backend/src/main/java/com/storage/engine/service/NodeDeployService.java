@@ -38,6 +38,9 @@ public class NodeDeployService {
     @Value("${deploy.iginx.script-path:/home/ubuntu/ScaleStore/backend/scripts/deploy_iginx.sh}")
     private String deployScriptPath;
 
+    @Value("${deploy.iginx.stop-script-path:/home/ubuntu/ScaleStore/backend/scripts/stop_iginx.sh}")
+    private String stopScriptPath;
+
     @Value("${deploy.iginx.default-package-path:/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz}")
     private String defaultPackagePath;
 
@@ -46,6 +49,8 @@ public class NodeDeployService {
 
     @Value("${deploy.iginx.default-directory:/opt/iginx}")
     private String defaultDeployDirectory;
+
+    // ==================== Deploy (Add Node) ====================
 
     public NodeDeployTaskStatus startDeployTask(final NodeDeployRequest request, final int nodeId,
                                                 final String nodePort, final Runnable successAction) {
@@ -109,6 +114,64 @@ public class NodeDeployService {
         return toTaskStatus(taskState);
     }
 
+    // ==================== Stop (Delete Node) ====================
+
+    public NodeDeployTaskStatus startStopTask(final String targetIp, final String username,
+                                              final String password, final String deployDirectory,
+                                              final Runnable successAction) {
+        required(targetIp, "节点IP不能为空");
+        required(username, "SSH用户名不能为空");
+        required(password, "SSH密码不能为空");
+
+        String deployDir = safeValue(deployDirectory, defaultDeployDirectory);
+
+        File scriptFile = new File(stopScriptPath);
+        if (!scriptFile.exists()) {
+            throw new RuntimeException("停止脚本不存在: " + stopScriptPath);
+        }
+
+        final List<String> command = new ArrayList<String>();
+        command.add("bash");
+        command.add(scriptFile.getAbsolutePath());
+        command.add(targetIp);
+        command.add(username);
+        command.add(password);
+        command.add(deployDir);
+
+        final String taskId = UUID.randomUUID().toString();
+        final DeployTaskState taskState = new DeployTaskState(taskId);
+        taskStates.put(taskId, taskState);
+
+        deployExecutor.submit(new Runnable() {
+            @Override
+            public void run() {
+                taskState.currentStep = "正在执行停止脚本";
+                appendLog(taskState, "[STEP] 开始执行停止脚本");
+                try {
+                    runCommand(command, taskState);
+                    taskState.currentStep = "正在校验节点已移除";
+                    appendLog(taskState, "[STEP] 正在校验节点是否已从集群中移除");
+                    waitForNodeLeaveCluster(targetIp, taskState);
+                    successAction.run();
+                    taskState.status = "SUCCESS";
+                    taskState.completed = true;
+                    taskState.currentStep = "停止完成";
+                    appendLog(taskState, "[DONE] 节点已成功停止并从集群移除");
+                } catch (Exception e) {
+                    taskState.status = "FAILED";
+                    taskState.completed = true;
+                    taskState.errorMessage = e.getMessage();
+                    taskState.currentStep = "停止失败";
+                    appendLog(taskState, "[ERROR] " + e.getMessage());
+                }
+            }
+        });
+
+        return toTaskStatus(taskState);
+    }
+
+    // ==================== Task Status ====================
+
     public NodeDeployTaskStatus getTaskStatus(String taskId) {
         DeployTaskState taskState = taskStates.get(taskId);
         if (taskState == null) {
@@ -116,6 +179,8 @@ public class NodeDeployService {
         }
         return toTaskStatus(taskState);
     }
+
+    // ==================== Cluster Info ====================
 
     public List<ClusterNodeInfo> getClusterNodeInfos() {
         ClusterInfo clusterInfo = iginxDao.getClusterInfo();
@@ -132,6 +197,8 @@ public class NodeDeployService {
         }
         return infos;
     }
+
+    // ==================== Internal Helpers ====================
 
     private void waitForNodeJoinCluster(String targetIp, String nodePort, DeployTaskState taskState) {
         String expectedPort = safeValue(nodePort, "6888");
@@ -152,6 +219,23 @@ public class NodeDeployService {
                 + targetIp + ":" + expectedPort);
     }
 
+    private void waitForNodeLeaveCluster(String targetIp, DeployTaskState taskState) {
+        long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CLUSTER_WAIT_SECONDS);
+        while (System.currentTimeMillis() < deadline) {
+            if (!nodeExistsInClusterByIp(targetIp)) {
+                return;
+            }
+            try {
+                Thread.sleep(1500);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                throw new RuntimeException("等待节点离开集群被中断", e);
+            }
+            appendLog(taskState, "[WAIT] show cluster info 中仍存在 " + targetIp);
+        }
+        throw new RuntimeException("停止脚本执行成功，但在 show cluster info 中仍检测到节点: " + targetIp);
+    }
+
     private boolean nodeExistsInClusterInfo(String targetIp, String targetPort) {
         try {
             ClusterInfo clusterInfo = iginxDao.getClusterInfo();
@@ -169,7 +253,21 @@ public class NodeDeployService {
         }
     }
 
-
+    private boolean nodeExistsInClusterByIp(String targetIp) {
+        try {
+            ClusterInfo clusterInfo = iginxDao.getClusterInfo();
+            if (clusterInfo.getIginxInfos() != null) {
+                for (IginxInfo iginxInfo : clusterInfo.getIginxInfos()) {
+                    if (targetIp.equals(iginxInfo.getIp())) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        } catch (Exception e) {
+            return false;
+        }
+    }
 
     private void runCommand(List<String> command, DeployTaskState taskState) {
         ProcessBuilder builder = new ProcessBuilder(command);
@@ -201,14 +299,14 @@ public class NodeDeployService {
             boolean done = process.waitFor(DEPLOY_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!done) {
                 process.destroyForcibly();
-                throw new RuntimeException("部署命令执行超时");
+                throw new RuntimeException("命令执行超时");
             }
 
             if (process.exitValue() != 0) {
-                throw new RuntimeException("部署命令执行失败: " + output.toString());
+                throw new RuntimeException("命令执行失败: " + output.toString());
             }
         } catch (Exception e) {
-            throw new RuntimeException("部署失败: " + e.getMessage(), e);
+            throw new RuntimeException("执行失败: " + e.getMessage(), e);
         }
     }
 
@@ -225,7 +323,6 @@ public class NodeDeployService {
         }
         return value.trim();
     }
-
 
     private void appendLog(DeployTaskState taskState, String line) {
         if (line == null) {
@@ -270,7 +367,7 @@ public class NodeDeployService {
         private DeployTaskState(String taskId) {
             this.taskId = taskId;
             this.status = "RUNNING";
-            this.currentStep = "准备部署";
+            this.currentStep = "准备中";
             this.completed = false;
         }
     }
@@ -281,36 +378,13 @@ public class NodeDeployService {
         private String port;
         private String nodeType;
 
-        public Integer getClusterId() {
-            return clusterId;
-        }
-
-        public void setClusterId(Integer clusterId) {
-            this.clusterId = clusterId;
-        }
-
-        public String getIp() {
-            return ip;
-        }
-
-        public void setIp(String ip) {
-            this.ip = ip;
-        }
-
-        public String getPort() {
-            return port;
-        }
-
-        public void setPort(String port) {
-            this.port = port;
-        }
-
-        public String getNodeType() {
-            return nodeType;
-        }
-
-        public void setNodeType(String nodeType) {
-            this.nodeType = nodeType;
-        }
+        public Integer getClusterId() { return clusterId; }
+        public void setClusterId(Integer clusterId) { this.clusterId = clusterId; }
+        public String getIp() { return ip; }
+        public void setIp(String ip) { this.ip = ip; }
+        public String getPort() { return port; }
+        public void setPort(String port) { this.port = port; }
+        public String getNodeType() { return nodeType; }
+        public void setNodeType(String nodeType) { this.nodeType = nodeType; }
     }
 }

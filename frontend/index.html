@@ -260,28 +260,30 @@
           <input type="text" id="cluster-port-input" class="input" placeholder="6888">
         </div>
         <div class="form-group">
-          <label class="form-label">SSH用户名</label>
-          <input type="text" id="cluster-ssh-user-input" class="input" placeholder="ubuntu">
-        </div>
-        <div class="form-group">
-          <label class="form-label">SSH密码</label>
-          <input type="password" id="cluster-ssh-password-input" class="input" placeholder="请输入目标节点登录密码">
-        </div>
-        <div class="form-group">
-          <label class="form-label">远程部署目录</label>
-          <input type="text" id="cluster-deploy-dir-input" class="input" placeholder="/opt/iginx">
-        </div>
-        <div class="form-group">
-          <label class="form-label">部署包路径（可选）</label>
-          <input type="text" id="cluster-package-path-input" class="input" placeholder="/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz">
-        </div>
-        <div class="form-group">
-          <label class="form-label">ZooKeeper连接串</label>
-          <input type="text" id="cluster-zk-input" class="input" placeholder="192.168.1.100:2181">
-        </div>
-        <div class="form-group">
           <label class="form-label">描述</label>
           <textarea id="cluster-desc-input" class="input" rows="2" placeholder="节点描述信息"></textarea>
+        </div>
+        <div id="cluster-deploy-fields">
+          <div class="form-group">
+            <label class="form-label">SSH用户名</label>
+            <input type="text" id="cluster-ssh-user-input" class="input" placeholder="ubuntu">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SSH密码</label>
+            <input type="password" id="cluster-ssh-password-input" class="input" placeholder="请输入目标节点登录密码">
+          </div>
+          <div class="form-group">
+            <label class="form-label">远程部署目录</label>
+            <input type="text" id="cluster-deploy-dir-input" class="input" placeholder="/opt/iginx">
+          </div>
+          <div class="form-group">
+            <label class="form-label">部署包路径（可选）</label>
+            <input type="text" id="cluster-package-path-input" class="input" placeholder="/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz">
+          </div>
+          <div class="form-group">
+            <label class="form-label">ZooKeeper连接串</label>
+            <input type="text" id="cluster-zk-input" class="input" placeholder="192.168.1.100:2181">
+          </div>
         </div>
         <div class="form-group hidden" id="cluster-deploy-progress-wrap">
           <label class="form-label">部署进度</label>
@@ -292,6 +294,41 @@
       <div class="modal-footer">
         <button id="cluster-modal-cancel" class="btn btn-secondary">取消</button>
         <button id="cluster-modal-save" class="btn btn-primary">确认</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ===== 模态框: 节点删除确认 ===== -->
+  <div id="modal-cluster-delete" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">删除节点</span>
+        <button class="modal-close" id="cluster-delete-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="cluster-delete-info" style="margin-bottom:12px;color:#ff6b6b;font-size:13px;">确定要停止并删除该节点？此操作不可撤销。</p>
+        <div class="form-group">
+          <label class="form-label">SSH用户名</label>
+          <input type="text" id="cluster-delete-ssh-user" class="input" placeholder="ubuntu">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH密码</label>
+          <input type="password" id="cluster-delete-ssh-password" class="input" placeholder="请输入SSH密码">
+        </div>
+        <div class="form-group">
+          <label class="form-label">远程部署目录</label>
+          <input type="text" id="cluster-delete-deploy-dir" class="input" placeholder="/opt/iginx">
+        </div>
+        <div class="form-group hidden" id="cluster-delete-progress-wrap">
+          <label class="form-label">停止进度</label>
+          <div id="cluster-delete-current-step" class="code-block" style="white-space:normal;padding:8px 10px;">等待开始...</div>
+          <pre id="cluster-delete-log" class="code-block" style="max-height:150px;overflow:auto;">暂无日志</pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cluster-delete-modal-cancel" class="btn btn-secondary">取消</button>
+        <button id="cluster-delete-modal-confirm" class="btn btn-danger">确认删除</button>
       </div>
     </div>
   </div>

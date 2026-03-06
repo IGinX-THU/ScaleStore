@@ -12,6 +12,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 public class ClusterController {
@@ -43,7 +44,7 @@ public class ClusterController {
         NodeDeployTaskStatus taskStatus = nodeService.getDeployTaskStatus(taskId);
         if (taskStatus == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND)
-                    .body(Response.error(ResultCode.NOT_FOUND.getCode(), "部署任务不存在"));
+                    .body(Response.error(ResultCode.NOT_FOUND.getCode(), "任务不存在"));
         }
         return ResponseEntity.ok(Response.success(taskStatus));
     }
@@ -58,9 +59,19 @@ public class ClusterController {
         }
     }
 
+    /**
+     * Update node name and description only.
+     * Accepts JSON body: { "name": "...", "description": "..." }
+     */
     @PutMapping("/config/nodes/{id}")
-    public ResponseEntity<Response<Node>> updateNode(@PathVariable Integer id, @ModelAttribute Node node) {
-        Node updatedNode = nodeService.updateNode(id, node);
+    public ResponseEntity<Response<Node>> updateNode(@PathVariable Integer id, @RequestBody Map<String, String> body) {
+        String name = body.get("name");
+        String description = body.get("description");
+        if (name == null || name.trim().isEmpty()) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Response.error(ResultCode.PARAM_ERROR.getCode(), "节点名不能为空"));
+        }
+        Node updatedNode = nodeService.updateNode(id, name.trim(), description != null ? description.trim() : "");
         if (updatedNode != null) {
             return ResponseEntity.ok(Response.success(updatedNode));
         } else {
@@ -68,6 +79,30 @@ public class ClusterController {
         }
     }
 
+    /**
+     * Stop and remove a node asynchronously via SSH.
+     * Accepts JSON body with sshUsername, sshPassword, deployDirectory.
+     */
+    @PostMapping("/config/nodes/{id}/stop")
+    public ResponseEntity<Response<NodeDeployTaskStatus>> stopNode(@PathVariable Integer id,
+                @RequestBody NodeDeployRequest request) {
+        try {
+            NodeDeployTaskStatus taskStatus = nodeService.deleteNodeAsync(id,
+                    request.getSshUsername(), request.getSshPassword(), request.getDeployDirectory());
+            return ResponseEntity.status(HttpStatus.ACCEPTED).body(Response.success(taskStatus));
+        } catch (RuntimeException e) {
+            if (e.getMessage() != null && e.getMessage().contains("节点不存在")) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                        .body(Response.error(ResultCode.NODE_NOT_FOUND));
+            }
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(Response.error(ResultCode.PARAM_ERROR.getCode(), e.getMessage()));
+        }
+    }
+
+    /**
+     * Simple soft-delete of sys.node metadata (does not stop the remote process).
+     */
     @DeleteMapping("/config/nodes/{id}")
     public ResponseEntity<Response<Void>> deleteNode(@PathVariable Integer id) {
         boolean deleted = nodeService.deleteNode(id);

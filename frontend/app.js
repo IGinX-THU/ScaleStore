@@ -180,97 +180,121 @@ function bindClusterRowEvents() {
     btn.addEventListener('click', function () {
       const node = clusterData.find(n => n.id === +this.dataset.id);
       if (!node) return;
-      openClusterModal('查看详情', node, true);
+      openClusterModal('查看节点', node, 'view');
     });
   });
   document.querySelectorAll('.cluster-set-btn').forEach(btn => {
     btn.addEventListener('click', function () {
       const node = clusterData.find(n => n.id === +this.dataset.id);
       if (!node) return;
-      openClusterModal('编辑节点', node, false);
+      openClusterModal('编辑节点', node, 'edit');
     });
   });
   document.querySelectorAll('.cluster-delete-btn').forEach(btn => {
-    btn.addEventListener('click', async function () {
+    btn.addEventListener('click', function () {
       const id = +this.dataset.id;
-      if (confirm('确定要删除该节点吗？')) {
-        try {
-          await deleteClusterNodeById(id);
-          await loadClusterNodes();
-        } catch (e) {
-          alert('删除失败: ' + e.message);
-        }
-        renderClusterTable();
-        initClusterTopology();
-      }
+      const node = clusterData.find(n => n.id === id);
+      if (node) openDeleteModal(node);
     });
   });
 }
 
-function openClusterModal(title, data, readonly) {
+function openClusterModal(title, data, mode) {
+  // mode: 'add', 'edit', 'view'
   $('cluster-modal-title').textContent = title;
   $('cluster-name-input').value = data ? data.name : '';
   $('cluster-ip-input').value = data ? data.ip : '';
   $('cluster-port-input').value = data ? data.port : '';
   $('cluster-desc-input').value = data ? (data.description || data.desc || '') : '';
-  $('cluster-ssh-user-input').value = '';
-  $('cluster-ssh-password-input').value = '';
-  $('cluster-deploy-dir-input').value = '/opt/iginx';
-  $('cluster-package-path-input').value = '/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz';
-  $('cluster-zk-input').value = '127.0.0.1:2181';
-  const inputs = [
-    'cluster-name-input', 'cluster-ip-input', 'cluster-port-input', 'cluster-desc-input',
-    'cluster-ssh-user-input', 'cluster-ssh-password-input', 'cluster-deploy-dir-input',
-    'cluster-package-path-input', 'cluster-zk-input'
-  ];
-  inputs.forEach(id => $(id).disabled = readonly);
-  $('cluster-modal-save').classList.toggle('hidden', readonly);
-  $('cluster-modal-save').dataset.editId = data ? data.id : '';
+
+  const isView = mode === 'view';
+  const isEdit = mode === 'edit';
+  const isAdd = mode === 'add';
+
+  // Name and description: editable in add and edit modes
+  $('cluster-name-input').disabled = isView;
+  $('cluster-desc-input').disabled = isView;
+
+  // IP and port: only editable in add mode
+  $('cluster-ip-input').disabled = !isAdd;
+  $('cluster-port-input').disabled = !isAdd;
+
+  // Deploy/SSH fields: only visible in add mode
+  const deployFields = $('cluster-deploy-fields');
+  if (deployFields) {
+    deployFields.style.display = isAdd ? '' : 'none';
+  }
+
+  if (isAdd) {
+    $('cluster-ssh-user-input').value = '';
+    $('cluster-ssh-password-input').value = '';
+    $('cluster-deploy-dir-input').value = '/opt/iginx';
+    $('cluster-package-path-input').value = '/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz';
+    $('cluster-zk-input').value = '127.0.0.1:2181';
+  }
+
+  // Save button
+  $('cluster-modal-save').classList.toggle('hidden', isView);
+  $('cluster-modal-save').dataset.editId = (isEdit && data) ? data.id : '';
+  $('cluster-modal-save').dataset.mode = mode;
+  $('cluster-modal-save').textContent = isAdd ? '确认' : '保存';
+
+  // Progress section
   $('cluster-deploy-progress-wrap').classList.add('hidden');
   $('cluster-deploy-current-step').textContent = '等待开始...';
   $('cluster-deploy-log').textContent = '暂无日志';
-  if (readonly) {
-    $('cluster-ssh-user-input').value = '-';
-    $('cluster-ssh-password-input').value = '';
-    $('cluster-deploy-dir-input').value = '-';
-    $('cluster-package-path-input').value = '-';
-    $('cluster-zk-input').value = '-';
-  }
+
   showModal('modal-cluster');
 }
 
-$('cluster-add-btn').addEventListener('click', () => openClusterModal('添加节点', null, false));
+$('cluster-add-btn').addEventListener('click', () => openClusterModal('添加节点', null, 'add'));
 
 $('cluster-modal-cancel').addEventListener('click', () => hideModal('modal-cluster'));
 $('cluster-modal-close-x').addEventListener('click', () => hideModal('modal-cluster'));
 
 $('cluster-modal-save').addEventListener('click', async () => {
-  const name = $('cluster-name-input').value.trim();
-  const ip = $('cluster-ip-input').value.trim();
-  const port = $('cluster-port-input').value.trim();
-  const desc = $('cluster-desc-input').value.trim();
-  const sshUsername = $('cluster-ssh-user-input').value.trim();
-  const sshPassword = $('cluster-ssh-password-input').value;
-  const deployDirectory = $('cluster-deploy-dir-input').value.trim();
-  const packagePath = $('cluster-package-path-input').value.trim();
-  const zookeeperConnectionString = $('cluster-zk-input').value.trim();
-
-  if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
-    alert('请填写完整信息（SSH密码为必填）');
-    return;
-  }
-
+  const mode = $('cluster-modal-save').dataset.mode;
   const saveBtn = $('cluster-modal-save');
-  saveBtn.disabled = true;
-  saveBtn.textContent = '部署中...';
 
-  const editId = $('cluster-modal-save').dataset.editId;
-  try {
-    if (editId) {
-      await updateClusterNode(editId, { name, ip, port, description: desc });
+  if (mode === 'edit') {
+    // Edit mode: only update name and description
+    const name = $('cluster-name-input').value.trim();
+    const desc = $('cluster-desc-input').value.trim();
+    if (!name) { alert('节点名不能为空'); return; }
+
+    const editId = $('cluster-modal-save').dataset.editId;
+    saveBtn.disabled = true;
+    saveBtn.textContent = '保存中...';
+    try {
+      await updateClusterNode(editId, { name, description: desc });
       await refreshClusterView(true);
       hideModal('modal-cluster');
-    } else {
+    } catch (e) {
+      alert('更新失败: ' + e.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '保存';
+    }
+  } else {
+    // Add mode: deploy new node
+    const name = $('cluster-name-input').value.trim();
+    const ip = $('cluster-ip-input').value.trim();
+    const port = $('cluster-port-input').value.trim();
+    const desc = $('cluster-desc-input').value.trim();
+    const sshUsername = $('cluster-ssh-user-input').value.trim();
+    const sshPassword = $('cluster-ssh-password-input').value;
+    const deployDirectory = $('cluster-deploy-dir-input').value.trim();
+    const packagePath = $('cluster-package-path-input').value.trim();
+    const zookeeperConnectionString = $('cluster-zk-input').value.trim();
+
+    if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
+      alert('请填写完整信息（SSH密码为必填）');
+      return;
+    }
+
+    saveBtn.disabled = true;
+    saveBtn.textContent = '部署中...';
+    try {
       $('cluster-deploy-progress-wrap').classList.remove('hidden');
       renderDeployTaskProgress({
         currentStep: '已提交部署任务，等待执行...',
@@ -292,12 +316,12 @@ $('cluster-modal-save').addEventListener('click', async () => {
       await waitForDeployTask(task.taskId);
       await refreshClusterView(true);
       hideModal('modal-cluster');
+    } catch (e) {
+      alert('操作失败: ' + e.message);
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = '确认';
     }
-  } catch (e) {
-    alert('操作失败: ' + e.message);
-  } finally {
-    saveBtn.disabled = false;
-    saveBtn.textContent = '确认';
   }
 });
 
@@ -422,14 +446,10 @@ async function refreshClusterView(silent) {
 }
 
 async function updateClusterNode(id, payload) {
-  const formData = new FormData();
-  formData.append('name', payload.name);
-  formData.append('ip', payload.ip);
-  formData.append('port', payload.port);
-  formData.append('description', payload.description || '');
   const response = await fetch(`${API_BASE}/config/nodes/${id}`, {
     method: 'PUT',
-    body: formData,
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: payload.name, description: payload.description || '' }),
   });
   const result = await response.json();
   if (!response.ok || result.code >= 400) {
@@ -446,6 +466,120 @@ async function deleteClusterNodeById(id) {
   if (!response.ok || result.code >= 400) {
     throw new Error(result.message || '删除节点失败');
   }
+}
+
+// ==================== 节点删除 (SSH停止) ====================
+function openDeleteModal(node) {
+  $('cluster-delete-info').innerHTML = '确定要停止并删除节点 <strong>' + escapeHtml(node.name) + '</strong> (' + escapeHtml(node.ip) + ':' + escapeHtml(node.port) + ') 吗？此操作不可撤销。';
+  $('cluster-delete-ssh-user').value = '';
+  $('cluster-delete-ssh-password').value = '';
+  $('cluster-delete-deploy-dir').value = '/opt/iginx';
+  $('cluster-delete-progress-wrap').classList.add('hidden');
+  $('cluster-delete-current-step').textContent = '等待开始...';
+  $('cluster-delete-log').textContent = '暂无日志';
+  $('cluster-delete-modal-confirm').disabled = false;
+  $('cluster-delete-modal-confirm').textContent = '确认删除';
+  $('cluster-delete-modal-confirm').dataset.nodeId = node.id;
+  showModal('modal-cluster-delete');
+}
+
+$('cluster-delete-modal-cancel').addEventListener('click', () => hideModal('modal-cluster-delete'));
+$('cluster-delete-modal-close-x').addEventListener('click', () => hideModal('modal-cluster-delete'));
+
+$('cluster-delete-modal-confirm').addEventListener('click', async () => {
+  const nodeId = $('cluster-delete-modal-confirm').dataset.nodeId;
+  const sshUsername = $('cluster-delete-ssh-user').value.trim();
+  const sshPassword = $('cluster-delete-ssh-password').value;
+  const deployDirectory = $('cluster-delete-deploy-dir').value.trim();
+
+  if (!sshUsername || !sshPassword) {
+    alert('请填写SSH凭据');
+    return;
+  }
+
+  const btn = $('cluster-delete-modal-confirm');
+  btn.disabled = true;
+  btn.textContent = '停止中...';
+  $('cluster-delete-progress-wrap').classList.remove('hidden');
+
+  try {
+    const task = await stopClusterNode(nodeId, { sshUsername, sshPassword, deployDirectory });
+    await waitForStopTask(task.taskId);
+    await refreshClusterView(true);
+    hideModal('modal-cluster-delete');
+  } catch (e) {
+    alert('停止失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '确认删除';
+  }
+});
+
+async function stopClusterNode(id, payload) {
+  const response = await fetch(`${API_BASE}/config/nodes/${id}/stop`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json();
+  if (!response.ok || result.code >= 400) {
+    throw new Error(result.message || '停止节点失败');
+  }
+  if (!result.data || !result.data.taskId) {
+    throw new Error('停止任务创建失败');
+  }
+  return result.data;
+}
+
+async function waitForStopTask(taskId) {
+  while (true) {
+    const task = await queryDeployTask(taskId);
+    renderStopTaskProgress(task);
+    if (task.completed) {
+      if (task.status !== 'SUCCESS') {
+        throw new Error(task.errorMessage || '停止失败');
+      }
+      return task;
+    }
+    await sleep(1200);
+  }
+}
+
+function renderStopTaskProgress(task) {
+  const allLogs = Array.isArray(task.logs) ? task.logs : [];
+  const steps = allLogs.filter(l => l.includes('[INFO]') || l.includes('[STEP]') || l.includes('[DONE]') || l.includes('[WAIT]'));
+  const knownSteps = [
+    { key: '测试', label: '测试SSH连接' },
+    { key: '停止脚本', label: '检查脚本' },
+    { key: '停止 IGinX', label: '停止IGinX' },
+    { key: '等待', label: '等待退出' },
+    { key: '校验', label: '校验集群' },
+  ];
+
+  let stepHtml = '<div class="deploy-steps">';
+  const currentStep = task.currentStep || '执行中...';
+  let lastDoneIdx = -1;
+  knownSteps.forEach((s, i) => {
+    if (steps.some(l => l.includes(s.key))) lastDoneIdx = i;
+  });
+  knownSteps.forEach((s, i) => {
+    let cls = 'step-pending';
+    if (task.completed && task.status === 'SUCCESS') {
+      cls = 'step-done';
+    } else if (i < lastDoneIdx) {
+      cls = 'step-done';
+    } else if (i === lastDoneIdx) {
+      const nextStarted = (i + 1 < knownSteps.length) && steps.some(l => l.includes(knownSteps[i + 1].key));
+      cls = nextStarted ? 'step-done' : 'step-active';
+    }
+    stepHtml += '<div class="deploy-step ' + cls + '"><span class="step-num">' + (i + 1) + '</span><span class="step-label">' + s.label + '</span></div>';
+  });
+  stepHtml += '</div>';
+
+  $('cluster-delete-current-step').innerHTML = stepHtml + '<div class="deploy-current-info">' + escapeHtml(currentStep) + '</div>';
+  const logEl = $('cluster-delete-log');
+  logEl.textContent = allLogs.length > 0 ? allLogs.join('\n') : '暂无日志';
+  logEl.scrollTop = logEl.scrollHeight;
 }
 
 // ==================== 拓扑图 ====================
@@ -501,7 +635,7 @@ function initClusterTopology() {
       layout: 'force',
       data: nodes,
       links,
-      categories: [{ name: '主节点' }, { name: 'IGinX节点' }],
+      categories: [{ name: '主节点', itemStyle: { color: '#00e68a' } }, { name: 'IGinX节点', itemStyle: { color: '#00cfff' } }],
       roam: true,
       draggable: true,
       label: { show: true, position: 'bottom', color: '#8cb8d0', fontSize: 9 },

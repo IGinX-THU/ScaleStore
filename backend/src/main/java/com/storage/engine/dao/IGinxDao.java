@@ -105,7 +105,7 @@ public class IGinxDao {
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-                          long fileSize, String fileFormat, String createTime) {
+                                  long fileSize, String fileFormat, String createTime) {
       String sql = String.format(Locale.ROOT,
               "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid) " +
               "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
@@ -187,6 +187,7 @@ public class IGinxDao {
           throw new RuntimeException("Failed to get cluster info: " + e.getMessage(), e);
       }
   }
+
   private String escapeSql(String value) {
       if (value == null) return "";
       return value.replace("'", "\\'");
