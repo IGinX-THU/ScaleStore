@@ -93,6 +93,7 @@ let currentInterfaceType = 'rest';
 let metadataChart = null;
 let topologyChart = null;
 let clusterHeartbeatTimer = null;
+let deployInProgress = false;
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -219,6 +220,10 @@ function openClusterModal(title, data, mode) {
   $('cluster-ip-input').disabled = !isAdd;
   $('cluster-port-input').disabled = !isAdd;
 
+  // Rest/data port fields: only visible in add mode
+  var restPortGroup = $('cluster-rest-port-group');
+  if (restPortGroup) restPortGroup.style.display = isAdd ? '' : 'none';
+
   // Deploy/SSH fields: only visible in add mode
   const deployFields = $('cluster-deploy-fields');
   if (deployFields) {
@@ -228,9 +233,20 @@ function openClusterModal(title, data, mode) {
   if (isAdd) {
     $('cluster-ssh-user-input').value = '';
     $('cluster-ssh-password-input').value = '';
-    $('cluster-deploy-dir-input').value = '/opt/iginx';
-    $('cluster-package-path-input').value = '/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz';
-    $('cluster-zk-input').value = '127.0.0.1:2181';
+    $('cluster-deploy-dir-input').value = '~';
+    $('cluster-port-input').value = '6888';
+    $('cluster-rest-port-input').value = '7888';
+
+    $('cluster-zk-input').value = '';
+    // Auto-detect server IP for ZK default
+    fetch(API_BASE + '/config/server-info')
+      .then(function(r) { return r.json(); })
+      .then(function(d) {
+        if (d && d.data && d.data.ip) {
+          $('cluster-zk-input').value = d.data.ip + ':2181';
+        }
+      })
+      .catch(function() {});
   }
 
   // Save button
@@ -284,7 +300,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
     const sshUsername = $('cluster-ssh-user-input').value.trim();
     const sshPassword = $('cluster-ssh-password-input').value;
     const deployDirectory = $('cluster-deploy-dir-input').value.trim();
-    const packagePath = $('cluster-package-path-input').value.trim();
+    const restPort = $('cluster-rest-port-input').value.trim();
     const zookeeperConnectionString = $('cluster-zk-input').value.trim();
 
     if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
@@ -294,6 +310,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
 
     saveBtn.disabled = true;
     saveBtn.textContent = '部署中...';
+    deployInProgress = true;
     try {
       $('cluster-deploy-progress-wrap').classList.remove('hidden');
       renderDeployTaskProgress({
@@ -309,7 +326,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
         sshUsername,
         sshPassword,
         deployDirectory,
-        packagePath,
+        restPort: restPort || '7888',
         zookeeperConnectionString,
       });
 
@@ -319,6 +336,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
     } catch (e) {
       alert('操作失败: ' + e.message);
     } finally {
+      deployInProgress = false;
       saveBtn.disabled = false;
       saveBtn.textContent = '确认';
     }
@@ -338,6 +356,7 @@ async function loadClusterNodes() {
     port: item.port,
     desc: item.description || '',
     description: item.description || '',
+    deployDirectory: item.deployDirectory || '~',
     status: item.status || 'ONLINE',
     nodeType: item.nodeType || 'iginx',
   }));
@@ -473,7 +492,7 @@ function openDeleteModal(node) {
   $('cluster-delete-info').innerHTML = '确定要停止并删除节点 <strong>' + escapeHtml(node.name) + '</strong> (' + escapeHtml(node.ip) + ':' + escapeHtml(node.port) + ') 吗？此操作不可撤销。';
   $('cluster-delete-ssh-user').value = '';
   $('cluster-delete-ssh-password').value = '';
-  $('cluster-delete-deploy-dir').value = '/opt/iginx';
+  $('cluster-delete-deploy-dir').value = node.deployDirectory || '~';
   $('cluster-delete-progress-wrap').classList.add('hidden');
   $('cluster-delete-current-step').textContent = '等待开始...';
   $('cluster-delete-log').textContent = '暂无日志';
@@ -500,6 +519,7 @@ $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   const btn = $('cluster-delete-modal-confirm');
   btn.disabled = true;
   btn.textContent = '停止中...';
+  deployInProgress = true;
   $('cluster-delete-progress-wrap').classList.remove('hidden');
 
   try {
@@ -510,6 +530,7 @@ $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   } catch (e) {
     alert('停止失败: ' + e.message);
   } finally {
+    deployInProgress = false;
     btn.disabled = false;
     btn.textContent = '确认删除';
   }
@@ -1373,10 +1394,24 @@ async function init() {
     clearInterval(clusterHeartbeatTimer);
   }
   clusterHeartbeatTimer = setInterval(() => {
-    refreshClusterView(true);
+    if (!deployInProgress) refreshClusterView(true);
   }, 15000);
 
 }
+
+
+// ==================== 密码可见性切换 ====================
+document.querySelectorAll('.password-toggle').forEach(btn => {
+  btn.addEventListener('click', function () {
+    const targetId = this.dataset.target;
+    const input = document.getElementById(targetId);
+    if (!input) return;
+    const isPassword = input.type === 'password';
+    input.type = isPassword ? 'text' : 'password';
+    this.querySelector('.eye-open').style.display = isPassword ? 'none' : '';
+    this.querySelector('.eye-closed').style.display = isPassword ? '' : 'none';
+  });
+});
 
 init();
 console.log('可扩展存储引擎可视化大屏初始化完成');

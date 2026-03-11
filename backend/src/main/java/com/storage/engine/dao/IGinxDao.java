@@ -57,14 +57,29 @@ public class IGinxDao {
   // Node operations
 
   public void insertNode(long key, String name, String ip, String port, String description, String status, boolean isValid) {
-      String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', %b);",
-              IGinxConstants.NODES_PATH,
-              key, name, ip, port, description, status, isValid);
-      executeSql(sql);
+      insertNode(key, name, ip, port, description, status, isValid, null);
+  }
+
+  public void insertNode(long key, String name, String ip, String port, String description, String status, boolean isValid, String deployDirectory) {
+      if (deployDirectory != null && !deployDirectory.isEmpty()) {
+          String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid, deployDirectory) values (%d, '%s', '%s', '%s', '%s', '%s', %b, '%s');",
+                  IGinxConstants.NODES_PATH,
+                  key, name, ip, port, description, status, isValid, deployDirectory);
+          executeSql(sql);
+      } else {
+          String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', %b);",
+                  IGinxConstants.NODES_PATH,
+                  key, name, ip, port, description, status, isValid);
+          executeSql(sql);
+      }
   }
 
   public void updateNode(long key, String name, String ip, String port, String description, String status) {
-      insertNode(key, name, ip, port, description, status, true);
+      insertNode(key, name, ip, port, description, status, true, null);
+  }
+
+  public void updateNode(long key, String name, String ip, String port, String description, String status, String deployDirectory) {
+      insertNode(key, name, ip, port, description, status, true, deployDirectory);
   }
 
   public void deleteNode(long key) {
@@ -74,7 +89,12 @@ public class IGinxDao {
   }
 
   public SessionExecuteSqlResult getAllNodes() {
-      return executeSql("select * from " + IGinxConstants.NODES_PATH + ";");
+      try {
+          return executeSql("select * from " + IGinxConstants.NODES_PATH + ";");
+      } catch (RuntimeException e) {
+          // sys.node path may not exist yet on a fresh IGinX instance
+          return null;
+      }
   }
 
   public SessionExecuteSqlResult getNodeById(long key) {
@@ -82,10 +102,14 @@ public class IGinxDao {
   }
 
   public long getMaxNodeId() {
-      SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.NODES_PATH + ";");
-      if (result.getKeys() != null && result.getKeys().length > 0) {
-          long[] keys = result.getKeys();
-          return keys[keys.length - 1];
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.NODES_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // sys.node path may not exist yet
       }
       return -1;
   }
@@ -105,7 +129,7 @@ public class IGinxDao {
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-                                  long fileSize, String fileFormat, String createTime) {
+                                            long fileSize, String fileFormat, String createTime) {
       String sql = String.format(Locale.ROOT,
               "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid) " +
               "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
@@ -137,54 +161,40 @@ public class IGinxDao {
 
   // ==================== Data Insertion using Programmatic API ====================
 
-  /**
-   * Insert column-oriented records into IGinX.
-   * Used for time series, relational, and other structured data.
-   */
   public void insertColumnRecords(List<String> paths, long[] timestamps,
                                    Object[] valuesList, List<DataType> dataTypeList) {
-      try {
-          session.insertColumnRecords(paths, timestamps, valuesList, dataTypeList, null);
-      } catch (SessionException e) {
-          throw new RuntimeException("Failed to insert column records: " + e.getMessage(), e);
+      synchronized (session) {
+          try {
+              session.insertColumnRecords(paths, timestamps, valuesList, dataTypeList, null);
+          } catch (SessionException e) {
+              throw new RuntimeException("Failed to insertColumnRecords", e);
+          }
       }
   }
 
   // ==================== Data Query Operations ====================
 
-  /**
-   * Query data by path prefix using SQL. Returns all columns under the path.
-   */
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
       return executeSql("select * from " + pathPrefix + ";");
   }
 
-  /**
-   * Query data with a row limit for preview purposes.
-   */
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
       return executeSql("select * from " + pathPrefix + " limit " + limit + ";");
   }
 
-  /**
-   * Delete data by path prefix.
-   */
   public void deleteDataByPath(String pathPrefix) {
       executeSql("delete from " + pathPrefix + ".*;");
   }
 
-
   // ==================== Cluster Info Operations ====================
 
-  /**
-   * Get cluster info using the structured IGinX API directly.
-   * Returns a ClusterInfo object with getIginxInfos() and getStorageEngineInfos().
-   */
   public ClusterInfo getClusterInfo() {
-      try {
-          return session.getClusterInfo();
-      } catch (SessionException e) {
-          throw new RuntimeException("Failed to get cluster info: " + e.getMessage(), e);
+      synchronized (session) {
+          try {
+              return session.getClusterInfo();
+          } catch (SessionException e) {
+              throw new RuntimeException("Failed to get cluster info", e);
+          }
       }
   }
 
@@ -193,17 +203,13 @@ public class IGinxDao {
       return value.replace("'", "\\'");
   }
 
-  /**
-   * Execute an arbitrary SQL statement on the IGinX session.
-   * Made public so adapters can use SQL batch inserts directly.
-   */
   public SessionExecuteSqlResult executeSql(String sql) {
-    SessionExecuteSqlResult sqlResult;
-    try {
-      sqlResult = session.executeSql(sql);
-    } catch (SessionException e) {
-      throw new RuntimeException("Failed to execute SQL: " + sql, e);
-    }
-    return sqlResult;
+      synchronized (session) {
+          try {
+              return session.executeSql(sql);
+          } catch (SessionException e) {
+              throw new RuntimeException("Failed to execute SQL: " + sql, e);
+          }
+      }
   }
 }

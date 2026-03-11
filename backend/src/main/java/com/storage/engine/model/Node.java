@@ -9,6 +9,7 @@ public class Node {
     private String status;
     private Boolean isValid;
     private String nodeType;
+    private String deployDirectory;
 
     public Integer getId() {
         return id;
@@ -72,6 +73,14 @@ public class Node {
 
     public void setNodeType(String nodeType) {
         this.nodeType = nodeType;
+    }
+
+    public String getDeployDirectory() {
+        return deployDirectory;
+    }
+
+    public void setDeployDirectory(String deployDirectory) {
+        this.deployDirectory = deployDirectory;
     }
 }
 

@@ -11,6 +11,10 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
+import java.net.InetAddress;
+import java.net.NetworkInterface;
+import java.util.Enumeration;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -59,10 +63,6 @@ public class ClusterController {
         }
     }
 
-    /**
-     * Update node name and description only.
-     * Accepts JSON body: { "name": "...", "description": "..." }
-     */
     @PutMapping("/config/nodes/{id}")
     public ResponseEntity<Response<Node>> updateNode(@PathVariable Integer id, @RequestBody Map<String, String> body) {
         String name = body.get("name");
@@ -79,10 +79,6 @@ public class ClusterController {
         }
     }
 
-    /**
-     * Stop and remove a node asynchronously via SSH.
-     * Accepts JSON body with sshUsername, sshPassword, deployDirectory.
-     */
     @PostMapping("/config/nodes/{id}/stop")
     public ResponseEntity<Response<NodeDeployTaskStatus>> stopNode(@PathVariable Integer id,
                 @RequestBody NodeDeployRequest request) {
@@ -100,9 +96,6 @@ public class ClusterController {
         }
     }
 
-    /**
-     * Simple soft-delete of sys.node metadata (does not stop the remote process).
-     */
     @DeleteMapping("/config/nodes/{id}")
     public ResponseEntity<Response<Void>> deleteNode(@PathVariable Integer id) {
         boolean deleted = nodeService.deleteNode(id);
@@ -111,5 +104,32 @@ public class ClusterController {
         } else {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Response.error(ResultCode.NODE_NOT_FOUND));
         }
+    }
+
+    @GetMapping("/config/server-info")
+    public ResponseEntity<Response<Map<String, String>>> getServerInfo() {
+        Map<String, String> info = new HashMap<String, String>();
+        info.put("ip", detectServerIp());
+        return ResponseEntity.ok(Response.success(info));
+    }
+
+    private String detectServerIp() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp()) continue;
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    if (addr instanceof java.net.Inet4Address) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+        } catch (Exception e) {
+            // fallback
+        }
+        return "127.0.0.1";
     }
 }

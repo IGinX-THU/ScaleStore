@@ -72,6 +72,9 @@ public class NodeDeployService {
             throw new RuntimeException("部署脚本不存在: " + deployScriptPath);
         }
 
+        String iginxPort = safeValue(request.getPort(), "6888");
+        String restPort = safeValue(request.getRestPort(), "7888");
+
         final List<String> command = new ArrayList<String>();
         command.add("bash");
         command.add(scriptFile.getAbsolutePath());
@@ -81,6 +84,8 @@ public class NodeDeployService {
         command.add(packageFile.getAbsolutePath());
         command.add(deployDir);
         command.add(zkConnection);
+        command.add(iginxPort);
+        command.add(restPort);
 
         final String taskId = UUID.randomUUID().toString();
         final DeployTaskState taskState = new DeployTaskState(taskId);
@@ -116,7 +121,7 @@ public class NodeDeployService {
 
     // ==================== Stop (Delete Node) ====================
 
-    public NodeDeployTaskStatus startStopTask(final String targetIp, final String username,
+    public NodeDeployTaskStatus startStopTask(final String targetIp, final String nodePort, final String username,
                                               final String password, final String deployDirectory,
                                               final Runnable successAction) {
         required(targetIp, "节点IP不能为空");
@@ -137,6 +142,7 @@ public class NodeDeployService {
         command.add(username);
         command.add(password);
         command.add(deployDir);
+        command.add(safeValue(nodePort, "6888"));
 
         final String taskId = UUID.randomUUID().toString();
         final DeployTaskState taskState = new DeployTaskState(taskId);
@@ -151,7 +157,7 @@ public class NodeDeployService {
                     runCommand(command, taskState);
                     taskState.currentStep = "正在校验节点已移除";
                     appendLog(taskState, "[STEP] 正在校验节点是否已从集群中移除");
-                    waitForNodeLeaveCluster(targetIp, taskState);
+                    waitForNodeLeaveCluster(targetIp, nodePort, taskState);
                     successAction.run();
                     taskState.status = "SUCCESS";
                     taskState.completed = true;
@@ -219,10 +225,11 @@ public class NodeDeployService {
                 + targetIp + ":" + expectedPort);
     }
 
-    private void waitForNodeLeaveCluster(String targetIp, DeployTaskState taskState) {
+    private void waitForNodeLeaveCluster(String targetIp, String nodePort, DeployTaskState taskState) {
+        String expectedPort = safeValue(nodePort, "6888");
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CLUSTER_WAIT_SECONDS);
         while (System.currentTimeMillis() < deadline) {
-            if (!nodeExistsInClusterByIp(targetIp)) {
+            if (!nodeExistsInClusterInfo(targetIp, expectedPort)) {
                 return;
             }
             try {
@@ -231,9 +238,9 @@ public class NodeDeployService {
                 Thread.currentThread().interrupt();
                 throw new RuntimeException("等待节点离开集群被中断", e);
             }
-            appendLog(taskState, "[WAIT] show cluster info 中仍存在 " + targetIp);
+            appendLog(taskState, "[WAIT] show cluster info 中仍存在 " + targetIp + ":" + expectedPort);
         }
-        throw new RuntimeException("停止脚本执行成功，但在 show cluster info 中仍检测到节点: " + targetIp);
+        throw new RuntimeException("停止脚本执行成功，但在 show cluster info 中仍检测到节点: " + targetIp + ":" + expectedPort);
     }
 
     private boolean nodeExistsInClusterInfo(String targetIp, String targetPort) {

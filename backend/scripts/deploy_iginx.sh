@@ -2,8 +2,8 @@
 
 # ================================================================
 # IGinX 远程部署脚本
-# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址>
-# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu Yingchihua@123 ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181
+# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <REST端口>
+# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu Yingchihua@123 ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 7888
 # ================================================================
 
 # ────────── 参数 ──────────
@@ -13,6 +13,8 @@ REMOTE_PASS=$3
 LOCAL_PACKAGE=$4
 REMOTE_INSTALL_DIR=$5
 ZK_ADDRESS=$6
+IGINX_PORT=${7:-6888}
+REST_PORT=${8:-7888}
 
 # ────────── 颜色输出 ──────────
 GREEN='\033[0;32m'
@@ -26,7 +28,7 @@ error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # ────────── 参数检查 ──────────
 if [ $# -lt 6 ]; then
-    error "参数不足。用法: $0 <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址>"
+    error "参数不足。用法: $0 <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> [IGinX端口] [REST端口]"
 fi
 
 if [ ! -f "$LOCAL_PACKAGE" ]; then
@@ -39,6 +41,8 @@ REMOTE_TARGET_DIR="$REMOTE_INSTALL_DIR/$PACKAGE_DIRNAME"
 START_SCRIPT="$REMOTE_TARGET_DIR/sbin/start_iginx.sh"
 CONFIG_FILE="$REMOTE_TARGET_DIR/conf/config.properties"
 LOG_FILE="$REMOTE_TARGET_DIR/sbin/logs/iginx.log"
+
+info "部署参数: IGinX端口=$IGINX_PORT, REST端口=$REST_PORT"
 
 # ────────── 检查 sshpass ──────────
 if ! command -v sshpass &> /dev/null; then
@@ -77,11 +81,33 @@ eval "$SSH_CMD '
 '" || error "解压失败"
 info "解压完成"
 
-# ────────── 修改 ZooKeeper 配置 ──────────
+# ────────── 修改配置文件 ──────────
+info "修改配置文件..."
+
+# 修改 ZooKeeper 连接串
 info "修改 ZooKeeper 配置为 $ZK_ADDRESS ..."
 eval "$SSH_CMD '
     sed -i \"s|zookeeperConnectionString=.*|zookeeperConnectionString=$ZK_ADDRESS|\" $CONFIG_FILE
-'" || error "修改配置文件失败"
+'" || error "修改 ZooKeeper 配置失败"
+
+# 修改 IGinX 端口 (config.properties 中的 port=6888)
+info "修改 IGinX 端口为 $IGINX_PORT ..."
+eval "$SSH_CMD '
+    sed -i \"s|^port=.*|port=$IGINX_PORT|\" $CONFIG_FILE
+'" || error "修改 IGinX 端口失败"
+
+# 修改 REST 端口 (config.properties 中的 restPort=7888)
+info "修改 REST 端口为 $REST_PORT ..."
+eval "$SSH_CMD '
+    sed -i \"s|^restPort=.*|restPort=$REST_PORT|\" $CONFIG_FILE
+'" || error "修改 REST 端口失败"
+
+# 修改 storageEngineList 中的 iginx_port
+info "修改 iginx_port 为 $IGINX_PORT ..."
+eval "$SSH_CMD '
+    sed -i \"s|^storageEngineList=127.0.0.1#[0-9]*#filesystem#iginx_port=[0-9]*#|storageEngineList=127.0.0.1#6668#filesystem#iginx_port=${IGINX_PORT}#|\" $CONFIG_FILE
+'" || error "修改数据引擎配置失败"
+
 info "配置修改完成"
 
 # ────────── 赋予执行权限 ──────────
@@ -102,23 +128,20 @@ setsid nohup $START_SCRIPT > $LOG_FILE 2>&1 < /dev/null &
 
 # ────────── 轮询检测启动状态 ──────────
 SUCCESS_KEYWORD="IGinX is now in service"
-FAIL_KEYWORD="Exception"  # 可根据需要添加更多失败关键词，如 "Error"
-WAIT_TIMEOUT=60           # 最大等待时间（秒）
+FAIL_KEYWORD="Exception"
+WAIT_TIMEOUT=60
 ELAPSED=0
 
 info "正在等待 IGinX 启动 (超时时间: ${WAIT_TIMEOUT}s)..."
 
 while [ $ELAPSED -lt $WAIT_TIMEOUT ]; do
-    # 1. 检查是否包含成功关键字
-    # grep -F 表示按固定字符串匹配，避免正则特殊字符干扰
     if eval "$SSH_CMD 'grep -q \"$SUCCESS_KEYWORD\" $LOG_FILE 2>/dev/null'"; then
-        echo "" # 换行
+        echo ""
         info "============================================"
         info "IGinX 启动成功！"
         info "已在日志中检测到关键语句: \"$SUCCESS_KEYWORD\""
         info "============================================"
         
-        # 获取 PID 展示
         PID=$(eval "$SSH_CMD 'pgrep -f iginx | head -1'")
         if [ -n "$PID" ]; then
             info "进程 PID: $PID"
@@ -127,21 +150,17 @@ while [ $ELAPSED -lt $WAIT_TIMEOUT ]; do
         break
     fi
 
-    # 2. 检查是否包含明显错误关键字（提前失败退出）
     if eval "$SSH_CMD 'grep -q \"$FAIL_KEYWORD\" $LOG_FILE 2>/dev/null'"; then
         echo ""
         error "检测到启动错误 (关键字: $FAIL_KEYWORD)，请检查日志:\n  ssh $REMOTE_USER@$REMOTE_IP 'tail -100 $LOG_FILE'"
     fi
 
-    # 3. 检查进程是否意外退出（如果进程都没了，也没打印成功日志，说明启动失败）
     PID_CHECK=$(eval "$SSH_CMD 'pgrep -f iginx | head -1'")
     if [ -z "$PID_CHECK" ] && [ $ELAPSED -gt 5 ]; then
-        # 允许前几秒进程可能还没起来，但如果运行了几秒后进程消失了，判定失败
          echo ""
          error "IGinX 进程已退出，启动失败。请查看日志:\n  ssh $REMOTE_USER@$REMOTE_IP 'tail -100 $LOG_FILE'"
     fi
 
-    # 等待并递增计数
     sleep 2
     ELAPSED=$((ELAPSED + 2))
     echo -n "."

@@ -963,3 +963,33 @@ select {
   padding: 4px 0;
   font-weight: 500;
 }
+
+/* ===== Password visibility toggle ===== */
+.password-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.password-wrapper .input {
+  padding-right: 36px;
+  width: 100%;
+}
+.password-toggle {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: #4d7a99;
+  padding: 2px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+.password-toggle:hover {
+  opacity: 1;
+}

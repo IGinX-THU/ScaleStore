@@ -60,6 +60,7 @@ public class NodeService {
                         ? meta.getName()
                         : "iginx-" + info.getClusterId());
                 node.setDescription(meta != null ? defaultString(meta.getDescription()) : "");
+                node.setDeployDirectory(meta != null ? defaultString(meta.getDeployDirectory()) : "");
                 node.setStatus("ONLINE");
                 node.setIsValid(true);
                 node.setNodeType(info.getNodeType() != null ? info.getNodeType() : "iginx");
@@ -99,12 +100,13 @@ public class NodeService {
         final String nodeIp = request.getIp().trim();
         final String nodePort = isBlank(request.getPort()) ? "6888" : request.getPort().trim();
         final String nodeDesc = defaultString(request.getDescription());
+        final String nodeDeployDir = defaultString(request.getDeployDirectory());
 
         return nodeDeployService.startDeployTask(request, 0, nodePort, new Runnable() {
             @Override
             public void run() {
                 long maxId = iginxDao.getMaxNodeId();
-                iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true);
+                iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true, nodeDeployDir);
             }
         });
     }
@@ -171,7 +173,7 @@ public class NodeService {
         }
 
         return nodeDeployService.startStopTask(
-                node.getIp(), sshUsername, sshPassword, deployDirectory,
+                node.getIp(), node.getPort(), sshUsername, sshPassword, deployDirectory,
                 new Runnable() {
                     @Override
                     public void run() {
@@ -243,7 +245,7 @@ public class NodeService {
         List<List<Object>> values = result.getValues();
         List<String> paths = result.getPaths();
 
-        int nodenameIdx = -1, ipIdx = -1, portIdx = -1, descIdx = -1, isValidIdx = -1, statusIdx = -1;
+        int nodenameIdx = -1, ipIdx = -1, portIdx = -1, descIdx = -1, isValidIdx = -1, statusIdx = -1, deployDirIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -253,6 +255,7 @@ public class NodeService {
             else if (path.endsWith("description")) descIdx = i;
             else if (path.endsWith("status")) statusIdx = i;
             else if (path.endsWith("isValid")) isValidIdx = i;
+            else if (path.endsWith("deployDirectory")) deployDirIdx = i;
         }
 
         for (int i = 0; i < keys.length; i++) {
@@ -265,6 +268,8 @@ public class NodeService {
             if (portIdx != -1) node.setPort(getValueAsString(row.get(portIdx)));
             if (descIdx != -1) node.setDescription(getValueAsString(row.get(descIdx)));
             if (statusIdx != -1) node.setStatus(getValueAsString(row.get(statusIdx)));
+            if (deployDirIdx != -1) node.setDeployDirectory(getValueAsString(row.get(deployDirIdx)));
+            if (deployDirIdx != -1) node.setDeployDirectory(getValueAsString(row.get(deployDirIdx)));
 
             boolean isValid = true;
             if (isValidIdx != -1) {

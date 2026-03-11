@@ -12,6 +12,7 @@ public class NodeDeployRequest {
     private String deployDirectory;
     private String packagePath;
     private String zookeeperConnectionString;
+    private String restPort;
 
     public Integer getId() {
         return id;
@@ -92,4 +93,13 @@ public class NodeDeployRequest {
     public void setZookeeperConnectionString(String zookeeperConnectionString) {
         this.zookeeperConnectionString = zookeeperConnectionString;
     }
+
+    public String getRestPort() {
+        return restPort;
+    }
+
+    public void setRestPort(String restPort) {
+        this.restPort = restPort;
+    }
+
 }
