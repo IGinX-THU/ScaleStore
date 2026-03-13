@@ -1061,9 +1061,14 @@ $('access-visit-btn').addEventListener('click', async () => {
 
   try {
     const response = await fetch(`${API_BASE}/access/data?logicalPath=${encodeURIComponent(path)}`);
-    const result = await response.json();
+    const contentType = response.headers.get('content-type') || '';
+    const result = contentType.includes('application/json') ? await response.json() : null;
 
-    if (result.code !== 200 || !result.data) {
+    if (!response.ok) {
+      throw new Error(result?.message || `HTTP ${response.status}`);
+    }
+
+    if (!result || result.code !== 200 || !result.data) {
       $('access-data-type').textContent = '-';
       $('access-data-size').textContent = '-';
       $('access-data-time').textContent = '-';

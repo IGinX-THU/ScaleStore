@@ -1,6 +1,7 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Node;
 import com.storage.engine.model.NodeDeployRequest;
@@ -22,6 +23,9 @@ public class NodeService {
 
     @Autowired
     private NodeDeployService nodeDeployService;
+
+    @Autowired
+    private IGinxConnectionPool connectionPool;
 
     /**
      * Get all nodes by merging show cluster info (live) with sys.node (metadata).
@@ -107,7 +111,9 @@ public class NodeService {
             public void run() {
                 long maxId = iginxDao.getMaxNodeId();
                 iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true, nodeDeployDir);
-            }
+            
+                connectionPool.addNode(nodeIp, nodePort);
+                        }
         });
     }
 
@@ -178,6 +184,8 @@ public class NodeService {
                     @Override
                     public void run() {
                         cleanupSysNode(node.getIp(), node.getPort());
+                    
+                        connectionPool.removeNode(node.getIp(), node.getPort());
                     }
                 });
     }

@@ -5,6 +5,7 @@ import cn.edu.tsinghua.iginx.session.ClusterInfo;
 import cn.edu.tsinghua.iginx.session.Session;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
+import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.constant.IGinxConstants;
 import org.springframework.stereotype.Repository;
 
@@ -12,10 +13,14 @@ import java.util.*;
 
 @Repository
 public class IGinxDao {
-  private final Session session;
+  private final IGinxConnectionPool connectionPool;
 
-  public IGinxDao(Session session) {
-    this.session = session;
+  private interface SessionAction<T> {
+      T run(Session session) throws SessionException;
+  }
+
+  public IGinxDao(IGinxConnectionPool connectionPool) {
+    this.connectionPool = connectionPool;
   }
 
   // User operations
@@ -163,13 +168,13 @@ public class IGinxDao {
 
   public void insertColumnRecords(List<String> paths, long[] timestamps,
                                    Object[] valuesList, List<DataType> dataTypeList) {
-      synchronized (session) {
-          try {
+      withRetry("insertColumnRecords", new SessionAction<Void>() {
+          @Override
+          public Void run(Session session) throws SessionException {
               session.insertColumnRecords(paths, timestamps, valuesList, dataTypeList, null);
-          } catch (SessionException e) {
-              throw new RuntimeException("Failed to insertColumnRecords", e);
+              return null;
           }
-      }
+      });
   }
 
   // ==================== Data Query Operations ====================
@@ -189,13 +194,12 @@ public class IGinxDao {
   // ==================== Cluster Info Operations ====================
 
   public ClusterInfo getClusterInfo() {
-      synchronized (session) {
-          try {
+      return withRetryPreferSeed("getClusterInfo", new SessionAction<ClusterInfo>() {
+          @Override
+          public ClusterInfo run(Session session) throws SessionException {
               return session.getClusterInfo();
-          } catch (SessionException e) {
-              throw new RuntimeException("Failed to get cluster info", e);
           }
-      }
+      });
   }
 
   private String escapeSql(String value) {
@@ -204,12 +208,45 @@ public class IGinxDao {
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {
-      synchronized (session) {
-          try {
+      return withRetry("executeSql", new SessionAction<SessionExecuteSqlResult>() {
+          @Override
+          public SessionExecuteSqlResult run(Session session) throws SessionException {
               return session.executeSql(sql);
-          } catch (SessionException e) {
-              throw new RuntimeException("Failed to execute SQL: " + sql, e);
+          }
+      });
+  }
+
+  private <T> T withRetry(String opName, SessionAction<T> action) {
+      int attempts = Math.max(connectionPool.getPoolSize(), 1);
+      RuntimeException last = null;
+      for (int i = 0; i < attempts; i++) {
+          Session s = connectionPool.getNextSession();
+          synchronized (s) {
+              try {
+                  return action.run(s);
+              } catch (SessionException e) {
+                  connectionPool.evictSession(s, opName + " failed: " + e.getMessage());
+                  last = new RuntimeException("Failed to " + opName, e);
+              }
           }
       }
+      if (last != null) {
+          throw last;
+      }
+      throw new RuntimeException("Failed to " + opName + ": no available IGinX session");
+  }
+
+  private <T> T withRetryPreferSeed(String opName, SessionAction<T> action) {
+      Session seed = connectionPool.getSeedSessionOrAny();
+      if (seed != null) {
+          synchronized (seed) {
+              try {
+                  return action.run(seed);
+              } catch (SessionException e) {
+                  connectionPool.evictSession(seed, opName + " failed on seed: " + e.getMessage());
+              }
+          }
+      }
+      return withRetry(opName, action);
   }
 }

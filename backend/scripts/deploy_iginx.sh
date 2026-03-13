@@ -67,6 +67,11 @@ eval "$SSH_CMD 'echo ok'" &> /dev/null \
     || error "无法连接到 $REMOTE_IP，请检查 IP、用户名、密码或网络"
 info "SSH 连接正常"
 
+# ────────── 确保远程目录存在 ──────────
+info "检查并创建远程安装目录: $REMOTE_INSTALL_DIR ..."
+eval "$SSH_CMD 'mkdir -p $REMOTE_INSTALL_DIR'" \
+    || error "创建远程安装目录失败: $REMOTE_INSTALL_DIR"
+
 # ────────── 拷贝安装包 ──────────
 info "正在拷贝 $PACKAGE_FILENAME 到 $REMOTE_USER@$REMOTE_IP:$REMOTE_INSTALL_DIR ..."
 eval "$SCP_CMD '$LOCAL_PACKAGE' '$REMOTE_USER@$REMOTE_IP:$REMOTE_INSTALL_DIR/'" \
@@ -102,11 +107,10 @@ eval "$SSH_CMD '
     sed -i \"s|^restPort=.*|restPort=$REST_PORT|\" $CONFIG_FILE
 '" || error "修改 REST 端口失败"
 
-# 修改 storageEngineList 中的 iginx_port
-info "修改 iginx_port 为 $IGINX_PORT ..."
-eval "$SSH_CMD '
-    sed -i \"s|^storageEngineList=127.0.0.1#[0-9]*#filesystem#iginx_port=[0-9]*#|storageEngineList=127.0.0.1#6668#filesystem#iginx_port=${IGINX_PORT}#|\" $CONFIG_FILE
-'" || error "修改数据引擎配置失败"
+# 注释 storageEngineList，避免通过该流程添加的数据引擎
+info "注释 storageEngineList，跳过数据引擎注册 ..."
+eval "$SSH_CMD 'sed -i \"s|^storageEngineList=|#storageEngineList=|\" $CONFIG_FILE'" \
+    || error "注释数据引擎配置失败"
 
 info "配置修改完成"
 
