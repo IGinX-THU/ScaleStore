@@ -2,11 +2,11 @@ package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.config.IGinxConnectionPool;
+import com.storage.engine.constant.ResultCode;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Node;
 import com.storage.engine.model.NodeDeployRequest;
 import com.storage.engine.model.NodeDeployTaskStatus;
-import com.storage.engine.constant.ResultCode;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -111,9 +111,8 @@ public class NodeService {
             public void run() {
                 long maxId = iginxDao.getMaxNodeId();
                 iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true, nodeDeployDir);
-            
                 connectionPool.addNode(nodeIp, nodePort);
-                        }
+            }
         });
     }
 
@@ -177,6 +176,7 @@ public class NodeService {
         if (node == null) {
             throw new RuntimeException("节点不存在");
         }
+        ensureNodeCanBeRemoved(node);
 
         return nodeDeployService.startStopTask(
                 node.getIp(), node.getPort(), sshUsername, sshPassword, deployDirectory,
@@ -184,7 +184,6 @@ public class NodeService {
                     @Override
                     public void run() {
                         cleanupSysNode(node.getIp(), node.getPort());
-                    
                         connectionPool.removeNode(node.getIp(), node.getPort());
                     }
                 });
@@ -194,6 +193,11 @@ public class NodeService {
      * Simple soft-delete of sys.node entry (mark isValid=false).
      */
     public boolean deleteNode(Integer clusterId) {
+        Node node = getNodeById(clusterId);
+        if (node == null) {
+            return false;
+        }
+        ensureNodeCanBeRemoved(node);
         cleanupSysNode(clusterId);
         return true;
     }
@@ -254,7 +258,6 @@ public class NodeService {
         List<String> paths = result.getPaths();
 
         int nodenameIdx = -1, ipIdx = -1, portIdx = -1, descIdx = -1, isValidIdx = -1, statusIdx = -1, deployDirIdx = -1;
-
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
             if (path.endsWith("name")) nodenameIdx = i;
@@ -329,5 +332,14 @@ public class NodeService {
 
     private String defaultString(String value) {
         return value == null ? "" : value;
+    }
+
+    private void ensureNodeCanBeRemoved(Node node) {
+        if (node == null || isBlank(node.getIp()) || isBlank(node.getPort())) {
+            return;
+        }
+        if (connectionPool.isBootstrapNode(node.getIp(), node.getPort())) {
+            throw new RuntimeException("该节点是 WebServer 启动时已存在的节点，不能移除");
+        }
     }
 }

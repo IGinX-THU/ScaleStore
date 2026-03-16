@@ -134,10 +134,10 @@ public class IGinxDao {
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-                                            long fileSize, String fileFormat, String createTime) {
+                         long fileSize, String fileFormat, String createTime) {
       String sql = String.format(Locale.ROOT,
               "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid) " +
-              "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
+                      "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
               IGinxConstants.STORAGE_META_PATH,
               key, escapeSql(logicalPath), escapeSql(dataType), escapeSql(fileName),
               fileSize, escapeSql(fileFormat), escapeSql(createTime));
@@ -165,7 +165,6 @@ public class IGinxDao {
   }
 
   // ==================== Data Insertion using Programmatic API ====================
-
   public void insertColumnRecords(List<String> paths, long[] timestamps,
                                    Object[] valuesList, List<DataType> dataTypeList) {
       withRetry("insertColumnRecords", new SessionAction<Void>() {

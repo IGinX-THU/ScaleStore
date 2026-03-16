@@ -54,6 +54,7 @@ public class IGinxConnectionPool {
 
     private final CopyOnWriteArrayList<NodeSession> sessions = new CopyOnWriteArrayList<NodeSession>();
     private final AtomicInteger counter = new AtomicInteger(0);
+    private volatile Set<String> bootstrapProtectedEndpoints = Collections.emptySet();
     private final ScheduledExecutorService refreshExecutor =
             Executors.newSingleThreadScheduledExecutor(new ThreadFactory() {
                 @Override
@@ -84,6 +85,9 @@ public class IGinxConnectionPool {
         } catch (Exception e) {
             log.warn("[ConnectionPool] Could not enumerate cluster nodes at startup: {}", e.getMessage());
         }
+
+        // Snapshot startup nodes once: these nodes are protected from removal.
+        snapshotBootstrapNodes();
 
         if (refreshIntervalMs < 1000L) {
             refreshIntervalMs = 1000L;
@@ -177,6 +181,12 @@ public class IGinxConnectionPool {
         return sessions.size();
     }
 
+    public boolean isBootstrapNode(String ip, String port) {
+        if (ip == null || port == null) {
+            return false;
+        }
+        return bootstrapProtectedEndpoints.contains(canonicalEndpoint(ip, port));
+    }
 
     /**
      * Prefer seed endpoint for cluster-level operations.
@@ -247,6 +257,19 @@ public class IGinxConnectionPool {
                 }
             }
         }
+    }
+
+    private synchronized void snapshotBootstrapNodes() {
+        Set<String> protectedSet = new HashSet<String>();
+        for (NodeSession ns : sessions) {
+            protectedSet.add(canonicalEndpoint(ns.ip, ns.port));
+        }
+        bootstrapProtectedEndpoints = protectedSet;
+        log.info("[ConnectionPool] Bootstrap-protected nodes captured: {}", bootstrapProtectedEndpoints.size());
+    }
+
+    private String canonicalEndpoint(String ip, String port) {
+        return canonicalHost(ip) + ":" + (port == null ? "" : port.trim());
     }
 
     private Session pickAnySession() {
