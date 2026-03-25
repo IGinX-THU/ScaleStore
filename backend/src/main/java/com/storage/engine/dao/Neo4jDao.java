@@ -1,0 +1,582 @@
+package com.storage.engine.dao;
+
+import com.storage.engine.model.DataItem;
+import com.storage.engine.model.MetadataExtractResult;
+import org.neo4j.driver.*;
+import org.neo4j.driver.Record;
+import org.neo4j.driver.types.Node;
+import org.neo4j.driver.types.Path;
+import org.neo4j.driver.types.Relationship;
+import org.springframework.stereotype.Repository;
+
+import javax.annotation.PreDestroy;
+import java.util.*;
+
+/**
+ * Neo4j 数据访问对象：封装元数据图谱相关 Cypher 执行。
+ */
+@Repository
+public class Neo4jDao {
+
+	@org.springframework.beans.factory.annotation.Value("${metadata.neo4j.enabled:true}")
+	private boolean neo4jEnabled;
+
+	@org.springframework.beans.factory.annotation.Value("${metadata.neo4j.uri:bolt://127.0.0.1:7687}")
+	private String neo4jUri;
+
+	@org.springframework.beans.factory.annotation.Value("${metadata.neo4j.username:neo4j}")
+	private String neo4jUsername;
+
+	@org.springframework.beans.factory.annotation.Value("${metadata.neo4j.password:neo4j}")
+	private String neo4jPassword;
+
+	private volatile Driver driver;
+	private volatile boolean constraintsReady = false;
+
+	public boolean isEnabled() {
+		return neo4jEnabled;
+	}
+
+	/**
+	 * 创建图数据库约束（幂等）。
+	 */
+	public void ensureConstraints() {
+		if (!neo4jEnabled || constraintsReady) {
+			return;
+		}
+		synchronized (this) {
+			if (constraintsReady) {
+				return;
+			}
+			Session session = getDriver().session();
+			try {
+				session.run("CREATE CONSTRAINT logical_path_unique IF NOT EXISTS FOR (p:LogicalPath) REQUIRE p.path IS UNIQUE");
+				session.run("CREATE CONSTRAINT data_asset_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.logicalPath IS UNIQUE");
+				session.run("CREATE CONSTRAINT field_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.ukey IS UNIQUE");
+				session.run("CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE");
+				constraintsReady = true;
+			} finally {
+				session.close();
+			}
+		}
+	}
+
+	/**
+	 * 将单条数据资产及其抽取语义写入 Neo4j 图谱。
+	 */
+	public void upsertKnowledgeGraph(DataItem item, MetadataExtractResult semantics) {
+		if (!neo4jEnabled || item == null) {
+			return;
+		}
+		ensureConstraints();
+
+		final String logicalPath = normalizePath(item.getLogicalPath());
+		final String dataType = safe(item.getDataType());
+		final String fileName = safe(item.getFileName());
+		final String fileFormat = safe(item.getFileFormat());
+		final long fileSize = item.getFileSize() == null ? 0L : item.getFileSize();
+		final String createTime = safe(item.getCreateTime());
+
+		final MetadataExtractResult s = semantics == null ? new MetadataExtractResult() : semantics;
+		final List<String> pathChain = buildPathChain(logicalPath);
+
+		Session session = getDriver().session();
+		try {
+			session.writeTransaction(new TransactionWork<Void>() {
+				@Override
+				public Void execute(Transaction tx) {
+					mergePathHierarchy(tx, pathChain);
+					mergeAsset(tx, logicalPath, dataType, fileName, fileFormat, fileSize, createTime);
+					linkAssetToPath(tx, logicalPath);
+					mergeFields(tx, logicalPath, s.getFields(), s.getFieldKind());
+					mergeEntities(tx, logicalPath, s.getEntities());
+					mergeSemanticTriples(tx, logicalPath, s.getTriples());
+					return null;
+				}
+			});
+		} finally {
+			session.close();
+		}
+	}
+
+	/**
+	 * 按逻辑路径前缀查询图谱子图。
+	 */
+	public Map<String, Object> queryGraph(String logicalPath, int limit) {
+		if (!neo4jEnabled) {
+			return emptyGraph("Neo4j disabled");
+		}
+		ensureConstraints();
+
+		String path = logicalPath == null ? "" : logicalPath.trim();
+		int safeLimit = Math.max(20, Math.min(limit, 500));
+
+		String cypher = "MATCH (n)-[r]->(m) "
+				+ "WHERE ($path = '' OR coalesce(n.path,n.logicalPath,'') STARTS WITH $path "
+				+ "OR coalesce(m.path,m.logicalPath,'') STARTS WITH $path) "
+				+ "RETURN n,r,m LIMIT $limit";
+
+		Session session = getDriver().session();
+		try {
+			List<Record> records = session.readTransaction(new TransactionWork<List<Record>>() {
+				@Override
+				public List<Record> execute(Transaction tx) {
+					Result result = tx.run(cypher, Values.parameters("path", path, "limit", safeLimit));
+					return result.list();
+				}
+			});
+
+			if (records.isEmpty()) {
+				List<Record> nodeOnly = session.readTransaction(new TransactionWork<List<Record>>() {
+					@Override
+					public List<Record> execute(Transaction tx) {
+						Result result = tx.run("MATCH (n) WHERE ($path='' OR coalesce(n.path,n.logicalPath,'') STARTS WITH $path) RETURN n LIMIT $limit",
+								Values.parameters("path", path, "limit", safeLimit));
+						return result.list();
+					}
+				});
+				return buildGraph(nodeOnly);
+			}
+			return buildGraph(records);
+		} finally {
+			session.close();
+		}
+	}
+
+	/**
+	 * 执行只读 Cypher 并返回可视化图结构。
+	 */
+	public Map<String, Object> queryByCypher(String cypher) {
+		if (!neo4jEnabled) {
+			return emptyGraph("Neo4j disabled");
+		}
+		Session session = getDriver().session();
+		try {
+			List<Record> records = session.run(cypher).list();
+			return buildGraph(records);
+		} finally {
+			session.close();
+		}
+	}
+
+	/**
+	 * 关键词回退查询：按 name/path/logicalPath 模糊匹配节点。
+	 */
+	public Map<String, Object> queryByKeyword(String keyword) {
+		if (!neo4jEnabled) {
+			return emptyGraph("Neo4j disabled");
+		}
+
+		String cypher = "MATCH (n) "
+				+ "WHERE toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(coalesce(n.path,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(coalesce(n.logicalPath,'')) CONTAINS toLower($kw) "
+				+ "RETURN n LIMIT 80";
+
+		Session session = getDriver().session();
+		try {
+			List<Record> records = session.run(cypher, Values.parameters("kw", keyword)).list();
+			return buildGraph(records);
+		} finally {
+			session.close();
+		}
+	}
+
+	public Map<String, Object> emptyGraph(String message) {
+		Map<String, Object> graph = new LinkedHashMap<String, Object>();
+		graph.put("nodes", Collections.emptyList());
+		graph.put("links", Collections.emptyList());
+		graph.put("categories", Collections.emptyList());
+		graph.put("nodeCount", 0);
+		graph.put("linkCount", 0);
+		graph.put("message", message);
+		return graph;
+	}
+
+	private Driver getDriver() {
+		if (driver == null) {
+			synchronized (this) {
+				if (driver == null) {
+					driver = GraphDatabase.driver(neo4jUri, AuthTokens.basic(neo4jUsername, neo4jPassword));
+				}
+			}
+		}
+		return driver;
+	}
+
+	private void mergePathHierarchy(Transaction tx, List<String> pathChain) {
+		for (int i = 0; i < pathChain.size(); i++) {
+			String path = pathChain.get(i);
+			tx.run("MERGE (p:LogicalPath {path:$path}) "
+							+ "ON CREATE SET p.name=$name, p.depth=$depth "
+							+ "ON MATCH SET p.name=$name, p.depth=$depth",
+					Values.parameters("path", path, "name", getLeafName(path), "depth", depth(path)));
+
+			if (i > 0) {
+				String parent = pathChain.get(i - 1);
+				tx.run("MATCH (a:LogicalPath {path:$parent}), (b:LogicalPath {path:$child}) "
+								+ "MERGE (a)-[:CONTAINS]->(b)",
+						Values.parameters("parent", parent, "child", path));
+			}
+		}
+	}
+
+	private void mergeAsset(Transaction tx, String logicalPath, String dataType,
+							String fileName, String fileFormat, long fileSize, String createTime) {
+		tx.run("MERGE (d:DataAsset {logicalPath:$logicalPath}) "
+						+ "ON CREATE SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime "
+						+ "ON MATCH SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime",
+				Values.parameters(
+						"logicalPath", logicalPath,
+						"dataType", dataType,
+						"fileName", fileName,
+						"fileFormat", fileFormat,
+						"fileSize", fileSize,
+						"createTime", createTime));
+	}
+
+	private void linkAssetToPath(Transaction tx, String logicalPath) {
+		String parentPath = parentPathOfData(logicalPath);
+		tx.run("MATCH (p:LogicalPath {path:$parentPath}), (d:DataAsset {logicalPath:$logicalPath}) MERGE (p)-[:HAS_DATA]->(d)",
+				Values.parameters("parentPath", parentPath, "logicalPath", logicalPath));
+	}
+
+	private void mergeFields(Transaction tx, String logicalPath, List<String> fields, String kind) {
+		if (fields == null || fields.isEmpty()) {
+			return;
+		}
+		String fieldKind = (kind == null || kind.trim().isEmpty()) ? "field" : kind;
+
+		for (String field : fields) {
+			String name = safe(field);
+			if (name.isEmpty()) {
+				continue;
+			}
+			String norm = normalize(name);
+			String ukey = fieldKind + "::" + norm;
+			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
+							+ "MERGE (f:Field {ukey:$ukey}) "
+							+ "ON CREATE SET f.norm=$norm, f.kind=$kind, f.name=$name "
+							+ "ON MATCH SET f.norm=coalesce(f.norm,$norm), f.kind=coalesce(f.kind,$kind), f.name=coalesce(f.name,$name) "
+							+ "MERGE (d)-[:HAS_FILED]->(f)",
+					Values.parameters("path", logicalPath, "ukey", ukey, "norm", norm, "kind", fieldKind, "name", name));
+		}
+	}
+
+	private void mergeEntities(Transaction tx, String logicalPath, List<String> entities) {
+		if (entities == null || entities.isEmpty()) {
+			return;
+		}
+
+		for (String entity : entities) {
+			String alias = safe(entity);
+			if (alias.isEmpty()) {
+				continue;
+			}
+
+			String canonical = normalizeDisplay(alias);
+			String norm = normalize(canonical);
+			if (norm.isEmpty()) {
+				continue;
+			}
+
+			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
+							+ "MERGE (e:Entity {norm:$norm}) ON CREATE SET e.name=$name "
+							+ "MERGE (d)-[:MENTIONS]->(e)",
+					Values.parameters("path", logicalPath, "norm", norm, "name", canonical));
+		}
+	}
+
+	private void mergeSemanticTriples(Transaction tx,
+									  String logicalPath,
+									  List<MetadataExtractResult.SemanticTriple> triples) {
+		if (triples == null || triples.isEmpty()) {
+			return;
+		}
+
+		for (MetadataExtractResult.SemanticTriple triple : triples) {
+			if (triple == null) {
+				continue;
+			}
+
+			String subjectName = normalizeDisplay(safe(triple.getSubject()));
+			String relationText = normalizeDisplay(safe(triple.getPredicate()));
+			String objectName = normalizeDisplay(safe(triple.getObject()));
+			if (subjectName.isEmpty() || relationText.isEmpty() || objectName.isEmpty()) {
+				continue;
+			}
+
+			String subjectNorm = normalize(subjectName);
+			String objectNorm = normalize(objectName);
+			if (subjectNorm.isEmpty() || objectNorm.isEmpty()) {
+				continue;
+			}
+
+			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
+							+ "MERGE (s:Entity {norm:$subjectNorm}) ON CREATE SET s.name=$subjectName "
+							+ "MERGE (o:Entity {norm:$objectNorm}) ON CREATE SET o.name=$objectName "
+							+ "MERGE (d)-[:MENTIONS]->(s) "
+							+ "MERGE (d)-[:MENTIONS]->(o) "
+							+ "MERGE (s)-[r:SEMANTIC_RELATION {relation:$relation, sourcePath:$path}]->(o) "
+							+ "SET r.updatedAt=timestamp()",
+					Values.parameters(
+							"path", logicalPath,
+							"subjectNorm", subjectNorm,
+							"subjectName", subjectName,
+							"objectNorm", objectNorm,
+							"objectName", objectName,
+							"relation", relationText));
+		}
+	}
+
+	private Map<String, Object> buildGraph(List<Record> records) {
+		Map<String, Map<String, Object>> nodeMap = new LinkedHashMap<String, Map<String, Object>>();
+		Set<String> linkKeys = new LinkedHashSet<String>();
+		List<Map<String, Object>> links = new ArrayList<Map<String, Object>>();
+		Map<String, Integer> categoryMap = new LinkedHashMap<String, Integer>();
+
+		for (Record record : records) {
+			for (String key : record.keys()) {
+				org.neo4j.driver.Value value = record.get(key);
+				if (value == null || value.isNull()) {
+					continue;
+				}
+				String typeName = value.type().name();
+				if ("NODE".equals(typeName)) {
+					addNode(value.asNode(), nodeMap, categoryMap);
+				} else if ("RELATIONSHIP".equals(typeName)) {
+					addRelationship(value.asRelationship(), nodeMap, links, linkKeys);
+				} else if ("PATH".equals(typeName)) {
+					Path path = value.asPath();
+					for (Node n : path.nodes()) {
+						addNode(n, nodeMap, categoryMap);
+					}
+					for (Relationship r : path.relationships()) {
+						addRelationship(r, nodeMap, links, linkKeys);
+					}
+				}
+			}
+		}
+
+		List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>(nodeMap.values());
+		List<Map<String, Object>> categories = new ArrayList<Map<String, Object>>();
+		for (Map.Entry<String, Integer> entry : categoryMap.entrySet()) {
+			Map<String, Object> c = new LinkedHashMap<String, Object>();
+			c.put("name", entry.getKey());
+			c.put("index", entry.getValue());
+			categories.add(c);
+		}
+
+		Map<String, Object> graph = new LinkedHashMap<String, Object>();
+		graph.put("nodes", nodes);
+		graph.put("links", links);
+		graph.put("categories", categories);
+		graph.put("nodeCount", nodes.size());
+		graph.put("linkCount", links.size());
+		return graph;
+	}
+
+	private void addNode(Node node, Map<String, Map<String, Object>> nodeMap, Map<String, Integer> categoryMap) {
+		String id = String.valueOf(node.id());
+		Map<String, Object> existing = nodeMap.get(id);
+		if (existing != null) {
+			String existingName = String.valueOf(existing.get("name"));
+			String existingCategoryName = String.valueOf(existing.get("categoryName"));
+			if (!("(unknown)".equals(existingName) || "Node".equals(existingCategoryName))) {
+				return;
+			}
+		}
+
+		String label = "Node";
+		Iterator<String> labelIt = node.labels().iterator();
+		if (labelIt.hasNext()) {
+			label = labelIt.next();
+		}
+
+		Integer category = categoryMap.get(label);
+		if (category == null) {
+			category = categoryMap.size();
+			categoryMap.put(label, category);
+		}
+
+		String name = getNodeName(node);
+		int size = calcSizeByLabel(label);
+
+		Map<String, Object> n = new LinkedHashMap<String, Object>();
+		n.put("id", id);
+		n.put("name", name);
+		n.put("category", category);
+		n.put("categoryName", label);
+		n.put("symbolSize", size);
+
+		Map<String, Object> props = new LinkedHashMap<String, Object>();
+		for (String key : node.keys()) {
+			org.neo4j.driver.Value v = node.get(key);
+			props.put(key, v == null || v.isNull() ? null : v.asObject());
+		}
+		n.put("properties", props);
+
+		nodeMap.put(id, n);
+	}
+
+	private void addRelationship(Relationship rel,
+								 Map<String, Map<String, Object>> nodeMap,
+								 List<Map<String, Object>> links,
+								 Set<String> linkKeys) {
+		String src = String.valueOf(rel.startNodeId());
+		String tgt = String.valueOf(rel.endNodeId());
+		String type = rel.type();
+		String semanticRelation = "";
+		if (rel.containsKey("relation") && rel.get("relation") != null && !rel.get("relation").isNull()) {
+			semanticRelation = String.valueOf(rel.get("relation").asObject());
+		}
+		String key = src + "->" + tgt + ":" + type + ":" + semanticRelation;
+		if (linkKeys.contains(key)) {
+			return;
+		}
+
+		if (!nodeMap.containsKey(src)) {
+			Map<String, Object> p = new LinkedHashMap<String, Object>();
+			p.put("id", src);
+			p.put("name", "(unknown)");
+			p.put("category", 0);
+			p.put("categoryName", "Node");
+			p.put("symbolSize", 20);
+			p.put("properties", Collections.emptyMap());
+			nodeMap.put(src, p);
+		}
+		if (!nodeMap.containsKey(tgt)) {
+			Map<String, Object> p = new LinkedHashMap<String, Object>();
+			p.put("id", tgt);
+			p.put("name", "(unknown)");
+			p.put("category", 0);
+			p.put("categoryName", "Node");
+			p.put("symbolSize", 20);
+			p.put("properties", Collections.emptyMap());
+			nodeMap.put(tgt, p);
+		}
+
+		Map<String, Object> link = new LinkedHashMap<String, Object>();
+		link.put("source", src);
+		link.put("target", tgt);
+		link.put("type", type);
+		link.put("label", "SEMANTIC_RELATION".equals(type) && !semanticRelation.trim().isEmpty() ? semanticRelation : type);
+		links.add(link);
+		linkKeys.add(key);
+	}
+
+	private String getNodeName(Node node) {
+		if (node.hasLabel("LogicalPath")) {
+			org.neo4j.driver.Value pathValue = node.get("path");
+			if (pathValue != null && !pathValue.isNull()) {
+				String path = String.valueOf(pathValue.asObject());
+				if ("/".equals(path)) {
+					return "/";
+				}
+				if (!path.trim().isEmpty()) {
+					return path;
+				}
+			}
+		}
+
+		String[] keys = new String[]{"name", "path", "logicalPath", "fileName", "norm"};
+		for (String key : keys) {
+			org.neo4j.driver.Value value = node.get(key);
+			if (value != null && !value.isNull()) {
+				String v = String.valueOf(value.asObject());
+				if (!v.trim().isEmpty()) {
+					return v;
+				}
+			}
+		}
+		return "(unknown)";
+	}
+
+	private int calcSizeByLabel(String label) {
+		if ("LogicalPath".equals(label)) return 42;
+		if ("DataAsset".equals(label)) return 36;
+		if ("Entity".equals(label)) return 30;
+		return 24;
+	}
+
+	private String normalizePath(String path) {
+		if (path == null || path.trim().isEmpty()) {
+			return "/";
+		}
+		String p = path.trim();
+		if (!p.startsWith("/")) {
+			p = "/" + p;
+		}
+		while (p.length() > 1 && p.endsWith("/")) {
+			p = p.substring(0, p.length() - 1);
+		}
+		return p;
+	}
+
+	private List<String> buildPathChain(String logicalPath) {
+		List<String> chain = new ArrayList<String>();
+		chain.add("/");
+		if ("/".equals(logicalPath)) {
+			return chain;
+		}
+		String[] parts = logicalPath.substring(1).split("/");
+		String current = "";
+		int dirCount = Math.max(0, parts.length - 1);
+		for (int i = 0; i < dirCount; i++) {
+			String part = parts[i];
+			if (part == null || part.trim().isEmpty()) {
+				continue;
+			}
+			current += "/" + part;
+			chain.add(current);
+		}
+		return chain;
+	}
+
+	private String parentPathOfData(String logicalPath) {
+		if (logicalPath == null || logicalPath.trim().isEmpty() || "/".equals(logicalPath)) {
+			return "/";
+		}
+		int idx = logicalPath.lastIndexOf('/');
+		if (idx <= 0) {
+			return "/";
+		}
+		return logicalPath.substring(0, idx);
+	}
+
+	private String getLeafName(String path) {
+		if (path == null || "/".equals(path)) return "/";
+		int i = path.lastIndexOf('/');
+		return i >= 0 ? path.substring(i + 1) : path;
+	}
+
+	private int depth(String path) {
+		if (path == null || "/".equals(path)) return 0;
+		int d = 0;
+		for (int i = 0; i < path.length(); i++) {
+			if (path.charAt(i) == '/') d++;
+		}
+		return d;
+	}
+
+	private String normalizeDisplay(String name) {
+		if (name == null) return "";
+		return name.trim().replaceAll("\\s+", " ");
+	}
+
+	private String normalize(String value) {
+		if (value == null) return "";
+		return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\\u4e00-\\u9fa5]", "");
+	}
+
+	private String safe(String value) {
+		return value == null ? "" : value.trim();
+	}
+
+	@PreDestroy
+	public void close() {
+		if (driver != null) {
+			driver.close();
+		}
+	}
+}

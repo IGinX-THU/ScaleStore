@@ -159,7 +159,7 @@ public class AccessService {
 
         if (keys == null || values == null || paths == null) return items;
 
-        int pathIdx = -1, typeIdx = -1, nameIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1;
+        int pathIdx = -1, typeIdx = -1, nameIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -170,6 +170,7 @@ public class AccessService {
             else if (path.endsWith("fileFormat")) formatIdx = i;
             else if (path.endsWith("createTime")) timeIdx = i;
             else if (path.endsWith("isValid")) validIdx = i;
+            else if (path.endsWith("knowledgeExtractStatus")) knowledgeStatusIdx = i;
         }
 
         for (int i = 0; i < keys.length; i++) {
@@ -189,6 +190,7 @@ public class AccessService {
             if (sizeIdx != -1) item.setFileSize(getValueAsLong(row.get(sizeIdx)));
             if (formatIdx != -1) item.setFileFormat(getValueAsString(row.get(formatIdx)));
             if (timeIdx != -1) item.setCreateTime(getValueAsString(row.get(timeIdx)));
+            if (knowledgeStatusIdx != -1) item.setKnowledgeExtractStatus(getValueAsString(row.get(knowledgeStatusIdx)));
             item.setIsValid(true);
             items.add(item);
         }

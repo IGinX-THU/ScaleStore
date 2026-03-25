@@ -168,6 +168,17 @@ body {
 .panel-access    { grid-area: access; }
 .panel-interface { grid-area: interface; }
 
+.panel-metadata .panel-header {
+  background: linear-gradient(180deg, rgba(8, 30, 60, 0.95) 0%, rgba(6, 20, 42, 0.88) 100%);
+}
+
+.panel-metadata .panel-body {
+  background:
+    radial-gradient(circle at 16% 10%, rgba(0, 207, 255, 0.16), transparent 42%),
+    radial-gradient(circle at 82% 80%, rgba(0, 144, 224, 0.14), transparent 38%),
+    linear-gradient(165deg, rgba(7, 22, 44, 0.96) 0%, rgba(9, 30, 58, 0.96) 100%);
+}
+
 /* -- Panel Component -- */
 .panel {
   background: var(--bg-panel);
@@ -739,6 +750,188 @@ select {
   width: 100%;
   height: 100%;
   min-height: 80px;
+}
+
+#metadata-graph {
+  border: 1px solid rgba(0, 180, 255, 0.22);
+  border-radius: 6px;
+}
+
+body.metadata-fullscreen-active {
+  overflow: hidden;
+}
+
+.panel-metadata.metadata-fullscreen {
+  position: fixed;
+  inset: 18px;
+  z-index: 9999;
+  grid-area: unset;
+  background: linear-gradient(165deg, rgba(6, 20, 42, 0.98) 0%, rgba(9, 30, 58, 0.98) 100%);
+  border: 1px solid rgba(0, 180, 255, 0.28);
+  box-shadow: 0 18px 40px rgba(2, 10, 22, 0.72);
+}
+
+.panel-metadata.metadata-fullscreen .panel-body {
+  padding: 8px !important;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-graph {
+  min-height: calc(100vh - 124px);
+}
+
+.panel-metadata.metadata-fullscreen .panel-actions {
+  width: auto;
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: fit-content(100%) auto auto auto auto;
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+}
+
+.panel-metadata.metadata-fullscreen .panel-title {
+  flex: 0 0 auto;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-search-btn {
+  grid-column: 2;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-build-btn {
+  grid-column: 3;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-fullscreen-btn {
+  grid-column: 4;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-exit-fullscreen-btn {
+  grid-column: 5;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-fullscreen-btn {
+  display: none !important;
+}
+
+.panel-metadata.metadata-fullscreen #metadata-exit-fullscreen-btn {
+  display: inline-flex !important;
+}
+
+.panel-metadata.metadata-fullscreen .panel-actions > .btn {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.metadata-inline-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.panel-metadata.metadata-fullscreen .metadata-inline-controls {
+  grid-column: 1;
+  width: auto;
+  max-width: min(70vw, 980px);
+  justify-self: end;
+  margin: 0;
+  justify-content: flex-end;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: thin;
+  white-space: nowrap;
+}
+
+.metadata-inline-controls .hidden {
+  display: none !important;
+}
+
+.metadata-inline-input {
+  min-width: 180px;
+  width: 220px;
+  max-width: 220px;
+}
+
+.metadata-fullscreen-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+  justify-content: flex-end;
+  white-space: nowrap;
+}
+
+.metadata-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 180, 255, 0.25);
+  background: rgba(2, 16, 32, 0.72);
+}
+
+.metadata-mode-btn {
+  border: none;
+  background: transparent;
+  color: #7ca6c4;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.metadata-mode-btn:hover {
+  color: #cfe6f7;
+}
+
+.metadata-mode-btn.active {
+  color: #07233d;
+  background: linear-gradient(120deg, #00b8f5 0%, #42deff 100%);
+  box-shadow: 0 0 12px rgba(0, 207, 255, 0.42);
+}
+
+.metadata-query-inline-panel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex: 0 1 auto;
+  white-space: nowrap;
+}
+
+.metadata-query-inline-panel .metadata-inline-input {
+  width: 170px;
+  max-width: 170px;
+}
+
+.metadata-query-inline-panel .metadata-type-select {
+  width: 140px;
+  max-width: 140px;
+}
+
+.metadata-query-inline-panel .metadata-llm-input {
+  width: 420px;
+  max-width: 420px;
+}
+
+@media (max-width: 1280px) {
+  .panel-metadata.metadata-fullscreen .metadata-inline-controls {
+    flex: 1;
+    overflow: hidden;
+  }
+  .panel-metadata.metadata-fullscreen .metadata-inline-input {
+    max-width: 100%;
+  }
+  .panel-metadata.metadata-fullscreen .metadata-fullscreen-controls {
+    min-width: 0;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
 }
 
 /* -- Interface Type Badge -- */

@@ -4,10 +4,13 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
+import com.storage.engine.model.MetadataExtractResult;
+import com.storage.engine.service.LlmService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Locale;
 import java.util.*;
 
 /**
@@ -19,6 +22,9 @@ public class ImageAdapter implements StorageAdapter {
 
     @Autowired
     private IGinxDao iginxDao;
+
+    @Autowired
+    private LlmService llmService;
 
     @Override
     public String getDataType() {
@@ -81,5 +87,30 @@ public class ImageAdapter implements StorageAdapter {
             }
         }
         return new byte[0];
+    }
+
+    @Override
+    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
+        MetadataExtractResult result = new MetadataExtractResult();
+        if (fileBytes == null || fileBytes.length == 0) {
+            return result;
+        }
+
+        String mimeType = mimeByFormat(fileFormat);
+        LlmService.ExtractResult llm = llmService.extractSemanticTriplesFromImageStrict(mimeType, fileBytes);
+        result.setEntities(llm.getEntities());
+        result.setTriples(llm.getTriples());
+        result.setLlmUsed(llm.isLlmUsed());
+        result.setLlmResponse(llm.getRawResponse());
+        result.setLlmError(llm.getError());
+        return result;
+    }
+
+    private String mimeByFormat(String format) {
+        if (format == null) return "image/png";
+        String f = format.toLowerCase(Locale.ROOT);
+        if ("jpg".equals(f) || "jpeg".equals(f)) return "image/jpeg";
+        if ("bmp".equals(f)) return "image/bmp";
+        return "image/png";
     }
 }

@@ -136,11 +136,19 @@ public class IGinxDao {
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
                          long fileSize, String fileFormat, String createTime) {
       String sql = String.format(Locale.ROOT,
-              "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid) " +
-                      "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true);",
+          "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) " +
+              "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
               IGinxConstants.STORAGE_META_PATH,
               key, escapeSql(logicalPath), escapeSql(dataType), escapeSql(fileName),
               fileSize, escapeSql(fileFormat), escapeSql(createTime));
+      executeSql(sql);
+  }
+
+  public void updateMetaKnowledgeStatus(long key, String status) {
+      String safeStatus = status == null ? "" : escapeSql(status.trim().toUpperCase(Locale.ROOT));
+      String sql = String.format(Locale.ROOT,
+          "insert into %s(key, knowledgeExtractStatus) values (%d, '%s');",
+          IGinxConstants.STORAGE_META_PATH, key, safeStatus);
       executeSql(sql);
   }
 

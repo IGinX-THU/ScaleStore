@@ -44,9 +44,9 @@ const interfaceData = {
       code: 'curl -X DELETE "http://localhost:8080/api/v1/storage/delete?path=/data/project/dataset" \\\n  -H "Content-Type: application/json"'
     },
     { id: 'rest-4', name: '查询元数据', url: '/api/v1/metadata/query', type: 'GET', desc: '查询数据的元数据信息',
-      params: '{\n  "path": "/data/project"\n}',
+      params: '{\n  "mode": "system",\n  "logicalPath": "/data/project",\n  "dataType": "document",\n  "keyword": "足球"\n}',
       response: '{\n  "code": 200,\n  "message": "success",\n  "data": { "nodes": [...], "links": [...] }\n}',
-      code: 'curl -X GET "http://localhost:8080/api/v1/metadata/query?path=/data/project" \\\n  -H "Content-Type: application/json"'
+      code: 'curl -X GET "http://localhost:8080/api/v1/metadata/query?mode=system&logicalPath=/data/project&dataType=document&keyword=足球" \\\n+  -H "Content-Type: application/json"'
     },
   ],
   java: [
@@ -94,6 +94,8 @@ let metadataChart = null;
 let topologyChart = null;
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
+let metadataFullscreen = false;
+let metadataQueryMode = 'system';
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -819,116 +821,500 @@ function exitPolicyEdit() {
 }
 
 // ==================== 元数据服务 ====================
-function initMetadataGraph() {
+async function initMetadataGraph(logicalPath = '') {
+  const graphData = await fetchMetadataGraph(logicalPath);
+  renderMetadataGraph(graphData);
+}
+
+async function fetchMetadataGraph(logicalPath = '') {
+  const params = new URLSearchParams();
+  if (logicalPath) params.set('logicalPath', logicalPath);
+  params.set('limit', '300');
+  const url = `${API_BASE}/metadata/graph?${params.toString()}`;
+
+  const response = await fetch(url);
+  const result = await response.json();
+  if (!response.ok || result.code !== 200 || !result.data) {
+    throw new Error(result?.message || '加载元数据图谱失败');
+  }
+  return result.data;
+}
+
+async function queryMetadataBySystem(filters) {
+  const params = new URLSearchParams();
+  params.set('mode', 'system');
+  if (filters?.logicalPath) params.set('logicalPath', filters.logicalPath);
+  if (filters?.dataType) params.set('dataType', filters.dataType);
+  if (filters?.keyword) params.set('keyword', filters.keyword);
+
+  const url = `${API_BASE}/metadata/query?${params.toString()}`;
+  const response = await fetch(url);
+  const result = await response.json();
+  if (!response.ok || result.code !== 200 || !result.data) {
+    throw new Error(result?.message || '系统参数化查询失败');
+  }
+  return result.data;
+}
+
+async function queryMetadataByLLM(question) {
+  const params = new URLSearchParams();
+  params.set('mode', 'llm');
+  params.set('q', question || '');
+  const url = `${API_BASE}/metadata/query?${params.toString()}`;
+  const response = await fetch(url);
+  const result = await response.json();
+  if (!response.ok || result.code !== 200 || !result.data) {
+    throw new Error(result?.message || 'LLM查询失败');
+  }
+  return result.data;
+}
+
+function renderMetadataGraph(graphData, focusKeyword = '') {
   const container = $('metadata-graph');
   if (!container) return;
   if (!metadataChart) {
     metadataChart = echarts.init(container);
   }
-  const nodes = [
-    { name: '根节点', symbolSize: 55, category: 0 },
-    { name: '数据库A', symbolSize: 40, category: 0 },
-    { name: '数据库B', symbolSize: 40, category: 0 },
-    { name: '表-用户', symbolSize: 28, category: 1 },
-    { name: '表-订单', symbolSize: 28, category: 1 },
-    { name: '表-商品', symbolSize: 28, category: 1 },
-    { name: '表-日志', symbolSize: 28, category: 1 },
-    { name: '表-配置', symbolSize: 28, category: 1 },
-    { name: '视图-统计', symbolSize: 22, category: 2 },
-    { name: '视图-报表', symbolSize: 22, category: 2 },
-    { name: '索引-用户ID', symbolSize: 18, category: 3 },
-    { name: '索引-订单号', symbolSize: 18, category: 3 },
-    { name: '索引-时间戳', symbolSize: 18, category: 3 },
-  ];
-  const links = [
-    { source: '根节点', target: '数据库A' },
-    { source: '根节点', target: '数据库B' },
-    { source: '数据库A', target: '表-用户' },
-    { source: '数据库A', target: '表-订单' },
-    { source: '数据库A', target: '表-商品' },
-    { source: '数据库B', target: '表-日志' },
-    { source: '数据库B', target: '表-配置' },
-    { source: '表-用户', target: '视图-统计' },
-    { source: '表-订单', target: '视图-统计' },
-    { source: '表-商品', target: '视图-报表' },
-    { source: '表-日志', target: '视图-报表' },
-    { source: '表-用户', target: '索引-用户ID' },
-    { source: '表-订单', target: '索引-订单号' },
-    { source: '表-日志', target: '索引-时间戳' },
-  ];
-  const categories = [{ name: '数据库' }, { name: '表' }, { name: '视图' }, { name: '索引' }];
-  const colors = ['#00e68a', '#00cfff', '#ffa800', '#a78bfa'];
+
+  const nodes = (graphData?.nodes || []).map(n => ({ ...n }));
+  const links = (graphData?.links || []).map(l => ({ ...l }));
+  const categories = (graphData?.categories || []).map(c => ({ name: c.name }));
+
+  const paletteByType = {
+    path: '#2b6cb0',
+    root: '#114a7a',
+    asset: '#00a8e8',
+    schema: '#00c389',
+    semantic: '#ffb347',
+    device: '#4fa3ff',
+    point: '#31d0c6',
+    other: '#5f8fb8'
+  };
+
+  const categoryColor = {};
+  categories.forEach(c => {
+    const name = String(c.name || 'Other');
+    if (name === 'LogicalPath') categoryColor[name] = paletteByType.path;
+    else if (name === 'DataAsset') categoryColor[name] = paletteByType.asset;
+    else if (name === 'Field') categoryColor[name] = paletteByType.schema;
+    else if (name === 'Entity') categoryColor[name] = paletteByType.semantic;
+    else categoryColor[name] = paletteByType.other;
+  });
+
+  const categoryDefs = categories.map(c => ({
+    name: c.name,
+    itemStyle: {
+      color: categoryColor[c.name] || paletteByType.other,
+      borderColor: 'rgba(220, 236, 255, 0.65)',
+      borderWidth: 1.1
+    }
+  }));
+
+  const relationColor = {
+    CONTAINS: 'rgba(104, 176, 233, 0.75)',
+    HAS_DATA: '#00c389',
+    HAS_FILED: '#57d6b2',
+    MENTIONS: '#ffb347',
+    SEMANTIC_RELATION: '#ff9a3c'
+  };
+
+  if (nodes.length === 0) {
+    metadataChart.clear();
+    metadataChart.setOption({
+      title: {
+        text: '暂无元数据图谱',
+        left: 'center',
+        top: 'middle',
+        textStyle: { color: '#6f90a8', fontSize: 14, fontWeight: 500 }
+      }
+    });
+    return;
+  }
+
+  const focus = (focusKeyword || '').toLowerCase();
+
+  const styledNodes = nodes.map(n => {
+    const categoryName = String(n.categoryName || 'Other');
+    const isRootPath = categoryName === 'LogicalPath' && String(n.name || '') === '/';
+    const baseColor = isRootPath ? paletteByType.root : (categoryColor[categoryName] || paletteByType.other);
+    const rawName = String(n.name || '').trim();
+    const displayName = (!rawName || rawName === '(unknown)')
+      ? (categoryName === 'LogicalPath' ? '(路径节点)' : `(未命名${categoryName})`)
+      : rawName;
+    const matched = !!focus && displayName.toLowerCase().includes(focus);
+    const symbolSize = isRootPath ? Math.max(56, Number(n.symbolSize || 42)) : Number(n.symbolSize || 26);
+
+    return {
+      ...n,
+      name: displayName,
+      symbolSize,
+      itemStyle: matched
+        ? { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' }
+        : {
+            color: baseColor,
+            shadowBlur: isRootPath ? 16 : 8,
+            shadowColor: baseColor + '80',
+            borderColor: 'rgba(235, 242, 249, 0.86)',
+            borderWidth: isRootPath ? 2 : 1.1
+          },
+      label: {
+        show: true,
+        color: isRootPath ? '#f0f6ff' : '#dce8f5',
+        fontWeight: isRootPath ? 700 : 400
+      }
+    };
+  });
+
+  const nodeById = {};
+  styledNodes.forEach(n => {
+    nodeById[String(n.id)] = n;
+  });
+
+  const styledLinks = links.map(l => {
+    const src = nodeById[String(l.source)];
+    const tgt = nodeById[String(l.target)];
+    const matched = !!focus
+      && ((src && String(src.name || '').toLowerCase().includes(focus))
+      || (tgt && String(tgt.name || '').toLowerCase().includes(focus)));
+    const relType = String(l.type || l.label || '').toUpperCase();
+    const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
+    const semanticEdge = relType === 'SEMANTIC_RELATION';
+    const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
+    return {
+      ...l,
+      relationText,
+      lineStyle: matched
+        ? { color: '#ff4466', width: 3 }
+        : {
+            color: baseEdgeColor,
+            curveness: semanticEdge ? 0.2 : 0.1,
+            width: semanticEdge ? 2.2 : 1.5,
+            opacity: 0.95,
+            type: semanticEdge ? 'solid' : 'dashed'
+          },
+      label: {
+        show: false,
+        formatter: relationText,
+        color: semanticEdge ? '#ffd6aa' : '#c4d6e8',
+        fontSize: semanticEdge ? 11 : 10,
+        backgroundColor: semanticEdge ? 'rgba(23,31,44,0.72)' : 'transparent',
+        padding: semanticEdge ? [2, 4] : [0, 0],
+        borderRadius: semanticEdge ? 3 : 0
+      },
+    };
+  });
+
   const option = {
     backgroundColor: 'transparent',
     tooltip: {
       backgroundColor: 'rgba(8,28,54,0.95)',
       borderColor: 'rgba(0,207,255,0.3)',
       textStyle: { color: '#cce4f5', fontSize: 11 },
+      formatter: params => {
+        if (params.dataType === 'edge') {
+          const edge = params.data || {};
+          const relType = String(edge.type || '').toUpperCase();
+          const sourceNode = nodeById[String(edge.source)] || {};
+          const targetNode = nodeById[String(edge.target)] || {};
+          const sourceName = String(sourceNode.name || edge.source || '');
+          const targetName = String(targetNode.name || edge.target || '');
+          const relationText = extractRelationText(edge.relationText != null ? edge.relationText : edge.label);
+
+          if (relType === 'SEMANTIC_RELATION' && relationText) {
+            return [
+              '<strong>语义关系</strong>',
+              `关系: ${relationText}`,
+              `起点: ${sourceName}`,
+              `终点: ${targetName}`,
+            ].join('<br/>');
+          }
+
+          return [
+            '<strong>结构关系</strong>',
+            `类型: ${relType || 'RELATION'}`,
+            `起点: ${sourceName}`,
+            `终点: ${targetName}`,
+          ].join('<br/>');
+        }
+
+        const data = params.data || {};
+        const p = data.properties || {};
+        const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${String(p[k])}`);
+        return [
+          `<strong>${data.name || ''}</strong>`,
+          data.categoryName ? `类型: ${data.categoryName}` : '',
+          ...rows,
+        ].filter(Boolean).join('<br/>');
+      },
     },
     legend: {
       data: categories.map(c => c.name),
       top: 4, left: 'center',
-      textStyle: { color: '#4d7a99', fontSize: 10 },
+      textStyle: { color: '#c6d4e1', fontSize: 10 },
       itemWidth: 10, itemHeight: 10,
+      selectedMode: true,
     },
     series: [{
       type: 'graph',
       layout: 'force',
-      data: nodes.map(n => ({
-        ...n,
-        itemStyle: { color: colors[n.category], shadowBlur: 6, shadowColor: colors[n.category] + '60' },
-      })),
-      links,
-      categories,
+      center: ['50%', '50%'],
+      data: styledNodes,
+      links: styledLinks,
+      categories: categoryDefs,
       roam: true,
       draggable: true,
-      label: { show: true, position: 'right', color: '#8cb8d0', fontSize: 10 },
+      label: { show: true, position: 'right', color: '#cde3f2', fontSize: 10 },
       labelLayout: { hideOverlap: true },
-      force: { repulsion: 180, gravity: 0.12, edgeLength: 90 },
-      lineStyle: { color: 'rgba(100,160,200,0.2)', curveness: 0.2, width: 1.5 },
+      force: { repulsion: 300, gravity: 0.05, edgeLength: 150, friction: 0.12 },
+      lineStyle: { color: 'rgba(100,160,200,0.35)', curveness: 0.14, width: 1.5 },
       emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
+      edgeSymbol: ['none', 'arrow'],
+      edgeSymbolSize: [0, 8],
     }],
   };
   metadataChart.setOption(option, true);
+  recenterMetadataGraph();
+}
+
+function recenterMetadataGraph() {
+  if (!metadataChart) return;
+  metadataChart.resize();
+  metadataChart.setOption({
+    series: [{
+      center: ['50%', '50%']
+    }]
+  });
+}
+
+function extractRelationText(value) {
+  if (value == null) {
+    return '';
+  }
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+    return String(value).trim();
+  }
+  if (typeof value === 'object') {
+    const candidates = ['relationText', 'relation', 'formatter', 'label', 'name', 'text', 'predicate'];
+    for (const key of candidates) {
+      if (value[key] != null && String(value[key]).trim()) {
+        return String(value[key]).trim();
+      }
+    }
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return '';
+    }
+  }
+  return '';
 }
 
 function searchMetadataNode(keyword) {
   if (!metadataChart) { alert('请先构建网络'); return; }
   const option = metadataChart.getOption();
   const series = option.series[0];
-  const colors = ['#00e68a', '#00cfff', '#ffa800', '#a78bfa'];
+  const categoryPalette = {
+    LogicalPath: '#2b6cb0',
+    DataAsset: '#00a8e8',
+    Field: '#00c389',
+    Entity: '#ffb347',
+    Node: '#5f8fb8'
+  };
+
+  const nodeMap = {};
+  (series.data || []).forEach(n => {
+    nodeMap[String(n.id)] = n;
+  });
+
+  const categoryByIndex = {};
+  (series.data || []).forEach(n => {
+    categoryByIndex[String(n.category)] = n.categoryName || categoryByIndex[String(n.category)] || 'Node';
+  });
 
   // reset all
   series.data.forEach(n => {
-    n.itemStyle = { color: colors[n.category], shadowBlur: 6, shadowColor: colors[n.category] + '60' };
+    const categoryName = categoryByIndex[String(n.category)] || 'Node';
+    const baseColor = categoryPalette[categoryName] || '#5f8fb8';
+    n.itemStyle = { color: baseColor, shadowBlur: 8, shadowColor: baseColor + '80' };
   });
   series.links.forEach(l => {
-    l.lineStyle = { color: 'rgba(100,160,200,0.2)', width: 1.5 };
+    l.lineStyle = { color: 'rgba(93,165,218,0.32)', width: 1.4, type: 'dashed' };
   });
 
-  const matched = series.data.find(n => n.name.toLowerCase().includes(keyword.toLowerCase()));
+  const matched = series.data.find(n => String(n.name || '').toLowerCase().includes(keyword.toLowerCase()));
   if (matched) {
     matched.itemStyle = { color: '#ff4466', shadowBlur: 20, shadowColor: '#ff4466' };
     series.links.forEach(l => {
-      if (l.source === matched.name || l.target === matched.name) {
+      if (String(l.source) === String(matched.id) || String(l.target) === String(matched.id)) {
         l.lineStyle = { color: '#ff4466', width: 3 };
       }
     });
     metadataChart.setOption(option);
+    return true;
   } else {
     metadataChart.setOption(option);
-    alert('未找到匹配的节点');
+    return false;
   }
 }
 
-$('metadata-build-btn').addEventListener('click', () => initMetadataGraph());
-$('metadata-search-btn').addEventListener('click', () => {
-  const kw = $('metadata-search-input').value.trim();
-  if (!kw) { alert('请输入节点名称'); return; }
-  searchMetadataNode(kw);
+function enterMetadataFullscreen() {
+  const panel = document.querySelector('.panel-metadata');
+  if (!panel || metadataFullscreen) return;
+  metadataFullscreen = true;
+  syncMetadataQueryModeUI('system');
+  syncMetadataHeaderControls();
+  panel.classList.add('metadata-fullscreen');
+  document.body.classList.add('metadata-fullscreen-active');
+  $('metadata-fullscreen-btn')?.classList.add('hidden');
+  $('metadata-exit-fullscreen-btn')?.classList.remove('hidden');
+  setTimeout(recenterMetadataGraph, 80);
+}
+
+function exitMetadataFullscreen() {
+  const panel = document.querySelector('.panel-metadata');
+  if (!panel || !metadataFullscreen) return;
+  metadataFullscreen = false;
+  syncMetadataHeaderControls();
+  panel.classList.remove('metadata-fullscreen');
+  document.body.classList.remove('metadata-fullscreen-active');
+  $('metadata-fullscreen-btn')?.classList.remove('hidden');
+  $('metadata-exit-fullscreen-btn')?.classList.add('hidden');
+  setTimeout(recenterMetadataGraph, 80);
+}
+
+$('metadata-build-btn').addEventListener('click', async () => {
+  const input = metadataFullscreen
+    ? (($('metadata-path-input')?.value || '').trim())
+    : (($('metadata-quick-keyword-input')?.value || '').trim());
+  const logicalPath = input.startsWith('/') ? input : '';
+  try {
+    await initMetadataGraph(logicalPath);
+  } catch (e) {
+    alert('构建图谱失败: ' + e.message);
+    console.error('Build metadata graph error:', e);
+  }
 });
-$('metadata-search-input').addEventListener('keydown', e => {
+
+$('metadata-search-btn').addEventListener('click', async () => {
+  const quickKeyword = ($('metadata-quick-keyword-input')?.value || '').trim();
+  if (!quickKeyword && !metadataFullscreen) { alert('请输入实体关键词'); return; }
+
+  const searchBtn = $('metadata-search-btn');
+  if (!searchBtn || searchBtn.disabled) {
+    return;
+  }
+  const originalBtnText = searchBtn.textContent || '查找';
+  searchBtn.disabled = true;
+  searchBtn.textContent = '查找中...';
+
+  try {
+    let graph;
+    let focusKeyword = '';
+    if (!metadataFullscreen) {
+      // 非全屏：仅按实体关键词进行快速查询。
+      graph = await queryMetadataBySystem({
+        keyword: quickKeyword,
+      });
+      focusKeyword = quickKeyword;
+    } else {
+      const mode = metadataQueryMode;
+      if (mode === 'llm') {
+        const llmQuestion = $('metadata-llm-input')?.value.trim() || '';
+        if (!llmQuestion) {
+          alert('请填写LLM查询问题');
+          return;
+        }
+        graph = await queryMetadataByLLM(llmQuestion);
+        // LLM 查询不强行沿用非全屏关键词，避免历史高亮残留。
+        focusKeyword = '';
+      } else {
+        const logicalPath = $('metadata-path-input')?.value.trim() || '';
+        const dataType = $('metadata-type-input')?.value.trim() || '';
+        const keyword = $('metadata-keyword-input')?.value.trim() || '';
+        graph = await queryMetadataBySystem({
+          logicalPath,
+          dataType,
+          keyword,
+        });
+        focusKeyword = keyword;
+      }
+    }
+
+    renderMetadataGraph(graph, focusKeyword);
+    if (graph.cypher) {
+      console.log('Metadata query cypher:', graph.cypher);
+    }
+    if (graph.strategy) {
+      console.log('Metadata query strategy:', graph.strategy, graph.strategyReason || '', graph.strategyConfidence || '');
+    }
+  } catch (e) {
+    // 查询失败时，回退到本地图高亮，至少保证交互可用。
+    const fallbackKeyword = metadataFullscreen
+      ? (($('metadata-keyword-input')?.value || '').trim())
+      : quickKeyword;
+    const hit = fallbackKeyword ? searchMetadataNode(fallbackKeyword) : false;
+    if (!hit) {
+      alert('语义查询失败: ' + e.message);
+    }
+    console.error('Metadata query error:', e);
+  } finally {
+    searchBtn.disabled = false;
+    searchBtn.textContent = originalBtnText;
+  }
+});
+$('metadata-quick-keyword-input').addEventListener('keydown', e => {
   if (e.key === 'Enter') $('metadata-search-btn').click();
+});
+$('metadata-keyword-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('metadata-search-btn').click();
+});
+$('metadata-llm-input')?.addEventListener('keydown', e => {
+  if (e.key === 'Enter') $('metadata-search-btn').click();
+});
+
+$('metadata-fullscreen-btn').addEventListener('click', () => {
+  enterMetadataFullscreen();
+});
+
+$('metadata-exit-fullscreen-btn').addEventListener('click', () => {
+  exitMetadataFullscreen();
+});
+
+function syncMetadataQueryModeUI(mode) {
+  metadataQueryMode = (mode || 'system').toLowerCase() === 'llm' ? 'llm' : 'system';
+
+  const systemBtn = $('metadata-mode-system-btn');
+  const llmBtn = $('metadata-mode-llm-btn');
+  const systemPanel = $('metadata-system-filters');
+  const llmPanel = $('metadata-llm-panel');
+
+  if (systemBtn) systemBtn.classList.toggle('active', metadataQueryMode === 'system');
+  if (llmBtn) llmBtn.classList.toggle('active', metadataQueryMode === 'llm');
+  if (systemPanel) systemPanel.classList.toggle('hidden', metadataQueryMode !== 'system');
+  if (llmPanel) llmPanel.classList.toggle('hidden', metadataQueryMode !== 'llm');
+}
+
+function syncMetadataHeaderControls() {
+  const quickInput = $('metadata-quick-keyword-input');
+  const fullscreenControls = $('metadata-fullscreen-controls');
+
+  if (quickInput) {
+    quickInput.classList.toggle('hidden', metadataFullscreen);
+  }
+  if (fullscreenControls) {
+    fullscreenControls.classList.toggle('hidden', !metadataFullscreen);
+  }
+}
+
+$('metadata-mode-system-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('system'));
+$('metadata-mode-llm-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('llm'));
+syncMetadataQueryModeUI('system');
+syncMetadataHeaderControls();
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && metadataFullscreen) {
+    exitMetadataFullscreen();
+  }
 });
 
 // ==================== 存储服务 ====================
@@ -1369,7 +1755,7 @@ $('interface-download-btn').addEventListener('click', () => {
 // ==================== 窗口缩放 ====================
 window.addEventListener('resize', () => {
   topologyChart?.resize();
-  metadataChart?.resize();
+  recenterMetadataGraph();
 });
 
 // ==================== 初始化 ====================
@@ -1392,7 +1778,9 @@ async function init() {
   // 延迟初始化图表（等DOM渲染完成）
   requestAnimationFrame(() => {
     initClusterTopology();
-    initMetadataGraph();
+    initMetadataGraph().catch(e => {
+      console.error('Init metadata graph failed:', e);
+    });
   });
 
   if (clusterHeartbeatTimer) {

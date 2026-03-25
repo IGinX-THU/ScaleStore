@@ -9,6 +9,7 @@ public class DataItem {
     private String fileFormat;   // csv, txt, jpg, png, bmp, json, xml, yaml
     private String createTime;
     private Boolean isValid;
+    private String knowledgeExtractStatus;
 
     // For preview / access response
     private Object previewData;
@@ -36,6 +37,9 @@ public class DataItem {
 
     public Boolean getIsValid() { return isValid; }
     public void setIsValid(Boolean valid) { isValid = valid; }
+
+    public String getKnowledgeExtractStatus() { return knowledgeExtractStatus; }
+    public void setKnowledgeExtractStatus(String knowledgeExtractStatus) { this.knowledgeExtractStatus = knowledgeExtractStatus; }
 
     public Object getPreviewData() { return previewData; }
     public void setPreviewData(Object previewData) { this.previewData = previewData; }

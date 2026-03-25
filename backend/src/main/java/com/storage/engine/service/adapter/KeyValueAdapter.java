@@ -4,6 +4,7 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
+import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -93,5 +94,20 @@ public class KeyValueAdapter implements StorageAdapter {
         }
         sb.append("\n}");
         return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    @Override
+    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
+        MetadataExtractResult result = new MetadataExtractResult();
+        if (fileBytes == null || fileBytes.length == 0) {
+            return result;
+        }
+
+        String text = new String(fileBytes, StandardCharsets.UTF_8);
+        Map<String, String> kv = StorageUtils.parseKeyValueContent(text, fileFormat);
+
+        result.setFieldKind("key");
+        result.setFields(new ArrayList<String>(kv.keySet()));
+        return result;
     }
 }

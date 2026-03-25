@@ -122,9 +122,37 @@
       <div class="panel-header">
         <div class="panel-title"><span>元数据图谱</span></div>
         <div class="panel-actions">
-          <input type="text" id="metadata-search-input" class="input input-sm" placeholder="输入节点名称..." style="width:150px;">
+          <div id="metadata-inline-controls" class="metadata-inline-controls">
+            <input type="text" id="metadata-quick-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词">
+
+            <div id="metadata-fullscreen-controls" class="metadata-fullscreen-controls hidden">
+              <div class="metadata-mode-switch" role="tablist" aria-label="元数据查询模式">
+                <button id="metadata-mode-system-btn" type="button" class="metadata-mode-btn active" data-mode="system">参数化查询</button>
+                <button id="metadata-mode-llm-btn" type="button" class="metadata-mode-btn" data-mode="llm">LLM自然语言</button>
+              </div>
+
+              <div id="metadata-system-filters" class="metadata-query-inline-panel">
+                <input type="text" id="metadata-path-input" class="input input-sm metadata-inline-input" placeholder="逻辑路径（可空，如 /test）">
+                <select id="metadata-type-input" class="input input-sm metadata-inline-input metadata-type-select">
+                  <option value="">数据类型（默认为空）</option>
+                  <option value="timeseries">timeseries</option>
+                  <option value="relational">relational</option>
+                  <option value="keyvalue">keyvalue</option>
+                  <option value="document">document</option>
+                  <option value="image">image</option>
+                </select>
+                <input type="text" id="metadata-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词（可空）">
+              </div>
+
+              <div id="metadata-llm-panel" class="metadata-query-inline-panel hidden">
+                <input type="text" id="metadata-llm-input" class="input input-sm metadata-inline-input metadata-llm-input" placeholder="输入自然语言问题，例如：查找document类型里与合同相关的实体关系">
+              </div>
+            </div>
+          </div>
           <button id="metadata-search-btn" class="btn btn-info btn-sm">查找</button>
           <button id="metadata-build-btn" class="btn btn-primary btn-sm">构建网络</button>
+          <button id="metadata-fullscreen-btn" class="btn btn-secondary btn-sm">全屏</button>
+          <button id="metadata-exit-fullscreen-btn" class="btn btn-danger btn-sm hidden">退出全屏</button>
         </div>
       </div>
       <div class="panel-body" style="padding: 4px;">

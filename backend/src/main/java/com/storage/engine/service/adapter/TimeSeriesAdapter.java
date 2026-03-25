@@ -3,6 +3,7 @@ package com.storage.engine.service.adapter;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
+import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -150,6 +151,32 @@ public class TimeSeriesAdapter implements StorageAdapter {
     public byte[] getDownloadBytes(String iginxPath) throws Exception {
         SessionExecuteSqlResult result = iginxDao.queryDataByPath(iginxPath);
         return reconstructCsv(result);
+    }
+
+    @Override
+    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
+        MetadataExtractResult result = new MetadataExtractResult();
+        if (fileBytes == null || fileBytes.length == 0) {
+            return result;
+        }
+
+        String text = new String(fileBytes, StandardCharsets.UTF_8);
+        List<String[]> rows = StorageUtils.parseCsv(text);
+        if (rows.isEmpty()) {
+            return result;
+        }
+
+        result.setFieldKind("column");
+        String[] headers = rows.get(0);
+        List<String> fields = new ArrayList<String>();
+        for (String header : headers) {
+            String field = header == null ? "" : header.trim();
+            if (!field.isEmpty()) {
+                fields.add(field);
+            }
+        }
+        result.setFields(fields);
+        return result;
     }
 
     // ==================== Helpers ====================
