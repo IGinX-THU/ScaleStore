@@ -147,12 +147,12 @@ body {
 /* -- Dashboard Grid -- */
 .dashboard-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: repeat(8, minmax(0, 1fr));
   grid-template-rows: 1fr 1.15fr 1fr;
   grid-template-areas:
-    "cluster  user      user     policy"
-    "topology metadata  metadata storage"
-    "access   access    interface interface";
+    "cluster cluster agent agent agent user user user"
+    "topology topology metadata metadata metadata storage storage storage"
+    "policy policy access access access interface interface interface";
   gap: 10px;
   padding: 10px;
   height: calc(100vh - 60px);
@@ -167,6 +167,7 @@ body {
 .panel-storage   { grid-area: storage; }
 .panel-access    { grid-area: access; }
 .panel-interface { grid-area: interface; }
+.panel-agent     { grid-area: agent; }
 
 .panel-metadata .panel-header {
   background: linear-gradient(180deg, rgba(8, 30, 60, 0.95) 0%, rgba(6, 20, 42, 0.88) 100%);
@@ -917,6 +918,172 @@ body.metadata-fullscreen-active {
 .metadata-query-inline-panel .metadata-llm-input {
   width: 420px;
   max-width: 420px;
+}
+
+/* -- Agent Pool -- */
+.panel-agent .panel-header {
+  background: linear-gradient(180deg, rgba(12, 38, 70, 0.92) 0%, rgba(7, 24, 46, 0.85) 100%);
+}
+
+.panel-body-agent {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  background:
+    radial-gradient(circle at 10% 28%, rgba(0, 207, 255, 0.12), transparent 34%),
+    radial-gradient(circle at 90% 72%, rgba(0, 230, 138, 0.1), transparent 34%),
+    linear-gradient(165deg, rgba(5, 16, 34, 0.95) 0%, rgba(8, 26, 50, 0.95) 100%);
+}
+
+.agent-live-indicator {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #00ff99;
+  box-shadow: 0 0 6px rgba(0, 255, 153, 0.8);
+  animation: pulse-agent-live 1.8s ease-in-out infinite;
+}
+
+@keyframes pulse-agent-live {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(0.82); }
+}
+
+.agent-live-text {
+  font-size: 11px;
+  color: #90d8f3;
+}
+
+.agent-board-note {
+  font-size: 11px;
+  color: #7fb1cd;
+}
+
+.agent-stream-viewport {
+  position: relative;
+  flex: 1;
+  min-height: 88px;
+  border-radius: 6px;
+  border: 1px solid rgba(0, 180, 255, 0.2);
+  background: rgba(3, 14, 30, 0.86);
+  overflow: hidden;
+}
+
+.agent-stream-viewport::before,
+.agent-stream-viewport::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 18px;
+  pointer-events: none;
+  z-index: 2;
+}
+
+.agent-stream-viewport::before {
+  top: 0;
+  background: linear-gradient(180deg, rgba(3, 14, 30, 1), rgba(3, 14, 30, 0));
+}
+
+.agent-stream-viewport::after {
+  bottom: 0;
+  background: linear-gradient(0deg, rgba(3, 14, 30, 1), rgba(3, 14, 30, 0));
+}
+
+.agent-stream-list {
+  list-style: none;
+  margin: 0;
+  padding: 8px;
+  height: 100%;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  scroll-behavior: smooth;
+}
+
+.agent-stream-list::-webkit-scrollbar {
+  width: 3px;
+}
+
+.agent-stream-list::-webkit-scrollbar-thumb {
+  background: rgba(0, 180, 255, 0.3);
+  border-radius: 2px;
+}
+
+.agent-msg-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(0, 180, 255, 0.14);
+  background: rgba(0, 80, 130, 0.08);
+  animation: fadeIn 0.25s ease;
+}
+
+.agent-msg-item.level-running {
+  border-color: rgba(255, 184, 0, 0.28);
+  background: rgba(255, 168, 0, 0.1);
+}
+
+.agent-msg-item.level-success {
+  border-color: rgba(0, 255, 153, 0.3);
+  background: rgba(0, 255, 153, 0.1);
+}
+
+.agent-msg-item.level-warn {
+  border-color: rgba(255, 68, 102, 0.3);
+  background: rgba(255, 68, 102, 0.1);
+}
+
+.agent-msg-status {
+  font-size: 10px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  line-height: 1.6;
+  align-self: start;
+  border: 1px solid rgba(141, 182, 209, 0.3);
+  color: #8db6d1;
+  background: rgba(141, 182, 209, 0.1);
+}
+
+.level-running .agent-msg-status {
+  color: #ffc84d;
+  border-color: rgba(255, 200, 77, 0.4);
+  background: rgba(255, 200, 77, 0.1);
+}
+
+.level-success .agent-msg-status {
+  color: #45f5ae;
+  border-color: rgba(69, 245, 174, 0.4);
+  background: rgba(69, 245, 174, 0.1);
+}
+
+.level-warn .agent-msg-status {
+  color: #ff6a8a;
+  border-color: rgba(255, 106, 138, 0.45);
+  background: rgba(255, 106, 138, 0.1);
+}
+
+.agent-msg-text {
+  font-size: 12px;
+  color: #cde8f8;
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
+}
+
+.agent-msg-time {
+  font-size: 10px;
+  color: #6fa4c0;
+  font-family: var(--font-mono);
+  align-self: start;
+  white-space: nowrap;
 }
 
 @media (max-width: 1280px) {

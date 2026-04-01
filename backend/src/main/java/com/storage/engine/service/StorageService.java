@@ -24,9 +24,6 @@ public class StorageService {
     @Autowired
     private AccessService accessService;
 
-    @Autowired
-    private MetadataExtractionQueueService metadataExtractionQueueService;
-
     /**
      * Store a file to IGinX using the adapter pattern.
      * Rejects storage if the logical path is already occupied.
@@ -105,9 +102,6 @@ public class StorageService {
         item.setCreateTime(createTime);
         item.setIsValid(true);
         item.setKnowledgeExtractStatus("PENDING");
-
-        // 存储成功后仅入队，后台异步抽取，避免阻塞上传请求。
-        metadataExtractionQueueService.enqueue(file.getBytes(), item);
 
         return item;
     }

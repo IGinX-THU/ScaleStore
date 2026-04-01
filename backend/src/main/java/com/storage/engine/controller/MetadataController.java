@@ -1,10 +1,14 @@
 package com.storage.engine.controller;
 
 import com.storage.engine.model.Response;
+import com.storage.engine.model.AgentMessageEvent;
+import com.storage.engine.service.MetadataExtractionSchedulerService;
 import com.storage.engine.service.MetadataKnowledgeService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.*;
 
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 
 @RestController
@@ -12,6 +16,9 @@ public class MetadataController {
 
     @Autowired
     private MetadataKnowledgeService metadataKnowledgeService;
+
+    @Autowired
+    private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
 
     /**
      * Build/query metadata graph from Neo4j.
@@ -45,5 +52,24 @@ public class MetadataController {
             result = metadataKnowledgeService.queryBySystemFilters(logicalPath, dataType, keyword);
         }
         return Response.success(result);
+    }
+
+    /**
+     * Real extraction events for frontend agent stream.
+     * GET /metadata/extraction/events?since=0&limit=40
+     */
+    @GetMapping("/metadata/extraction/events")
+    public Response<Map<String, Object>> extractionEvents(
+            @RequestParam(value = "since", required = false, defaultValue = "0") long since,
+            @RequestParam(value = "limit", required = false, defaultValue = "40") int limit) {
+
+        List<AgentMessageEvent> events = metadataExtractionSchedulerService.listEventsSince(since, limit);
+
+        Map<String, Object> payload = new LinkedHashMap<String, Object>();
+        payload.put("events", events);
+        payload.put("latestSeq", metadataExtractionSchedulerService.getLatestEventSeq());
+        payload.put("serverTime", System.currentTimeMillis());
+
+        return Response.success(payload);
     }
 }

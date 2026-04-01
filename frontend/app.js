@@ -96,6 +96,11 @@ let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
 let metadataQueryMode = 'system';
+let agentLastNodeSnapshot = '';
+let agentEventCursor = 0;
+let agentEventPollTimer = null;
+
+const AGENT_MAX_MESSAGES = 80;
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -108,6 +113,16 @@ const paginationState = {
 function $(id) { return document.getElementById(id); }
 function showModal(id) { $(id).classList.remove('hidden'); }
 function hideModal(id) { $(id).classList.add('hidden'); }
+
+function pickRandom(items) {
+  if (!Array.isArray(items) || items.length === 0) return null;
+  return items[Math.floor(Math.random() * items.length)];
+}
+
+function formatClockTime(date = new Date()) {
+  const pad = n => String(n).padStart(2, '0');
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+}
 
 function updateTime() {
   const now = new Date();
@@ -148,6 +163,167 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
       onPageChange();
     });
   });
+}
+
+// ==================== 智能体群消息流 ====================
+function getAgentNodeNames() {
+  const onlineNodes = clusterData.filter(n => n.status === 'ONLINE');
+  const source = onlineNodes.length > 0 ? onlineNodes : clusterData;
+  if (source.length === 0) {
+    return ['IGinX1', 'IGinX2', 'IGinX3'];
+  }
+  return source.map((n, i) => {
+    const name = String(n.name || '').trim();
+    return name || `IGinX${i + 1}`;
+  });
+}
+
+function pickAgentName() {
+  return pickRandom(getAgentNodeNames()) || 'IGinX1';
+}
+
+function pushAgentMessage({ level = 'info', status = '', text = '', agentName = '', smooth = true, timestamp = null } = {}) {
+  const list = $('agent-stream-list');
+  if (!list || !text) return;
+
+  const validLevels = ['running', 'success', 'warn', 'info'];
+  const normalizedLevel = validLevels.includes(level) ? level : 'info';
+  const defaultStatus = normalizedLevel === 'running'
+    ? '进行中'
+    : (normalizedLevel === 'success' ? '完成' : (normalizedLevel === 'warn' ? '失败' : '通知'));
+  const statusText = status || defaultStatus;
+  const lineText = agentName ? `智能体【${agentName}】${text}` : text;
+  const clock = (timestamp && Number.isFinite(Number(timestamp)))
+    ? formatClockTime(new Date(Number(timestamp)))
+    : formatClockTime();
+
+  const li = document.createElement('li');
+  li.className = `agent-msg-item level-${normalizedLevel}`;
+  li.innerHTML = `
+    <span class="agent-msg-status">${escapeHtml(statusText)}</span>
+    <span class="agent-msg-text">${escapeHtml(lineText)}</span>
+    <span class="agent-msg-time">${escapeHtml(clock)}</span>
+  `;
+
+  list.appendChild(li);
+  while (list.children.length > AGENT_MAX_MESSAGES) {
+    list.removeChild(list.firstChild);
+  }
+
+  list.scrollTo({
+    top: list.scrollHeight,
+    behavior: smooth ? 'smooth' : 'auto',
+  });
+}
+
+function syncAgentPoolNodeState(force = false) {
+  const snapshot = clusterData
+    .map(n => `${n.name || 'IGinX'}:${n.status || 'UNKNOWN'}`)
+    .join('|');
+
+  if (!force && snapshot === agentLastNodeSnapshot) {
+    return;
+  }
+  agentLastNodeSnapshot = snapshot;
+
+  if (clusterData.length === 0) {
+    pushAgentMessage({
+      level: 'warn',
+      status: '池状态',
+      text: '智能体池尚未发现可用IGinX节点。',
+      smooth: !force,
+    });
+    return;
+  }
+
+  const onlineCount = clusterData.filter(n => n.status === 'ONLINE').length;
+  pushAgentMessage({
+    level: onlineCount === 0 ? 'warn' : 'info',
+    status: '池状态',
+    text: `智能体池在线节点 ${onlineCount}/${clusterData.length}。`,
+    smooth: !force,
+  });
+}
+
+async function pollAgentEvents() {
+  const params = new URLSearchParams();
+  params.set('since', String(agentEventCursor));
+  params.set('limit', '60');
+
+  const response = await fetch(`${API_BASE}/metadata/extraction/events?${params.toString()}`);
+  const result = await response.json();
+  if (!response.ok || result.code !== 200 || !result.data) {
+    throw new Error(result?.message || '获取智能体事件失败');
+  }
+
+  const payload = result.data;
+  const events = Array.isArray(payload.events) ? payload.events.slice() : [];
+  events.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+
+  for (const evt of events) {
+    const rawLevel = String(evt.level || '').toLowerCase();
+    const level = ['running', 'success', 'warn', 'info'].includes(rawLevel) ? rawLevel : 'info';
+    pushAgentMessage({
+      level,
+      status: evt.status || '',
+      text: evt.text || '',
+      agentName: evt.agentName || '',
+      timestamp: evt.timestamp,
+    });
+  }
+
+  const latestSeq = Number(payload.latestSeq || 0);
+  if (Number.isFinite(latestSeq) && latestSeq > agentEventCursor) {
+    agentEventCursor = latestSeq;
+  }
+}
+
+function startAgentEventPolling() {
+  if (agentEventPollTimer) {
+    clearInterval(agentEventPollTimer);
+  }
+  pollAgentEvents().catch(e => {
+    console.error('Initial agent event polling failed:', e);
+  });
+  agentEventPollTimer = setInterval(() => {
+    pollAgentEvents().catch(e => {
+      console.error('Agent event polling failed:', e);
+    });
+  }, 4000);
+}
+
+function clearAgentStream() {
+  const list = $('agent-stream-list');
+  if (list) list.innerHTML = '';
+}
+
+function initAgentPanel() {
+  if (!$('agent-stream-list')) return;
+
+  const clearBtn = $('agent-clear-btn');
+  if (clearBtn && !clearBtn.dataset.bound) {
+    clearBtn.dataset.bound = 'true';
+    clearBtn.addEventListener('click', () => {
+      clearAgentStream();
+      pushAgentMessage({
+        level: 'info',
+        status: '通知',
+        text: '智能体消息流已清空，正在继续监听新任务。',
+        smooth: false,
+      });
+    });
+  }
+
+  clearAgentStream();
+  agentEventCursor = 0;
+  pushAgentMessage({
+    level: 'info',
+    status: '初始化',
+    text: 'IGinX智能体群已接入，开始监听后端真实抽取任务。',
+    smooth: false,
+  });
+  syncAgentPoolNodeState(true);
+  startAgentEventPolling();
 }
 
 // ==================== 集群管理 ====================
@@ -456,6 +632,7 @@ function sleep(ms) {
 async function refreshClusterView(silent) {
   try {
     await loadClusterNodes();
+    syncAgentPoolNodeState();
     renderClusterTable();
     initClusterTopology();
   } catch (e) {
@@ -1187,6 +1364,7 @@ $('metadata-build-btn').addEventListener('click', async () => {
     ? (($('metadata-path-input')?.value || '').trim())
     : (($('metadata-quick-keyword-input')?.value || '').trim());
   const logicalPath = input.startsWith('/') ? input : '';
+
   try {
     await initMetadataGraph(logicalPath);
   } catch (e) {
@@ -1231,6 +1409,7 @@ $('metadata-search-btn').addEventListener('click', async () => {
         const logicalPath = $('metadata-path-input')?.value.trim() || '';
         const dataType = $('metadata-type-input')?.value.trim() || '';
         const keyword = $('metadata-keyword-input')?.value.trim() || '';
+
         graph = await queryMetadataBySystem({
           logicalPath,
           dataType,
@@ -1403,6 +1582,7 @@ $('storage-save-btn').addEventListener('click', async () => {
   if (!path) { alert('请输入逻辑路径'); return; }
   if (selectedFiles.length === 0) { alert('请选择要上传的文件'); return; }
 
+  const storageAgentName = pickAgentName();
   const btn = $('storage-save-btn');
   btn.disabled = true;
   btn.textContent = '存储中...';
@@ -1422,10 +1602,30 @@ $('storage-save-btn').addEventListener('click', async () => {
     if (result.code !== 200 && result.code !== 201) {
       throw new Error(result.message || '存储失败');
     }
+    const typeLabelMap = {
+      relational: '关系数据',
+      timeseries: '时序数据',
+      document: '文档数据',
+      image: '图像数据',
+      keyvalue: '键值数据',
+    };
+    const typeLabel = typeLabelMap[type] || type;
+    pushAgentMessage({
+      level: 'success',
+      status: '完成',
+      agentName: storageAgentName,
+      text: `${typeLabel}已存储成功，路径 ${path}，等待定时UDF抽取`,
+    });
     alert('存储成功！文件已保存到 ' + path);
     selectedFiles = [];
     renderFileList();
   } catch (e) {
+    pushAgentMessage({
+      level: 'warn',
+      status: '失败',
+      agentName: storageAgentName,
+      text: `存储任务失败：${e.message}`,
+    });
     alert('存储失败: ' + e.message);
     console.error('Storage error:', e);
   } finally {
@@ -1438,12 +1638,20 @@ $('storage-save-btn').addEventListener('click', async () => {
 $('access-visit-btn').addEventListener('click', async () => {
   const path = $('access-path-input').value.trim();
   if (!path) { alert('请输入逻辑路径'); return; }
+  const accessAgentName = pickAgentName();
   const preview = $('access-preview');
   const btn = $('access-visit-btn');
 
   btn.disabled = true;
   btn.textContent = '访问中...';
   preview.innerHTML = '<div class="preview-placeholder">加载中...</div>';
+
+  pushAgentMessage({
+    level: 'running',
+    status: '进行中',
+    agentName: accessAgentName,
+    text: `正在访问存储数据，路径 ${path}`,
+  });
 
   try {
     const response = await fetch(`${API_BASE}/access/data?logicalPath=${encodeURIComponent(path)}`);
@@ -1459,6 +1667,12 @@ $('access-visit-btn').addEventListener('click', async () => {
       $('access-data-size').textContent = '-';
       $('access-data-time').textContent = '-';
       preview.innerHTML = '<div class="preview-placeholder">未找到该路径对应的数据</div>';
+      pushAgentMessage({
+        level: 'warn',
+        status: '失败',
+        agentName: accessAgentName,
+        text: `访问失败，路径 ${path} 未找到对应数据`,
+      });
       return;
     }
 
@@ -1489,12 +1703,25 @@ $('access-visit-btn').addEventListener('click', async () => {
     } else {
       preview.innerHTML = '<div class="preview-placeholder">不支持预览此数据类型</div>';
     }
+
+    pushAgentMessage({
+      level: 'success',
+      status: '完成',
+      agentName: accessAgentName,
+      text: `完成数据访问，路径 ${path}，类型 ${dataType || '-'}`,
+    });
   } catch (e) {
     console.error('Access error:', e);
     preview.innerHTML = `<div class="preview-placeholder">访问失败: ${e.message}</div>`;
     $('access-data-type').textContent = '-';
     $('access-data-size').textContent = '-';
     $('access-data-time').textContent = '-';
+    pushAgentMessage({
+      level: 'warn',
+      status: '失败',
+      agentName: accessAgentName,
+      text: `访问任务失败：${e.message}`,
+    });
   } finally {
     btn.disabled = false;
     btn.textContent = '访问';
@@ -1774,6 +2001,7 @@ async function init() {
   renderUserTable();
   renderPolicyTable();
   renderInterfaceTable();
+  initAgentPanel();
 
   // 延迟初始化图表（等DOM渲染完成）
   requestAnimationFrame(() => {

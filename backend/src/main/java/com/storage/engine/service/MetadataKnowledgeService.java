@@ -42,6 +42,22 @@ public class MetadataKnowledgeService {
     @Autowired
     private StorageAdapterFactory storageAdapterFactory;
 
+    public boolean indexExtractResult(DataItem item, MetadataExtractResult result) {
+        if (item == null || !neo4jDao.isEnabled()) {
+            return false;
+        }
+        try {
+            MetadataExtractResult safeResult = result == null ? new MetadataExtractResult() : result;
+            logExtractResult(item, safeResult);
+            neo4jDao.upsertKnowledgeGraph(item, safeResult);
+            return true;
+        } catch (Exception e) {
+            logger.error("元数据入图失败, logicalPath={}, dataType={}, error={}",
+                    safe(item.getLogicalPath()), safe(item.getDataType()), e.getMessage(), e);
+            return false;
+        }
+    }
+
     public boolean indexStoredData(byte[] fileBytes, DataItem item) {
         if (item == null || !neo4jDao.isEnabled()) {
             return false;
@@ -52,9 +68,7 @@ public class MetadataKnowledgeService {
 
             StorageAdapter adapter = storageAdapterFactory.getAdapter(dataType);
             MetadataExtractResult result = adapter.extractMetadata(fileBytes, fileFormat);
-            logExtractResult(item, result);
-            neo4jDao.upsertKnowledgeGraph(item, result);
-            return true;
+            return indexExtractResult(item, result);
         } catch (Exception e) {
             logger.error("元数据抽取失败, logicalPath={}, dataType={}, error={}",
                     safe(item.getLogicalPath()), safe(item.getDataType()), e.getMessage(), e);
