@@ -5,10 +5,10 @@ import com.storage.engine.model.AgentMessageEvent;
 import com.storage.engine.model.DataItem;
 import com.storage.engine.model.MetadataExtractResult;
 import com.storage.engine.model.Node;
+import com.storage.engine.model.Policy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -31,8 +31,10 @@ public class MetadataExtractionSchedulerService {
 
     private static final int MAX_EVENT_CACHE = 300;
 
-    @Value("${metadata.extraction.scan-batch-size:20}")
-    private int scanBatchSize;
+    private static final long DEFAULT_SCAN_INTERVAL_MS = 60000L;
+    private static final int DEFAULT_SCAN_BATCH_SIZE = 20;
+
+    private volatile long nextScanTimestamp = 0L;
 
     @Autowired
     private AccessService accessService;
@@ -46,6 +48,9 @@ public class MetadataExtractionSchedulerService {
     @Autowired
     private NodeService nodeService;
 
+    @Autowired
+    private PolicyService policyService;
+
     private final Set<Integer> processingIds = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
@@ -55,8 +60,25 @@ public class MetadataExtractionSchedulerService {
         publishEvent("info", "初始化", "元数据定时抽取调度已启动，等待扫描任务。", "IGinX-Scheduler");
     }
 
-    @Scheduled(fixedDelayString = "${metadata.extraction.scan-interval-ms:60000}")
+    @Scheduled(fixedDelay = 2000)
     public void scanAndExtract() {
+        Policy effectivePolicy = policyService.getPolicy();
+        boolean enabled = effectivePolicy != null && Boolean.TRUE.equals(effectivePolicy.getExtractionEnabled());
+        if (!enabled) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        long scanIntervalMs = DEFAULT_SCAN_INTERVAL_MS;
+        if (effectivePolicy != null && effectivePolicy.getExtractionScanIntervalMs() != null) {
+            scanIntervalMs = Math.max(1000L, effectivePolicy.getExtractionScanIntervalMs());
+        }
+
+        if (now < nextScanTimestamp) {
+            return;
+        }
+        nextScanTimestamp = now + scanIntervalMs;
+
         List<DataItem> allMeta = accessService.getAllMeta();
         if (allMeta == null || allMeta.isEmpty()) {
             return;
@@ -84,7 +106,10 @@ public class MetadataExtractionSchedulerService {
             }
         });
 
-        int maxPerScan = Math.max(1, scanBatchSize);
+        int maxPerScan = DEFAULT_SCAN_BATCH_SIZE;
+        if (effectivePolicy != null && effectivePolicy.getExtractionScanBatchSize() != null) {
+            maxPerScan = Math.max(1, effectivePolicy.getExtractionScanBatchSize());
+        }
         int count = 0;
         for (DataItem candidate : candidates) {
             if (count >= maxPerScan) {
@@ -179,7 +204,7 @@ public class MetadataExtractionSchedulerService {
         if ("relational".equals(dt) || "timeseries".equals(dt) || "keyvalue".equals(dt)) {
             int fieldCount = result == null || result.getFields() == null ? 0 : result.getFields().size();
             String text = "UDF抽取完成，逻辑路径 " + logicalPath + "，field实体 " + fieldCount + " 个。";
-            String udfMessage = result == null ? "" : safe(result.getLlmResponse());
+            String udfMessage = result == null ? "" : sanitizeUdfMessage(result.getLlmResponse());
             if (!udfMessage.isEmpty()) {
                 text = text + " " + udfMessage;
             }
@@ -189,11 +214,19 @@ public class MetadataExtractionSchedulerService {
         int entityCount = result == null || result.getEntities() == null ? 0 : result.getEntities().size();
         int tripleCount = result == null || result.getTriples() == null ? 0 : result.getTriples().size();
         String text = "UDF抽取完成，逻辑路径 " + logicalPath + "，实体 " + entityCount + " 个，三元组 " + tripleCount + " 条。";
-        String udfMessage = result == null ? "" : safe(result.getLlmResponse());
+        String udfMessage = result == null ? "" : sanitizeUdfMessage(result.getLlmResponse());
         if (!udfMessage.isEmpty()) {
             text = text + " " + udfMessage;
         }
         return text;
+    }
+
+    private String sanitizeUdfMessage(String message) {
+        String cleaned = safe(message)
+                .replaceAll("(?i)[a-z]+(?:\\s+[a-z]+)*\\s+extraction by udf;\\s*neo4j persisted\\.?", "")
+                .replaceAll("\\s{2,}", " ")
+                .trim();
+        return cleaned;
     }
 
     private void logExtractResult(DataItem item, MetadataExtractResult result) {

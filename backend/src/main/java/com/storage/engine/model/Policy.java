@@ -1,58 +1,87 @@
 package com.storage.engine.model;
 
 public class Policy {
-    private Integer policy1;
-    private Double policy2;
-    private Boolean policy3;
-    private String policy1Desc;
-    private String policy2Desc;
-    private String policy3Desc;
+    private Boolean extractionEnabled;
+    private Long extractionScanIntervalMs;
+    private Integer extractionScanBatchSize;
 
-    public Integer getPolicy1() {
-        return policy1;
+    private String extractionEnabledSource;
+    private String extractionScanIntervalMsSource;
+    private String extractionScanBatchSizeSource;
+
+    private String extractionEnabledDesc;
+    private String extractionScanIntervalMsDesc;
+    private String extractionScanBatchSizeDesc;
+
+    public Boolean getExtractionEnabled() {
+        return extractionEnabled;
     }
 
-    public void setPolicy1(Integer policy1) {
-        this.policy1 = policy1;
+    public void setExtractionEnabled(Boolean extractionEnabled) {
+        this.extractionEnabled = extractionEnabled;
     }
 
-    public Double getPolicy2() {
-        return policy2;
+    public Long getExtractionScanIntervalMs() {
+        return extractionScanIntervalMs;
     }
 
-    public void setPolicy2(Double policy2) {
-        this.policy2 = policy2;
+    public void setExtractionScanIntervalMs(Long extractionScanIntervalMs) {
+        this.extractionScanIntervalMs = extractionScanIntervalMs;
     }
 
-    public Boolean getPolicy3() {
-        return policy3;
+    public Integer getExtractionScanBatchSize() {
+        return extractionScanBatchSize;
     }
 
-    public void setPolicy3(Boolean policy3) {
-        this.policy3 = policy3;
+    public void setExtractionScanBatchSize(Integer extractionScanBatchSize) {
+        this.extractionScanBatchSize = extractionScanBatchSize;
     }
 
-    public String getPolicy1Desc() {
-        return policy1Desc;
+    public String getExtractionEnabledSource() {
+        return extractionEnabledSource;
     }
 
-    public void setPolicy1Desc(String policy1Desc) {
-        this.policy1Desc = policy1Desc;
+    public void setExtractionEnabledSource(String extractionEnabledSource) {
+        this.extractionEnabledSource = extractionEnabledSource;
     }
 
-    public String getPolicy2Desc() {
-        return policy2Desc;
+    public String getExtractionScanIntervalMsSource() {
+        return extractionScanIntervalMsSource;
     }
 
-    public void setPolicy2Desc(String policy2Desc) {
-        this.policy2Desc = policy2Desc;
+    public void setExtractionScanIntervalMsSource(String extractionScanIntervalMsSource) {
+        this.extractionScanIntervalMsSource = extractionScanIntervalMsSource;
     }
 
-    public String getPolicy3Desc() {
-        return policy3Desc;
+    public String getExtractionScanBatchSizeSource() {
+        return extractionScanBatchSizeSource;
     }
 
-    public void setPolicy3Desc(String policy3Desc) {
-        this.policy3Desc = policy3Desc;
+    public void setExtractionScanBatchSizeSource(String extractionScanBatchSizeSource) {
+        this.extractionScanBatchSizeSource = extractionScanBatchSizeSource;
+    }
+
+    public String getExtractionEnabledDesc() {
+        return extractionEnabledDesc;
+    }
+
+    public void setExtractionEnabledDesc(String extractionEnabledDesc) {
+        this.extractionEnabledDesc = extractionEnabledDesc;
+    }
+
+    public String getExtractionScanIntervalMsDesc() {
+        return extractionScanIntervalMsDesc;
+    }
+
+    public void setExtractionScanIntervalMsDesc(String extractionScanIntervalMsDesc) {
+        this.extractionScanIntervalMsDesc = extractionScanIntervalMsDesc;
+    }
+
+    public String getExtractionScanBatchSizeDesc() {
+        return extractionScanBatchSizeDesc;
+    }
+
+    public void setExtractionScanBatchSizeDesc(String extractionScanBatchSizeDesc) {
+        this.extractionScanBatchSizeDesc = extractionScanBatchSizeDesc;
     }
 }

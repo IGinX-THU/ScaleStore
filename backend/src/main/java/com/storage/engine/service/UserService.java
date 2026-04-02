@@ -30,9 +30,21 @@ public class UserService {
     }
 
     public synchronized User createUser(User user) {
+        if (user == null) {
+            throw new RuntimeException("User payload is empty");
+        }
+        if (user.getUsername() == null || user.getUsername().trim().isEmpty()) {
+            throw new RuntimeException("Username is required");
+        }
+        if (user.getPassword() == null || user.getPassword().trim().isEmpty()) {
+            throw new RuntimeException("Password is required");
+        }
+
+        user.setUsername(user.getUsername().trim());
+
         List<User> allUsers = getAllUsers();
         for (User u : allUsers) {
-            if (u.getUsername().equals(user.getUsername())) {
+            if (u.getUsername() != null && u.getUsername().equalsIgnoreCase(user.getUsername())) {
                 throw new RuntimeException("Username already exists");
             }
         }
@@ -42,10 +54,17 @@ public class UserService {
             user.setId((int) (maxId + 1));
         }
 
-        if (user.getPassword() != null) {
-            user.setPassword(SecurityUtils.encryptPassword(user.getPassword()));
+        user.setPassword(SecurityUtils.encryptPassword(user.getPassword()));
+
+        if (user.getType() == null) {
+            user.setType(0);
         }
-        
+        if (user.getEmail() == null) {
+            user.setEmail("");
+        }
+        if (user.getPhone() == null) {
+            user.setPhone("");
+        }
         user.setIsValid(true);
         iginxDao.insertUser(user.getId(), user.getUsername(), user.getPassword(), user.getType(), user.getEmail(), user.getPhone(), true);
         return user;
@@ -65,17 +84,35 @@ public class UserService {
     }
 
     public User updateUser(Integer id, User user) {
+        if (user == null) {
+            return null;
+        }
+
         User existing = getUserById(id);
         if (existing != null) {
              user.setId(id);
-             // If password is updated, encrypt it
-             if (user.getPassword() != null && !user.getPassword().isEmpty()) {
-                 user.setPassword(SecurityUtils.encryptPassword(user.getPassword()));
+
+             String username = user.getUsername() != null && !user.getUsername().trim().isEmpty()
+                     ? user.getUsername().trim()
+                     : existing.getUsername();
+             Integer type = user.getType() != null ? user.getType() : existing.getType();
+             String email = user.getEmail() != null ? user.getEmail() : existing.getEmail();
+             String phone = user.getPhone() != null ? user.getPhone() : existing.getPhone();
+
+             String encryptedPassword;
+             if (user.getPassword() != null && !user.getPassword().trim().isEmpty()) {
+                 encryptedPassword = SecurityUtils.encryptPassword(user.getPassword());
              } else {
-                 // Keep old password if new one is empty
-                 user.setPassword(existing.getPassword());
+                 encryptedPassword = existing.getPassword();
              }
-             iginxDao.updateUser(id, user.getUsername(), user.getPassword(), user.getType(), user.getEmail(), user.getPhone());
+
+             iginxDao.updateUser(id, username, encryptedPassword, type, email, phone);
+
+             user.setUsername(username);
+             user.setPassword(encryptedPassword);
+             user.setType(type);
+             user.setEmail(email);
+             user.setPhone(phone);
              user.setIsValid(true);
              return user;
         }
@@ -98,13 +135,39 @@ public class UserService {
         String encryptedPassword = SecurityUtils.encryptPassword(password);
         
         for (User user : allUsers) {
-            if (user.getUsername().equals(username) && 
+            if (user.getUsername() != null && user.getUsername().equals(username) &&
                 user.getPassword() != null && 
                 user.getPassword().equals(encryptedPassword)) {
                 return user;
             }
         }
         return null;
+    }
+
+    public User sanitizeUser(User user) {
+        if (user == null) {
+            return null;
+        }
+        User copy = new User();
+        copy.setId(user.getId());
+        copy.setUsername(user.getUsername());
+        copy.setType(user.getType());
+        copy.setEmail(user.getEmail());
+        copy.setPhone(user.getPhone());
+        copy.setIsValid(user.getIsValid());
+        copy.setPassword(null);
+        return copy;
+    }
+
+    public List<User> sanitizeUsers(List<User> users) {
+        List<User> safe = new ArrayList<User>();
+        if (users == null) {
+            return safe;
+        }
+        for (User user : users) {
+            safe.add(sanitizeUser(user));
+        }
+        return safe;
     }
 
     private List<User> parseUsers(SessionExecuteSqlResult result) {
@@ -149,7 +212,9 @@ public class UserService {
     }
 
     private String getValueAsString(Object obj) {
-        return obj == null ? null : new String((byte[])obj); // IGinX often returns bytes for strings
+        if (obj == null) return null;
+        if (obj instanceof byte[]) return new String((byte[])obj);
+        return obj.toString();
     }
 
     private Integer getValueAsInt(Object obj) {

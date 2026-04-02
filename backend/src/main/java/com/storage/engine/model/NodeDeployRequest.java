@@ -12,7 +12,7 @@ public class NodeDeployRequest {
     private String deployDirectory;
     private String packagePath;
     private String zookeeperConnectionString;
-    private String restPort;
+    private String pythonCmd;
 
     public Integer getId() {
         return id;
@@ -94,12 +94,12 @@ public class NodeDeployRequest {
         this.zookeeperConnectionString = zookeeperConnectionString;
     }
 
-    public String getRestPort() {
-        return restPort;
+    public String getPythonCmd() {
+        return pythonCmd;
     }
 
-    public void setRestPort(String restPort) {
-        this.restPort = restPort;
+    public void setPythonCmd(String pythonCmd) {
+        this.pythonCmd = pythonCmd;
     }
 
 }

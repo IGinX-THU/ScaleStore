@@ -7,80 +7,33 @@ const API_BASE = ''; // Use relative path (proxied by Vite in dev, same origin i
 // ==================== 数据 ====================
 let clusterData = [];
 
-const userData = [
-  { id: 1, name: 'admin', type: 'admin', email: 'admin@storage.com', phone: '13800138000', password: '' },
-  { id: 2, name: 'user01', type: 'user', email: 'user01@storage.com', phone: '13900139000', password: '' },
-  { id: 3, name: 'user02', type: 'user', email: 'user02@storage.com', phone: '13700137000', password: '' },
-  { id: 4, name: 'operator', type: 'admin', email: 'operator@storage.com', phone: '13600136000', password: '' },
-  { id: 5, name: 'analyst', type: 'user', email: 'analyst@storage.com', phone: '13500135000', password: '' },
-];
-
-const policyData = [
-  { id: 1, name: '最大连接数', value: '1000', desc: '系统允许的最大并发连接数', inputType: 'number' },
-  { id: 2, name: '超时时间', value: '30', desc: '请求超时时间（秒）', inputType: 'number' },
-  { id: 3, name: '缓存大小', value: '512', desc: '系统缓存大小（MB）', inputType: 'number' },
-  { id: 4, name: '日志级别', value: 'INFO', desc: '系统日志记录级别', inputType: 'select', options: ['DEBUG', 'INFO', 'WARN', 'ERROR'] },
-  { id: 5, name: '副本数量', value: '3', desc: '数据副本保存数量', inputType: 'number' },
-  { id: 6, name: '压缩算法', value: 'LZ4', desc: '数据压缩算法类型', inputType: 'select', options: ['NONE', 'LZ4', 'SNAPPY', 'ZSTD'] },
-  { id: 7, name: '最大存储容量', value: '10240', desc: '单节点最大存储容量（GB）', inputType: 'number' },
-  { id: 8, name: '心跳间隔', value: '5', desc: '节点心跳检测间隔（秒）', inputType: 'number' },
-];
+let userData = [];
+let policyData = [];
 
 const interfaceData = {
-  rest: [
-    { id: 'rest-1', name: '存储数据', url: '/api/v1/storage/save', type: 'POST', desc: '保存数据到存储引擎，支持多种数据类型',
-      params: '{\n  "type": "relational",\n  "path": "/data/project/dataset",\n  "data": {...}\n}',
-      response: '{\n  "code": 200,\n  "message": "success",\n  "data": { "id": "12345", "status": "saved" }\n}',
-      code: 'curl -X POST http://localhost:8080/api/v1/storage/save \\\n  -H "Content-Type: application/json" \\\n  -d \'{ "type": "relational", "path": "/data/project/dataset", "data": {...} }\''
-    },
-    { id: 'rest-2', name: '访问数据', url: '/api/v1/storage/get', type: 'GET', desc: '根据路径获取存储的数据',
-      params: '{\n  "path": "/data/project/dataset"\n}',
-      response: '{\n  "code": 200,\n  "message": "success",\n  "data": {...}\n}',
-      code: 'curl -X GET "http://localhost:8080/api/v1/storage/get?path=/data/project/dataset" \\\n  -H "Content-Type: application/json"'
-    },
-    { id: 'rest-3', name: '删除数据', url: '/api/v1/storage/delete', type: 'DELETE', desc: '根据路径删除存储的数据',
-      params: '{\n  "path": "/data/project/dataset"\n}',
-      response: '{\n  "code": 200,\n  "message": "success"\n}',
-      code: 'curl -X DELETE "http://localhost:8080/api/v1/storage/delete?path=/data/project/dataset" \\\n  -H "Content-Type: application/json"'
-    },
-    { id: 'rest-4', name: '查询元数据', url: '/api/v1/metadata/query', type: 'GET', desc: '查询数据的元数据信息',
-      params: '{\n  "mode": "system",\n  "logicalPath": "/data/project",\n  "dataType": "document",\n  "keyword": "足球"\n}',
-      response: '{\n  "code": 200,\n  "message": "success",\n  "data": { "nodes": [...], "links": [...] }\n}',
-      code: 'curl -X GET "http://localhost:8080/api/v1/metadata/query?mode=system&logicalPath=/data/project&dataType=document&keyword=足球" \\\n+  -H "Content-Type: application/json"'
-    },
-  ],
+  rest: [],
   java: [
-    { id: 'java-1', name: 'SaveData', url: 'storage.StorageService/SaveData', type: 'gRPC', desc: 'gRPC保存数据接口',
-      params: 'message SaveRequest {\n  string type = 1;\n  string path = 2;\n  bytes data = 3;\n}',
-      response: 'message SaveResponse {\n  int32 code = 1;\n  string message = 2;\n  string id = 3;\n}',
-      code: 'StorageServiceBlockingStub stub = StorageServiceGrpc.newBlockingStub(channel);\nSaveRequest request = SaveRequest.newBuilder()\n    .setType("relational")\n    .setPath("/data/project/dataset")\n    .setData(data)\n    .build();\nSaveResponse response = stub.saveData(request);'
-    },
-    { id: 'java-2', name: 'GetData', url: 'storage.StorageService/GetData', type: 'gRPC', desc: 'gRPC获取数据接口',
-      params: 'message GetRequest {\n  string path = 1;\n}',
-      response: 'message GetResponse {\n  int32 code = 1;\n  string message = 2;\n  bytes data = 3;\n}',
-      code: 'StorageServiceBlockingStub stub = StorageServiceGrpc.newBlockingStub(channel);\nGetRequest request = GetRequest.newBuilder()\n    .setPath("/data/project/dataset")\n    .build();\nGetResponse response = stub.getData(request);'
-    },
-    { id: 'java-3', name: 'DeleteData', url: 'storage.StorageService/DeleteData', type: 'gRPC', desc: 'gRPC删除数据接口',
-      params: 'message DeleteRequest {\n  string path = 1;\n}',
-      response: 'message DeleteResponse {\n  int32 code = 1;\n  string message = 2;\n}',
-      code: 'StorageServiceBlockingStub stub = StorageServiceGrpc.newBlockingStub(channel);\nDeleteRequest request = DeleteRequest.newBuilder()\n    .setPath("/data/project/dataset")\n    .build();\nDeleteResponse response = stub.deleteData(request);'
+    {
+      id: 'java-coming-soon',
+      name: 'Java gRPC（开发中）',
+      url: '-',
+      type: 'gRPC',
+      desc: '当前版本仅开放 RESTful API，Java gRPC 即将上线。',
+      params: '-',
+      response: '-',
+      code: '// gRPC interface is not available yet.',
     },
   ],
   python: [
-    { id: 'python-1', name: 'save_data', url: 'storage_pb2_grpc.StorageService.save_data', type: 'gRPC', desc: 'Python gRPC保存数据',
-      params: 'message SaveRequest {\n  string type = 1;\n  string path = 2;\n  bytes data = 3;\n}',
-      response: 'message SaveResponse {\n  int32 code = 1;\n  string message = 2;\n  string id = 3;\n}',
-      code: 'import grpc\nimport storage_pb2\nimport storage_pb2_grpc\n\nchannel = grpc.insecure_channel("localhost:50051")\nstub = storage_pb2_grpc.StorageServiceStub(channel)\n\nrequest = storage_pb2.SaveRequest(\n    type="relational",\n    path="/data/project/dataset",\n    data=data\n)\nresponse = stub.save_data(request)'
-    },
-    { id: 'python-2', name: 'get_data', url: 'storage_pb2_grpc.StorageService.get_data', type: 'gRPC', desc: 'Python gRPC获取数据',
-      params: 'message GetRequest {\n  string path = 1;\n}',
-      response: 'message GetResponse {\n  int32 code = 1;\n  string message = 2;\n  bytes data = 3;\n}',
-      code: 'import grpc\nimport storage_pb2\nimport storage_pb2_grpc\n\nchannel = grpc.insecure_channel("localhost:50051")\nstub = storage_pb2_grpc.StorageServiceStub(channel)\n\nrequest = storage_pb2.GetRequest(path="/data/project/dataset")\nresponse = stub.get_data(request)'
-    },
-    { id: 'python-3', name: 'delete_data', url: 'storage_pb2_grpc.StorageService.delete_data', type: 'gRPC', desc: 'Python gRPC删除数据',
-      params: 'message DeleteRequest {\n  string path = 1;\n}',
-      response: 'message DeleteResponse {\n  int32 code = 1;\n  string message = 2;\n}',
-      code: 'import grpc\nimport storage_pb2\nimport storage_pb2_grpc\n\nchannel = grpc.insecure_channel("localhost:50051")\nstub = storage_pb2_grpc.StorageServiceStub(channel)\n\nrequest = storage_pb2.DeleteRequest(path="/data/project/dataset")\nresponse = stub.delete_data(request)'
+    {
+      id: 'python-coming-soon',
+      name: 'Python gRPC（开发中）',
+      url: '-',
+      type: 'gRPC',
+      desc: '当前版本仅开放 RESTful API，Python gRPC 即将上线。',
+      params: '-',
+      response: '-',
+      code: '# gRPC interface is not available yet.',
     },
   ],
 };
@@ -90,6 +43,8 @@ let policyBackup = [];
 let policyEditing = false;
 let selectedFiles = [];
 let currentInterfaceType = 'rest';
+let currentUser = null;
+let dashboardBootstrapped = false;
 let metadataChart = null;
 let topologyChart = null;
 let clusterHeartbeatTimer = null;
@@ -165,6 +120,388 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
   });
 }
 
+async function requestJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const contentType = response.headers.get('content-type') || '';
+  const payload = contentType.includes('application/json') ? await response.json() : null;
+
+  if (!response.ok) {
+    const message = payload?.message || `HTTP ${response.status}`;
+    throw new Error(message);
+  }
+
+  if (!payload || payload.code !== 200) {
+    throw new Error(payload?.message || '请求失败');
+  }
+
+  return payload.data;
+}
+
+function mapUserFromBackend(item) {
+  return {
+    id: Number(item.id),
+    name: item.username || '',
+    type: Number(item.type) === 1 ? 'admin' : 'user',
+    email: item.email || '',
+    phone: item.phone || '',
+    password: '',
+  };
+}
+
+function buildUserPayload(editId = '') {
+  const name = $('user-name-input').value.trim();
+  const password = $('user-password-input').value;
+  const type = $('user-type-input').value;
+  const email = $('user-email-input').value.trim();
+  const phone = $('user-phone-input').value.trim();
+
+  const payload = {
+    username: name,
+    type: type === 'admin' ? 1 : 0,
+    email,
+    phone,
+  };
+
+  if (editId) {
+    payload.id = Number(editId);
+  }
+  if (password && password.trim()) {
+    payload.password = password;
+  }
+
+  return payload;
+}
+
+async function loadUsers() {
+  const users = await requestJson(`${API_BASE}/config/users`);
+  userData = (users || []).map(mapUserFromBackend);
+}
+
+async function createUser(payload) {
+  const user = await requestJson(`${API_BASE}/config/users`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return mapUserFromBackend(user);
+}
+
+async function updateUser(id, payload) {
+  const user = await requestJson(`${API_BASE}/config/users/${id}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return mapUserFromBackend(user);
+}
+
+async function deleteUser(id) {
+  await requestJson(`${API_BASE}/config/users/${id}`, {
+    method: 'DELETE',
+  });
+}
+
+function mapPolicyFromBackend(policy) {
+  if (!policy) {
+    return [];
+  }
+
+  return [
+    {
+      id: 'extraction-enabled',
+      key: 'extractionEnabled',
+      name: 'extraction.enabled',
+      value: String(!!policy.extractionEnabled),
+      desc: policy.extractionEnabledDesc || '元数据抽取总开关',
+      inputType: 'select',
+      options: ['true', 'false'],
+    },
+    {
+      id: 'scan-interval-ms',
+      key: 'extractionScanIntervalMs',
+      name: 'extraction.scan-interval-ms',
+      value: String(policy.extractionScanIntervalMs ?? 60000),
+      desc: policy.extractionScanIntervalMsDesc || '扫描间隔（毫秒）',
+      inputType: 'number',
+    },
+    {
+      id: 'scan-batch-size',
+      key: 'extractionScanBatchSize',
+      name: 'extraction.scan-batch-size',
+      value: String(policy.extractionScanBatchSize ?? 20),
+      desc: policy.extractionScanBatchSizeDesc || '每轮扫描批大小',
+      inputType: 'number',
+    },
+  ];
+}
+
+function buildPolicyPayloadFromRows(rows) {
+  const rowByKey = {};
+  rows.forEach(row => {
+    rowByKey[row.key] = row;
+  });
+
+  return {
+    extractionEnabled: String(rowByKey.extractionEnabled?.value || 'false').toLowerCase() === 'true',
+    extractionScanIntervalMs: Number(rowByKey.extractionScanIntervalMs?.value || 60000),
+    extractionScanBatchSize: Number(rowByKey.extractionScanBatchSize?.value || 20),
+  };
+}
+
+async function loadPolicies() {
+  const policy = await requestJson(`${API_BASE}/config/policies`);
+  policyData = mapPolicyFromBackend(policy);
+}
+
+async function savePolicies(rows) {
+  const payload = buildPolicyPayloadFromRows(rows);
+  const policy = await requestJson(`${API_BASE}/config/policies`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  policyData = mapPolicyFromBackend(policy);
+}
+
+function mapRestfulApiFromBackend(item) {
+  const id = Number(item.id);
+  return {
+    id: `rest-${id}`,
+    rawId: id,
+    name: item.name || '',
+    url: item.url || '',
+    type: item.method || '',
+    desc: item.description || '',
+    params: item.paramsExample || '-',
+    response: item.responseExample || '-',
+    code: item.curlExample || '-',
+  };
+}
+
+const HIDDEN_REST_INTERFACE_NAMES = new Set([
+  '查询节点部署任务状态',
+  '删除节点元数据',
+  '查询服务端信息',
+  '查询元数据抽取事件',
+  '查询数据清单',
+]);
+
+const REST_META_ALLOWED_NAMES = new Set([
+  '查询RESTful接口列表',
+  '查询RESTful接口详情',
+]);
+
+function normalizeRestInterfaceItem(item) {
+  if (!item) {
+    return item;
+  }
+
+  if ((item.name || '').trim() === '停止节点(异步)') {
+    return {
+      ...item,
+      name: '移除节点(异步)',
+      desc: (item.desc || '').replace('停止指定节点', '移除指定节点'),
+    };
+  }
+
+  return item;
+}
+
+function shouldKeepRestInterfaceItem(item) {
+  const name = (item?.name || '').trim();
+  if (!name) {
+    return false;
+  }
+
+  if (HIDDEN_REST_INTERFACE_NAMES.has(name)) {
+    return false;
+  }
+
+  const url = (item?.url || '').trim();
+  if (url.startsWith('/config/interfaces/restful')) {
+    return REST_META_ALLOWED_NAMES.has(name);
+  }
+
+  return true;
+}
+
+async function loadRestfulInterfaces() {
+  const items = await requestJson(`${API_BASE}/config/interfaces/restful`);
+  interfaceData.rest = (items || [])
+    .map(mapRestfulApiFromBackend)
+    .map(normalizeRestInterfaceItem)
+    .filter(shouldKeepRestInterfaceItem);
+}
+
+function setCurrentUser(user) {
+  currentUser = user;
+  $('header-user-name').textContent = user?.name || '未登录';
+}
+
+function showLoginError(message) {
+  const el = $('login-error');
+  el.textContent = message;
+  el.classList.remove('hidden');
+}
+
+function clearLoginError() {
+  const el = $('login-error');
+  el.textContent = '';
+  el.classList.add('hidden');
+}
+
+function showLoginOverlay() {
+  $('login-overlay').classList.remove('hidden');
+}
+
+function hideLoginOverlay() {
+  $('login-overlay').classList.add('hidden');
+}
+
+function openProfileModal() {
+  if (!currentUser) {
+    return;
+  }
+
+  $('profile-username').value = currentUser.name || '';
+  $('profile-type').value = currentUser.type === 'admin' ? '超级管理员' : '普通用户';
+  $('profile-email').value = currentUser.email || '';
+  $('profile-phone').value = currentUser.phone || '';
+  showModal('modal-profile');
+}
+
+function closeProfileModal() {
+  hideModal('modal-profile');
+}
+
+async function performLogin() {
+  const username = $('login-username-input').value.trim();
+  const password = $('login-password-input').value;
+
+  if (!username || !password) {
+    showLoginError('请输入用户名和密码');
+    return;
+  }
+
+  const submitBtn = $('login-submit-btn');
+  submitBtn.disabled = true;
+  submitBtn.textContent = '登录中...';
+  clearLoginError();
+
+  try {
+    const user = await requestJson(`${API_BASE}/config/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+
+    setCurrentUser(mapUserFromBackend(user));
+    $('login-password-input').value = '';
+    await bootstrapDashboard();
+    hideLoginOverlay();
+  } catch (e) {
+    showLoginError(`登录失败：${e.message}`);
+    showLoginOverlay();
+  } finally {
+    submitBtn.disabled = false;
+    submitBtn.textContent = '进入平台';
+  }
+}
+
+function performLogout() {
+  closeProfileModal();
+  setCurrentUser(null);
+  clearLoginError();
+  $('login-password-input').value = '';
+  showLoginOverlay();
+  $('header-user-menu').classList.remove('open');
+  $('login-username-input').focus();
+}
+
+function bindAuthEvents() {
+  $('login-submit-btn').addEventListener('click', () => {
+    performLogin();
+  });
+
+  $('login-username-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      performLogin();
+    }
+  });
+
+  $('login-password-input').addEventListener('keydown', e => {
+    if (e.key === 'Enter') {
+      performLogin();
+    }
+  });
+
+  $('header-user-btn').addEventListener('click', e => {
+    e.stopPropagation();
+    $('header-user-menu').classList.toggle('open');
+  });
+
+  document.addEventListener('click', () => {
+    $('header-user-menu').classList.remove('open');
+  });
+
+  $('header-profile-btn').addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    $('header-user-menu').classList.remove('open');
+    openProfileModal();
+  });
+
+  $('header-logout-btn').addEventListener('click', e => {
+    e.preventDefault();
+    e.stopPropagation();
+    performLogout();
+  });
+
+  $('profile-modal-close').addEventListener('click', closeProfileModal);
+  $('profile-modal-close-x').addEventListener('click', closeProfileModal);
+}
+
+async function refreshDashboardData() {
+  await Promise.all([
+    loadClusterNodes(),
+    loadUsers(),
+    loadPolicies(),
+    loadRestfulInterfaces(),
+  ]);
+
+  renderClusterTable();
+  renderUserTable();
+  renderPolicyTable();
+  renderInterfaceTable();
+}
+
+async function bootstrapDashboard() {
+  await refreshDashboardData();
+
+  if (dashboardBootstrapped) {
+    initClusterTopology();
+    syncAgentPoolNodeState(true);
+    return;
+  }
+
+  dashboardBootstrapped = true;
+  initAgentPanel();
+
+  requestAnimationFrame(() => {
+    initClusterTopology();
+    initMetadataGraph().catch(e => {
+      console.error('Init metadata graph failed:', e);
+    });
+  });
+
+  if (clusterHeartbeatTimer) {
+    clearInterval(clusterHeartbeatTimer);
+  }
+  clusterHeartbeatTimer = setInterval(() => {
+    if (!deployInProgress && currentUser) refreshClusterView(true);
+  }, 15000);
+}
+
 // ==================== 智能体群消息流 ====================
 function getAgentNodeNames() {
   const onlineNodes = clusterData.filter(n => n.status === 'ONLINE');
@@ -214,6 +551,13 @@ function pushAgentMessage({ level = 'info', status = '', text = '', agentName = 
     top: list.scrollHeight,
     behavior: smooth ? 'smooth' : 'auto',
   });
+}
+
+function sanitizeAgentEventText(text) {
+  return String(text || '')
+    .replace(/\s*[a-z]+(?:\s+[a-z]+)*\s+extraction by udf;\s*neo4j persisted\.?/ig, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
 }
 
 function syncAgentPoolNodeState(force = false) {
@@ -266,7 +610,7 @@ async function pollAgentEvents() {
     pushAgentMessage({
       level,
       status: evt.status || '',
-      text: evt.text || '',
+      text: sanitizeAgentEventText(evt.text || ''),
       agentName: evt.agentName || '',
       timestamp: evt.timestamp,
     });
@@ -398,10 +742,6 @@ function openClusterModal(title, data, mode) {
   $('cluster-ip-input').disabled = !isAdd;
   $('cluster-port-input').disabled = !isAdd;
 
-  // Rest/data port fields: only visible in add mode
-  var restPortGroup = $('cluster-rest-port-group');
-  if (restPortGroup) restPortGroup.style.display = isAdd ? '' : 'none';
-
   // Deploy/SSH fields: only visible in add mode
   const deployFields = $('cluster-deploy-fields');
   if (deployFields) {
@@ -412,8 +752,8 @@ function openClusterModal(title, data, mode) {
     $('cluster-ssh-user-input').value = '';
     $('cluster-ssh-password-input').value = '';
     $('cluster-deploy-dir-input').value = '~';
+    $('cluster-python-cmd-input').value = 'python3';
     $('cluster-port-input').value = '6888';
-    $('cluster-rest-port-input').value = '7888';
 
     $('cluster-zk-input').value = '';
     // Auto-detect server IP for ZK default
@@ -478,7 +818,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
     const sshUsername = $('cluster-ssh-user-input').value.trim();
     const sshPassword = $('cluster-ssh-password-input').value;
     const deployDirectory = $('cluster-deploy-dir-input').value.trim();
-    const restPort = $('cluster-rest-port-input').value.trim();
+    const pythonCmd = $('cluster-python-cmd-input').value.trim();
     const zookeeperConnectionString = $('cluster-zk-input').value.trim();
 
     if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
@@ -504,7 +844,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
         sshUsername,
         sshPassword,
         deployDirectory,
-        restPort: restPort || '7888',
+        pythonCmd: pythonCmd || 'python3',
         zookeeperConnectionString,
       });
 
@@ -852,12 +1192,17 @@ function renderUserTable() {
   const { items, page, totalPages, total } = paginate(userData, paginationState.user.page, PAGE_SIZE);
   paginationState.user.page = page;
   const tbody = $('user-table-body');
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center">暂无用户数据</td></tr>';
+    renderPagination('user-pagination', 'user', 1, 0, renderUserTable);
+    return;
+  }
+
   tbody.innerHTML = items.map(u => `
     <tr>
       <td>${u.name}</td>
       <td><span class="badge ${u.type === 'admin' ? 'badge-admin' : 'badge-user'}">${u.type === 'admin' ? '超级管理员' : '普通用户'}</span></td>
-      <td title="${u.email}">${u.email}</td>
-      <td>${u.phone}</td>
+      <td>${u.email || '-'}</td>
       <td>
         <button class="btn-text-action view user-view-detail-btn" data-id="${u.id}">查看</button>
         <button class="btn-text-action edit user-set-btn" data-id="${u.id}">编辑</button>
@@ -883,12 +1228,16 @@ function bindUserRowEvents() {
     });
   });
   document.querySelectorAll('.user-delete-btn').forEach(btn => {
-    btn.addEventListener('click', function () {
+    btn.addEventListener('click', async function () {
       const id = +this.dataset.id;
       if (confirm('确定要删除该用户吗？')) {
-        const idx = userData.findIndex(u => u.id === id);
-        if (idx >= 0) userData.splice(idx, 1);
-        renderUserTable();
+        try {
+          await deleteUser(id);
+          await loadUsers();
+          renderUserTable();
+        } catch (e) {
+          alert('删除失败: ' + e.message);
+        }
       }
     });
   });
@@ -912,23 +1261,36 @@ $('user-add-btn').addEventListener('click', () => openUserModal('新增用户', 
 $('user-modal-cancel').addEventListener('click', () => hideModal('modal-user'));
 $('user-modal-close-x').addEventListener('click', () => hideModal('modal-user'));
 
-$('user-modal-save').addEventListener('click', () => {
+$('user-modal-save').addEventListener('click', async () => {
   const name = $('user-name-input').value.trim();
-  const password = $('user-password-input').value;
-  const type = $('user-type-input').value;
-  const email = $('user-email-input').value.trim();
-  const phone = $('user-phone-input').value.trim();
   if (!name) { alert('请填写用户名'); return; }
+
+  const saveBtn = $('user-modal-save');
   const editId = $('user-modal-save').dataset.editId;
-  if (editId) {
-    const user = userData.find(u => u.id === +editId);
-    if (user) Object.assign(user, { name, type, email, phone });
-  } else {
-    const maxId = userData.reduce((m, u) => Math.max(m, u.id), 0);
-    userData.push({ id: maxId + 1, name, type, email, phone, password });
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = '保存中...';
+  try {
+    const payload = buildUserPayload(editId);
+    if (!editId && !payload.password) {
+      throw new Error('新增用户必须设置密码');
+    }
+
+    if (editId) {
+      await updateUser(Number(editId), payload);
+    } else {
+      await createUser(payload);
+    }
+
+    await loadUsers();
+    hideModal('modal-user');
+    renderUserTable();
+  } catch (e) {
+    alert('保存失败: ' + e.message);
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '保存';
   }
-  hideModal('modal-user');
-  renderUserTable();
 });
 
 // ==================== 策略管理 ====================
@@ -936,6 +1298,12 @@ function renderPolicyTable() {
   const { items, page, totalPages, total } = paginate(policyData, paginationState.policy.page, PAGE_SIZE);
   paginationState.policy.page = page;
   const tbody = $('policy-table-body');
+  if (!items || items.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="3" class="text-center">暂无策略配置</td></tr>';
+    renderPagination('policy-pagination', 'policy', 1, 0, renderPolicyTable);
+    return;
+  }
+
   tbody.innerHTML = items.map(p => {
     let inputHtml = '';
     if (p.inputType === 'select') {
@@ -951,7 +1319,7 @@ function renderPolicyTable() {
         <span class="policy-value">${p.value}</span>
         <span class="policy-input-wrap">${inputHtml}</span>
       </td>
-      <td title="${p.desc}" style="max-width:150px">${p.desc}</td>
+      <td class="policy-desc-cell"><div class="policy-desc-scroll" title="${p.desc}">${p.desc}</div></td>
     </tr>`;
   }).join('');
   renderPagination('policy-pagination', 'policy', totalPages, total, renderPolicyTable);
@@ -971,20 +1339,30 @@ $('policy-edit-btn').addEventListener('click', () => {
   renderPolicyTable();
 });
 
-$('policy-save-btn').addEventListener('click', () => {
+$('policy-save-btn').addEventListener('click', async () => {
   document.querySelectorAll('.policy-edit-field').forEach(input => {
-    const id = +input.dataset.id;
-    const p = policyData.find(x => x.id === id);
+    const id = input.dataset.id;
+    const p = policyData.find(x => String(x.id) === String(id));
     if (p) p.value = input.value;
   });
-  exitPolicyEdit();
+
+  const saveBtn = $('policy-save-btn');
+  saveBtn.disabled = true;
+  saveBtn.textContent = '保存中...';
+
+  try {
+    await savePolicies(policyData);
+    exitPolicyEdit();
+  } catch (e) {
+    alert('策略保存失败: ' + e.message);
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '保存';
+  }
 });
 
 $('policy-cancel-btn').addEventListener('click', () => {
-  policyBackup.forEach(backup => {
-    const p = policyData.find(x => x.id === backup.id);
-    if (p) p.value = backup.value;
-  });
+  policyData = policyBackup.map(p => ({ ...p }));
   exitPolicyEdit();
 });
 
@@ -1917,11 +2295,16 @@ $('access-download-btn').addEventListener('click', async () => {
 function renderInterfaceTable() {
   const data = interfaceData[currentInterfaceType] || [];
   const tbody = $('interface-table-body');
+  if (!data.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center">暂无接口数据</td></tr>';
+    return;
+  }
+
   tbody.innerHTML = data.map(item => `
     <tr>
-      <td>${item.name}</td>
-      <td><span class="mono">${item.url}</span></td>
-      <td title="${item.desc}">${item.desc}</td>
+      <td>${escapeHtml(item.name || '-')}</td>
+      <td><span class="mono">${escapeHtml(item.url || '-')}</span></td>
+      <td class="policy-desc-cell" title="${escapeHtml(item.desc || '-')}">${escapeHtml(item.desc || '-')}</td>
       <td><button class="btn-text-action view interface-view-btn" data-id="${item.id}" data-type="${currentInterfaceType}">查看详情</button></td>
     </tr>
   `).join('');
@@ -1962,6 +2345,15 @@ function closeDrawer() {
     this.classList.add('active');
     currentInterfaceType = id.replace('interface-btn-', '');
     renderInterfaceTable();
+
+    if (currentInterfaceType !== 'rest') {
+      pushAgentMessage({
+        level: 'info',
+        status: '通知',
+        text: `${currentInterfaceType.toUpperCase()} gRPC 暂未开放，当前仅支持 RESTful API。`,
+        smooth: false,
+      });
+    }
   });
 });
 
@@ -1990,34 +2382,15 @@ async function init() {
   updateTime();
   setInterval(updateTime, 1000);
 
-  try {
-    await loadClusterNodes();
-  } catch (e) {
-    console.error('Load cluster nodes failed:', e);
-    alert('加载节点列表失败: ' + e.message);
-  }
-
+  bindAuthEvents();
+  setCurrentUser(null);
   renderClusterTable();
   renderUserTable();
   renderPolicyTable();
   renderInterfaceTable();
-  initAgentPanel();
 
-  // 延迟初始化图表（等DOM渲染完成）
-  requestAnimationFrame(() => {
-    initClusterTopology();
-    initMetadataGraph().catch(e => {
-      console.error('Init metadata graph failed:', e);
-    });
-  });
-
-  if (clusterHeartbeatTimer) {
-    clearInterval(clusterHeartbeatTimer);
-  }
-  clusterHeartbeatTimer = setInterval(() => {
-    if (!deployInProgress) refreshClusterView(true);
-  }, 15000);
-
+  showLoginOverlay();
+  $('login-username-input').focus();
 }
 
 

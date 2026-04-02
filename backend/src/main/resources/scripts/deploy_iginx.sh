@@ -2,8 +2,8 @@
 
 # ================================================================
 # IGinX 远程部署脚本
-# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <REST端口>
-# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu Yingchihua@123 ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 7888
+# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <pythonCMD> <本机udf_list路径> <本机metadata目录路径>
+# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu password ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 python3 /opt/resources/udf/udf_list /opt/resources/udf/metadata
 # ================================================================
 
 # ────────── 参数 ──────────
@@ -14,7 +14,9 @@ LOCAL_PACKAGE=$4
 REMOTE_INSTALL_DIR=$5
 ZK_ADDRESS=$6
 IGINX_PORT=${7:-6888}
-REST_PORT=${8:-7888}
+PYTHON_CMD=${8:-python3}
+LOCAL_UDF_LIST=$9
+LOCAL_METADATA_DIR=${10}
 
 # ────────── 颜色输出 ──────────
 GREEN='\033[0;32m'
@@ -27,12 +29,20 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # ────────── 参数检查 ──────────
-if [ $# -lt 6 ]; then
-    error "参数不足。用法: $0 <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> [IGinX端口] [REST端口]"
+if [ $# -lt 10 ]; then
+    error "参数不足。请同时提供 pythonCMD、udf_list 路径、metadata 目录路径"
 fi
 
 if [ ! -f "$LOCAL_PACKAGE" ]; then
     error "安装包不存在: $LOCAL_PACKAGE"
+fi
+
+if [ ! -f "$LOCAL_UDF_LIST" ]; then
+    error "udf_list 不存在: $LOCAL_UDF_LIST"
+fi
+
+if [ ! -d "$LOCAL_METADATA_DIR" ]; then
+    error "metadata 目录不存在: $LOCAL_METADATA_DIR"
 fi
 
 PACKAGE_FILENAME=$(basename "$LOCAL_PACKAGE")
@@ -41,8 +51,10 @@ REMOTE_TARGET_DIR="$REMOTE_INSTALL_DIR/$PACKAGE_DIRNAME"
 START_SCRIPT="$REMOTE_TARGET_DIR/sbin/start_iginx.sh"
 CONFIG_FILE="$REMOTE_TARGET_DIR/conf/config.properties"
 LOG_FILE="$REMOTE_TARGET_DIR/sbin/logs/iginx.log"
+REMOTE_UDF_HOME="$REMOTE_TARGET_DIR/udf_funcs"
+REMOTE_UDF_PY_DIR="$REMOTE_UDF_HOME/python_scripts"
 
-info "部署参数: IGinX端口=$IGINX_PORT, REST端口=$REST_PORT"
+info "部署参数: IGinX端口=$IGINX_PORT, pythonCMD=$PYTHON_CMD"
 
 # ────────── 检查 sshpass ──────────
 if ! command -v sshpass &> /dev/null; then
@@ -86,6 +98,16 @@ eval "$SSH_CMD '
 '" || error "解压失败"
 info "解压完成"
 
+# ────────── 拷贝 UDF 资源 ──────────
+info "拷贝 udf_list 到远程 ${REMOTE_UDF_HOME}/ ..."
+eval "$SCP_CMD '$LOCAL_UDF_LIST' '$REMOTE_USER@$REMOTE_IP:$REMOTE_UDF_HOME/'" \
+    || error "拷贝 udf_list 失败"
+
+info "拷贝 metadata 目录到远程 ${REMOTE_UDF_PY_DIR}/ ..."
+eval "$SCP_CMD -r '$LOCAL_METADATA_DIR' '$REMOTE_USER@$REMOTE_IP:$REMOTE_UDF_PY_DIR/'" \
+    || error "拷贝 metadata 目录失败"
+info "UDF 资源拷贝完成"
+
 # ────────── 修改配置文件 ──────────
 info "修改配置文件..."
 
@@ -101,11 +123,35 @@ eval "$SSH_CMD '
     sed -i \"s|^port=.*|port=$IGINX_PORT|\" $CONFIG_FILE
 '" || error "修改 IGinX 端口失败"
 
-# 修改 REST 端口 (config.properties 中的 restPort=7888)
-info "修改 REST 端口为 $REST_PORT ..."
+# 修改 pythonCMD
+info "修改 pythonCMD 为 $PYTHON_CMD ..."
 eval "$SSH_CMD '
-    sed -i \"s|^restPort=.*|restPort=$REST_PORT|\" $CONFIG_FILE
-'" || error "修改 REST 端口失败"
+        if grep -q \"^pythonCMD=\" $CONFIG_FILE; then
+            sed -i \"s|^pythonCMD=.*|pythonCMD=$PYTHON_CMD|\" $CONFIG_FILE
+        else
+            echo \"pythonCMD=$PYTHON_CMD\" >> $CONFIG_FILE
+        fi
+'" || error "修改 pythonCMD 失败"
+
+# 关闭 Rest 服务
+info "设置 enableRestService=false ..."
+eval "$SSH_CMD '
+        if grep -q \"^enableRestService=\" $CONFIG_FILE; then
+            sed -i \"s|^enableRestService=.*|enableRestService=false|\" $CONFIG_FILE
+        else
+            echo \"enableRestService=false\" >> $CONFIG_FILE
+        fi
+'" || error "设置 enableRestService 失败"
+
+# 打开基础 UDF 初始化
+info "设置 needInitBasicUDFFunctions=true ..."
+eval "$SSH_CMD '
+        if grep -q \"^needInitBasicUDFFunctions=\" $CONFIG_FILE; then
+            sed -i \"s|^needInitBasicUDFFunctions=.*|needInitBasicUDFFunctions=true|\" $CONFIG_FILE
+        else
+            echo \"needInitBasicUDFFunctions=true\" >> $CONFIG_FILE
+        fi
+'" || error "设置 needInitBasicUDFFunctions 失败"
 
 # 注释 storageEngineList，避免通过该流程添加的数据引擎
 info "注释 storageEngineList，跳过数据引擎注册 ..."

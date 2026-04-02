@@ -121,14 +121,87 @@ public class IGinxDao {
 
   // Policy operations
 
-  public void updatePolicy(int policy1, double policy2, boolean policy3) {
-      String sql = String.format(Locale.ROOT, "insert into %s(key, policy1, policy2, policy3) values (0, %d, %f, %b);",
-              IGinxConstants.POLICY_PATH, policy1, policy2, policy3);
+  public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int extractionScanBatchSize) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, extractionEnabled, extractionScanIntervalMs, extractionScanBatchSize) values (0, %b, %d, %d);",
+              IGinxConstants.POLICY_PATH,
+              extractionEnabled,
+              extractionScanIntervalMs,
+              extractionScanBatchSize);
       executeSql(sql);
   }
 
   public SessionExecuteSqlResult getPolicy() {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
+  }
+
+  // RESTful interface operations
+
+  public void insertRestfulApi(long key,
+                               String name,
+                               String url,
+                               String method,
+                               String description,
+                               String paramsExample,
+                               String responseExample,
+                               String curlExample,
+                               boolean isValid) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', %b);",
+              IGinxConstants.INTERFACE_RESTFUL_PATH,
+              key,
+              escapeSql(name),
+              escapeSql(url),
+              escapeSql(method),
+              escapeSql(description),
+              escapeSql(paramsExample),
+              escapeSql(responseExample),
+              escapeSql(curlExample),
+              isValid);
+      executeSql(sql);
+  }
+
+  public void updateRestfulApi(long key,
+                               String name,
+                               String url,
+                               String method,
+                               String description,
+                               String paramsExample,
+                               String responseExample,
+                               String curlExample,
+                               boolean isValid) {
+      insertRestfulApi(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid);
+  }
+
+  public void deleteRestfulApi(long key) {
+      String sql = String.format(Locale.ROOT,
+              "insert into %s(key, isValid) values (%d, false);",
+              IGinxConstants.INTERFACE_RESTFUL_PATH,
+              key);
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllRestfulApis() {
+      return executeSql("select * from " + IGinxConstants.INTERFACE_RESTFUL_PATH + ";");
+  }
+
+  public SessionExecuteSqlResult getRestfulApiById(long key) {
+      return executeSql("select * from " + IGinxConstants.INTERFACE_RESTFUL_PATH + " where key = " + key + ";");
+  }
+
+  public long getMaxRestfulApiId() {
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_RESTFUL_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // interface.restful path may not exist on fresh deployments
+      }
+      return -1;
   }
 
   // ==================== Storage Metadata Operations ====================

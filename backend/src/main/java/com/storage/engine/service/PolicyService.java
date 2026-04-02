@@ -4,6 +4,7 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Policy;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
 import java.util.List;
@@ -11,76 +12,227 @@ import java.util.List;
 @Service
 public class PolicyService {
 
+    private static final boolean DEFAULT_EXTRACTION_ENABLED = true;
+    private static final long DEFAULT_SCAN_INTERVAL_MS = 60000L;
+    private static final int DEFAULT_SCAN_BATCH_SIZE = 20;
+
     @Autowired
     private IGinxDao iginxDao;
 
+    @Autowired
+    private Environment environment;
+
     public Policy getPolicy() {
+        Policy policy = buildStartupPolicy();
+
         try {
             SessionExecuteSqlResult result = iginxDao.getPolicy();
-            if (result != null) {
-                return parsePolicy(result);
+            Policy userOverride = parsePolicy(result);
+            if (userOverride != null) {
+                if (userOverride.getExtractionEnabled() != null) {
+                    policy.setExtractionEnabled(userOverride.getExtractionEnabled());
+                    policy.setExtractionEnabledSource("USER_OVERRIDE");
+                }
+                if (userOverride.getExtractionScanIntervalMs() != null) {
+                    policy.setExtractionScanIntervalMs(sanitizeScanInterval(userOverride.getExtractionScanIntervalMs()));
+                    policy.setExtractionScanIntervalMsSource("USER_OVERRIDE");
+                }
+                if (userOverride.getExtractionScanBatchSize() != null) {
+                    policy.setExtractionScanBatchSize(sanitizeScanBatchSize(userOverride.getExtractionScanBatchSize()));
+                    policy.setExtractionScanBatchSizeSource("USER_OVERRIDE");
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
         }
-        // Return default if not found
-        Policy defaultPolicy = new Policy();
-        defaultPolicy.setPolicy1(0);
-        defaultPolicy.setPolicy1Desc("this is policy1");
-        defaultPolicy.setPolicy2(0.0);
-        defaultPolicy.setPolicy2Desc("this is policy2");
-        defaultPolicy.setPolicy3(false);
-        defaultPolicy.setPolicy3Desc("this is policy3");
-        return defaultPolicy;
+
+        fillDescriptions(policy);
+        return policy;
     }
 
     public synchronized Policy updatePolicy(Policy policy) {
+        Policy current = getPolicy();
+
+        boolean extractionEnabled = current.getExtractionEnabled() != null
+                ? current.getExtractionEnabled()
+                : DEFAULT_EXTRACTION_ENABLED;
+        long scanIntervalMs = current.getExtractionScanIntervalMs() != null
+                ? current.getExtractionScanIntervalMs()
+                : DEFAULT_SCAN_INTERVAL_MS;
+        int scanBatchSize = current.getExtractionScanBatchSize() != null
+                ? current.getExtractionScanBatchSize()
+                : DEFAULT_SCAN_BATCH_SIZE;
+
         if (policy != null) {
-            iginxDao.updatePolicy(
-                policy.getPolicy1() != null ? policy.getPolicy1() : 0,
-                policy.getPolicy2() != null ? policy.getPolicy2() : 0.0,
-                policy.getPolicy3() != null ? policy.getPolicy3() : false
-            );
-            return policy;
+            if (policy.getExtractionEnabled() != null) {
+                extractionEnabled = policy.getExtractionEnabled();
+            }
+            if (policy.getExtractionScanIntervalMs() != null) {
+                scanIntervalMs = sanitizeScanInterval(policy.getExtractionScanIntervalMs());
+            }
+            if (policy.getExtractionScanBatchSize() != null) {
+                scanBatchSize = sanitizeScanBatchSize(policy.getExtractionScanBatchSize());
+            }
         }
-        return null;
+
+        iginxDao.updatePolicy(extractionEnabled, scanIntervalMs, scanBatchSize);
+        return getPolicy();
     }
 
     private Policy parsePolicy(SessionExecuteSqlResult result) {
+        if (result == null) {
+            return null;
+        }
+
         List<List<Object>> values = result.getValues();
         List<String> paths = result.getPaths();
 
-        if (values.isEmpty()) return null;
+        if (values == null || paths == null || values.isEmpty()) {
+            return null;
+        }
 
-        int policy1Idx = -1, policy2Idx = -1, policy3Idx = -1;
-        int policy1DescIdx = -1, policy2DescIdx = -1, policy3DescIdx = -1;
+        int extractionEnabledIdx = -1;
+        int scanIntervalMsIdx = -1;
+        int scanBatchSizeIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
-            if (path.endsWith("policy1")) policy1Idx = i;
-            else if (path.endsWith("policy2")) policy2Idx = i;
-            else if (path.endsWith("policy3")) policy3Idx = i;
-            else if (path.endsWith("policy1Desc")) policy1DescIdx = i;
-            else if (path.endsWith("policy2Desc")) policy2DescIdx = i;
-            else if (path.endsWith("policy3Desc")) policy3DescIdx = i;
+            if (path.endsWith("extractionEnabled")) {
+                extractionEnabledIdx = i;
+            } else if (path.endsWith("extractionScanIntervalMs")) {
+                scanIntervalMsIdx = i;
+            } else if (path.endsWith("extractionScanBatchSize")) {
+                scanBatchSizeIdx = i;
+            }
         }
 
-        // We take the last row (latest config)
         List<Object> row = values.get(values.size() - 1);
+        if (row == null) {
+            return null;
+        }
+
+        Policy policy = new Policy();
+        boolean hasAny = false;
+
+        if (extractionEnabledIdx != -1) {
+            Boolean v = getValueAsBoolean(row.get(extractionEnabledIdx));
+            if (v != null) {
+                policy.setExtractionEnabled(v);
+                hasAny = true;
+            }
+        }
+
+        if (scanIntervalMsIdx != -1) {
+            Long v = getValueAsLong(row.get(scanIntervalMsIdx));
+            if (v != null) {
+                policy.setExtractionScanIntervalMs(v);
+                hasAny = true;
+            }
+        }
+
+        if (scanBatchSizeIdx != -1) {
+            Integer v = getValueAsInt(row.get(scanBatchSizeIdx));
+            if (v != null) {
+                policy.setExtractionScanBatchSize(v);
+                hasAny = true;
+            }
+        }
+
+        return hasAny ? policy : null;
+    }
+
+    private Policy buildStartupPolicy() {
         Policy policy = new Policy();
 
-        if (policy1Idx != -1) policy.setPolicy1(getValueAsInt(row.get(policy1Idx)));
-        if (policy2Idx != -1) policy.setPolicy2(getValueAsDouble(row.get(policy2Idx)));
-        if (policy3Idx != -1) policy.setPolicy3(getValueAsBoolean(row.get(policy3Idx)));
-        if (policy1DescIdx != -1) policy.setPolicy1Desc(getValueAsString(row.get(policy1DescIdx)));
-        if (policy2DescIdx != -1) policy.setPolicy2Desc(getValueAsString(row.get(policy2DescIdx)));
-        if (policy3DescIdx != -1) policy.setPolicy3Desc(getValueAsString(row.get(policy3DescIdx)));
+        Boolean startupEnabled = parseBooleanProperty("metadata.extraction.enabled");
+        if (startupEnabled != null) {
+            policy.setExtractionEnabled(startupEnabled);
+            policy.setExtractionEnabledSource("CONFIG_FILE");
+        } else {
+            policy.setExtractionEnabled(DEFAULT_EXTRACTION_ENABLED);
+            policy.setExtractionEnabledSource("BACKEND_DEFAULT");
+        }
+
+        Long startupInterval = parseLongProperty("metadata.extraction.scan-interval-ms");
+        if (startupInterval != null) {
+            policy.setExtractionScanIntervalMs(sanitizeScanInterval(startupInterval));
+            policy.setExtractionScanIntervalMsSource("CONFIG_FILE");
+        } else {
+            policy.setExtractionScanIntervalMs(DEFAULT_SCAN_INTERVAL_MS);
+            policy.setExtractionScanIntervalMsSource("BACKEND_DEFAULT");
+        }
+
+        Integer startupBatch = parseIntProperty("metadata.extraction.scan-batch-size");
+        if (startupBatch != null) {
+            policy.setExtractionScanBatchSize(sanitizeScanBatchSize(startupBatch));
+            policy.setExtractionScanBatchSizeSource("CONFIG_FILE");
+        } else {
+            policy.setExtractionScanBatchSize(DEFAULT_SCAN_BATCH_SIZE);
+            policy.setExtractionScanBatchSizeSource("BACKEND_DEFAULT");
+        }
 
         return policy;
     }
 
-    private String getValueAsString(Object obj) {
-        return obj == null ? null : new String((byte[])obj);
+    private void fillDescriptions(Policy policy) {
+        policy.setExtractionEnabledDesc("元数据抽取总开关");
+        policy.setExtractionScanIntervalMsDesc("定时抽取间隔（毫秒）");
+        policy.setExtractionScanBatchSizeDesc("每轮最多抽取的数量");
+    }
+
+    private Boolean parseBooleanProperty(String key) {
+        if (!environment.containsProperty(key)) {
+            return null;
+        }
+        String value = environment.getProperty(key);
+        if (value == null) {
+            return null;
+        }
+        String normalized = value.trim().toLowerCase();
+        if ("true".equals(normalized) || "false".equals(normalized)) {
+            return Boolean.parseBoolean(normalized);
+        }
+        return null;
+    }
+
+    private Long parseLongProperty(String key) {
+        if (!environment.containsProperty(key)) {
+            return null;
+        }
+        String value = environment.getProperty(key);
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private Integer parseIntProperty(String key) {
+        if (!environment.containsProperty(key)) {
+            return null;
+        }
+        String value = environment.getProperty(key);
+        if (value == null || value.trim().isEmpty()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(value.trim());
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private long sanitizeScanInterval(Long value) {
+        long v = value == null ? DEFAULT_SCAN_INTERVAL_MS : value;
+        return Math.max(1000L, v);
+    }
+
+    private int sanitizeScanBatchSize(Integer value) {
+        int v = value == null ? DEFAULT_SCAN_BATCH_SIZE : value;
+        return Math.max(1, Math.min(v, 2000));
     }
 
     private Integer getValueAsInt(Object obj) {
@@ -91,32 +243,35 @@ public class PolicyService {
              try {
                 return Integer.parseInt(new String((byte[])obj));
              } catch (NumberFormatException e) {
-                return 0;
+                return null;
              }
         }
-        return 0;
+        return null;
     }
 
-    private Double getValueAsDouble(Object obj) {
+    private Long getValueAsLong(Object obj) {
         if (obj == null) return null;
-        if (obj instanceof Double) return (Double)obj;
-        if (obj instanceof Float) return ((Float)obj).doubleValue();
+        if (obj instanceof Long) return (Long)obj;
+        if (obj instanceof Integer) return ((Integer)obj).longValue();
         if (obj instanceof byte[]) {
              try {
-                return Double.parseDouble(new String((byte[])obj));
+                return Long.parseLong(new String((byte[])obj));
              } catch (NumberFormatException e) {
-                return 0.0;
+                return null;
              }
         }
-        return 0.0;
+        return null;
     }
 
     private Boolean getValueAsBoolean(Object obj) {
-       if (obj == null) return false;
+       if (obj == null) return null;
        if (obj instanceof Boolean) return (Boolean)obj;
        if (obj instanceof byte[]) {
-           return Boolean.parseBoolean(new String((byte[])obj));
+           String raw = new String((byte[])obj).trim().toLowerCase();
+           if ("true".equals(raw) || "false".equals(raw)) {
+               return Boolean.parseBoolean(raw);
+           }
        }
-       return false;
+       return null;
     }
 }
