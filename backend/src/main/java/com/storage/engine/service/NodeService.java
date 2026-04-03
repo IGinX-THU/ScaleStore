@@ -31,6 +31,8 @@ public class NodeService {
      * Get all nodes by merging show cluster info (live) with sys.node (metadata).
      * Uses ip:port as the "foreign key" to link cluster nodes with their stored name/description.
      * Always uses clusterId as the node id.
+     *
+     * Display IP is the real cluster-reported IP from show cluster info.
      */
     public List<Node> getAllNodes() {
         List<Node> merged = new ArrayList<Node>();
@@ -66,8 +68,10 @@ public class NodeService {
                 // Always use cluster id as the canonical node id
                 node.setId(info.getClusterId());
                 node.setClusterId(info.getClusterId());
-                // Prefer metadata IP for SSH operations; cluster info IP may be an externally advertised address.
-                node.setIp(meta != null && !isBlank(meta.getIp()) ? meta.getIp() : info.getIp());
+                // Always display the real cluster-reported IP in UI.
+                node.setIp(!isBlank(info.getIp())
+                    ? info.getIp()
+                    : (meta != null ? defaultString(meta.getIp()) : ""));
                 node.setPort(info.getPort());
                 node.setName(meta != null && !isBlank(meta.getName())
                         ? meta.getName()
@@ -190,13 +194,28 @@ public class NodeService {
         }
         ensureNodeCanBeRemoved(node);
 
+        final Node metadataNode = findMetadataNodeForCluster(clusterId, node.getIp(), node.getPort());
+        final String clusterVisibleIp = node.getIp();
+        final String nodePort = node.getPort();
+        final String sshTargetIp = metadataNode != null && !isBlank(metadataNode.getIp())
+                ? metadataNode.getIp()
+                : clusterVisibleIp;
+        final Integer metadataNodeKey = metadataNode != null ? metadataNode.getId() : null;
+
         return nodeDeployService.startStopTask(
-            node.getIp(), node.getPort(), sshUsername, sshPassword, deployDirectory, clusterId,
+            sshTargetIp, nodePort, sshUsername, sshPassword, deployDirectory, clusterId,
                 new Runnable() {
                     @Override
                     public void run() {
-                        cleanupSysNode(node.getIp(), node.getPort());
-                        connectionPool.removeNode(node.getIp(), node.getPort());
+                        if (metadataNodeKey != null) {
+                            iginxDao.deleteNode(metadataNodeKey.longValue());
+                        } else {
+                            cleanupSysNode(sshTargetIp, nodePort);
+                        }
+                        connectionPool.removeNode(clusterVisibleIp, nodePort);
+                        if (!isBlank(sshTargetIp) && !sshTargetIp.equals(clusterVisibleIp)) {
+                            connectionPool.removeNode(sshTargetIp, nodePort);
+                        }
                     }
                 });
     }
@@ -261,6 +280,25 @@ public class NodeService {
             return new ArrayList<Node>();
         }
         return parseNodes(result);
+    }
+
+    private Node findMetadataNodeForCluster(Integer clusterId, String clusterIp, String clusterPort) {
+        List<Node> metadataNodes = getMetadataNodes();
+        if (clusterId != null) {
+            for (Node meta : metadataNodes) {
+                if (meta.getClusterId() != null && clusterId.equals(meta.getClusterId())) {
+                    return meta;
+                }
+            }
+        }
+        if (!isBlank(clusterIp) && !isBlank(clusterPort)) {
+            for (Node meta : metadataNodes) {
+                if (clusterIp.equals(meta.getIp()) && clusterPort.equals(meta.getPort())) {
+                    return meta;
+                }
+            }
+        }
+        return null;
     }
 
     private List<Node> parseNodes(SessionExecuteSqlResult result) {
