@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>可扩展存储引擎 - 可视化平台</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <!-- ===== 顶部标题栏 ===== -->
+  <header class="dashboard-header">
+    <div class="header-left">
+      <span class="status-dot"></span>
+      <span class="status-text">系统运行中</span>
+    </div>
+    <div class="header-center">
+      <div class="header-title">
+        <span class="header-deco">◆</span>
+        <span class="header-deco-line"></span>
+        <h1>可扩展存储引擎可视化平台</h1>
+        <span class="header-deco-line"></span>
+        <span class="header-deco">◆</span>
+      </div>
+    </div>
+    <div class="header-right">
+      <span>在线节点: <em id="online-nodes">8</em></span>
+      <span class="divider">|</span>
+      <span id="current-time">2026-02-25 12:00:00</span>
+      <div class="header-user-menu" id="header-user-menu">
+        <button id="header-user-btn" class="header-user-btn" type="button" title="用户菜单">
+          <span class="header-user-avatar">⦿</span>
+          <span id="header-user-name">未登录</span>
+        </button>
+        <div class="header-user-dropdown" id="header-user-dropdown">
+          <button id="header-profile-btn" class="header-user-action" type="button">个人信息</button>
+          <button id="header-logout-btn" class="header-user-action danger" type="button">登出</button>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div id="login-overlay" class="login-overlay">
+    <div class="login-background-glow"></div>
+    <div class="login-card">
+      <div class="login-card-title-wrap">
+        <div class="login-title-deco"></div>
+        <h2>ScaleStore 控制入口</h2>
+        <p>可扩展存储引擎可视化平台</p>
+      </div>
+      <div class="form-group">
+        <label class="form-label">用户名</label>
+        <input id="login-username-input" type="text" class="input" placeholder="请输入用户名" autocomplete="username">
+      </div>
+      <div class="form-group">
+        <label class="form-label">密码</label>
+        <div class="password-wrapper">
+          <input id="login-password-input" type="password" class="input" placeholder="请输入密码" autocomplete="current-password">
+          <button type="button" class="password-toggle" data-target="login-password-input" tabindex="-1">
+            <svg class="eye-icon eye-open" viewBox="0 0 24 24" width="18" height="18"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/></svg>
+            <svg class="eye-icon eye-closed" viewBox="0 0 24 24" width="18" height="18" style="display:none"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" fill="currentColor"/></svg>
+          </button>
+        </div>
+      </div>
+      <p id="login-error" class="login-error hidden">登录失败</p>
+      <button id="login-submit-btn" class="btn btn-primary w-full">进入平台</button>
+    </div>
+  </div>
+
+  <!-- ===== 仪表盘主体 ===== -->
+  <main class="dashboard-grid">
+
+    <!-- ====== 1.1 集群管理 ====== -->
+    <section class="panel panel-cluster">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>集群管理</span></div>
+        <div class="panel-actions">
+          <button id="cluster-add-btn" class="btn btn-primary btn-sm">添加节点</button>
+        </div>
+      </div>
+      <div class="panel-body flex-col gap-4">
+        <div class="table-wrapper flex-1">
+          <table>
+            <thead>
+              <tr><th>节点名</th><th>节点IP</th><th>端口</th><th>状态</th><th>操作</th></tr>
+            </thead>
+            <tbody id="cluster-table-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="cluster-pagination"></div>
+      </div>
+    </section>
+
+    <!-- ====== 1.1 节点拓扑图 ====== -->
+    <section class="panel panel-topology">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>节点拓扑图</span></div>
+      </div>
+      <div class="panel-body" style="padding: 4px;">
+        <div id="cluster-topology" class="chart-container"></div>
+      </div>
+    </section>
+
+    <!-- ====== 1.2 用户管理 ====== -->
+    <section class="panel panel-user">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>用户管理</span></div>
+        <div class="panel-actions">
+          <button id="user-add-btn" class="btn btn-primary btn-sm">新增用户</button>
+        </div>
+      </div>
+      <div class="panel-body flex-col gap-4">
+        <div class="table-wrapper flex-1">
+          <table>
+            <thead>
+              <tr><th>用户名</th><th>用户类型</th><th>邮箱</th><th>操作</th></tr>
+            </thead>
+            <tbody id="user-table-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="user-pagination"></div>
+      </div>
+    </section>
+
+    <!-- ====== 1.3 策略管理 ====== -->
+    <section class="panel panel-policy">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>策略管理</span></div>
+        <div class="panel-actions">
+          <button id="policy-edit-btn" class="btn btn-info btn-sm">设置</button>
+          <button id="policy-save-btn" class="btn btn-primary btn-sm hidden">保存</button>
+          <button id="policy-cancel-btn" class="btn btn-secondary btn-sm hidden">取消</button>
+        </div>
+      </div>
+      <div class="panel-body flex-col gap-4">
+        <div class="table-wrapper flex-1">
+          <table>
+            <thead>
+              <tr><th>策略项</th><th>数值</th><th>描述</th></tr>
+            </thead>
+            <tbody id="policy-table-body"></tbody>
+          </table>
+        </div>
+        <div class="pagination" id="policy-pagination"></div>
+      </div>
+    </section>
+
+    <!-- ====== 2. 元数据服务 ====== -->
+    <section class="panel panel-metadata">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>元数据图谱</span></div>
+        <div class="panel-actions">
+          <div id="metadata-inline-controls" class="metadata-inline-controls">
+            <input type="text" id="metadata-quick-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词">
+
+            <div id="metadata-fullscreen-controls" class="metadata-fullscreen-controls hidden">
+              <div class="metadata-mode-switch" role="tablist" aria-label="元数据查询模式">
+                <button id="metadata-mode-system-btn" type="button" class="metadata-mode-btn active" data-mode="system">参数化查询</button>
+                <button id="metadata-mode-llm-btn" type="button" class="metadata-mode-btn" data-mode="llm">LLM自然语言</button>
+              </div>
+
+              <div id="metadata-system-filters" class="metadata-query-inline-panel">
+                <input type="text" id="metadata-path-input" class="input input-sm metadata-inline-input" placeholder="逻辑路径（可空，如 /test）">
+                <select id="metadata-type-input" class="input input-sm metadata-inline-input metadata-type-select">
+                  <option value="">数据类型（默认为空）</option>
+                  <option value="timeseries">timeseries</option>
+                  <option value="relational">relational</option>
+                  <option value="keyvalue">keyvalue</option>
+                  <option value="document">document</option>
+                  <option value="image">image</option>
+                </select>
+                <input type="text" id="metadata-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词（可空）">
+              </div>
+
+              <div id="metadata-llm-panel" class="metadata-query-inline-panel hidden">
+                <input type="text" id="metadata-llm-input" class="input input-sm metadata-inline-input metadata-llm-input" placeholder="输入自然语言问题，例如：查找document类型里与合同相关的实体关系">
+              </div>
+            </div>
+          </div>
+          <button id="metadata-search-btn" class="btn btn-info btn-sm">查找</button>
+          <button id="metadata-build-btn" class="btn btn-primary btn-sm">构建网络</button>
+          <button id="metadata-fullscreen-btn" class="btn btn-secondary btn-sm">全屏</button>
+          <button id="metadata-exit-fullscreen-btn" class="btn btn-danger btn-sm hidden">退出全屏</button>
+        </div>
+      </div>
+      <div class="panel-body" style="padding: 4px;">
+        <div id="metadata-graph" class="chart-container"></div>
+      </div>
+    </section>
+
+    <!-- ====== 3. 存储服务 ====== -->
+    <section class="panel panel-storage">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>存储服务</span></div>
+      </div>
+      <div class="panel-body flex-col gap-8">
+        <div class="form-group">
+          <label class="form-label">数据类型</label>
+          <select id="storage-type-select" class="input">
+            <option value="relational">关系数据</option>
+            <option value="timeseries">时序数据</option>
+            <option value="document">文档数据</option>
+            <option value="image">图像数据</option>
+            <option value="keyvalue">键值数据</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">逻辑路径</label>
+          <input type="text" id="storage-path-input" class="input" placeholder="/data/project/dataset">
+        </div>
+        <div class="form-group flex-1">
+          <label class="form-label">文件上传</label>
+          <div id="storage-upload" class="upload-zone">
+            <div class="upload-icon">📂</div>
+            <p class="upload-text">拖拽文件到此处或点击上传</p>
+            <p class="upload-hint">选择一个文件上传</p>
+            <input type="file" class="hidden" id="file-input">
+          </div>
+          <div id="file-list" class="file-list"></div>
+        </div>
+        <button id="storage-save-btn" class="btn btn-primary w-full">存储</button>
+      </div>
+    </section>
+
+    <!-- ====== 4. 访问服务 ====== -->
+    <section class="panel panel-access">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>访问服务</span></div>
+      </div>
+      <div class="panel-body">
+        <div class="access-layout">
+          <!-- 上方控制区 -->
+          <div class="access-sidebar">
+            <div class="form-group">
+              <label class="form-label">逻辑路径</label>
+              <input type="text" id="access-path-input" class="input" placeholder="/data/project/dataset">
+            </div>
+            <div class="access-actions">
+              <button id="access-visit-btn" class="btn btn-primary">访问</button>
+              <button id="access-download-btn" class="btn btn-info">点击下载数据</button>
+            </div>
+            <div class="data-info gap-6">
+              <div class="data-info-item">
+                <span class="data-info-label">数据类型:</span>
+                <span class="data-info-value" id="access-data-type">-</span>
+              </div>
+              <div class="data-info-item">
+                <span class="data-info-label">数据大小:</span>
+                <span class="data-info-value" id="access-data-size">-</span>
+              </div>
+              <div class="data-info-item">
+                <span class="data-info-label">创建时间:</span>
+                <span class="data-info-value" id="access-data-time">-</span>
+              </div>
+            </div>
+          </div>
+          <!-- 下方预览区 -->
+          <div class="access-main">
+            <div id="access-preview" class="preview-area flex-1">
+              <div class="preview-placeholder">请输入路径并点击访问按钮查看数据</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== 6. IGinX智能体群 ====== -->
+    <section class="panel panel-agent">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>智能体群</span></div>
+        <div class="panel-actions">
+          <span class="agent-live-indicator"></span>
+          <span class="agent-live-text">IGinX智能体消息流</span>
+          <button id="agent-clear-btn" class="btn btn-secondary btn-sm">清空</button>
+        </div>
+      </div>
+      <div class="panel-body panel-body-agent">
+        <div class="agent-stream-viewport">
+          <ul id="agent-stream-list" class="agent-stream-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- ====== 5. 多样化接口服务 ====== -->
+    <section class="panel panel-interface">
+      <div class="panel-corner-bl"></div>
+      <div class="panel-corner-br"></div>
+      <div class="panel-header">
+        <div class="panel-title"><span>多样化接口服务</span></div>
+        <div class="panel-actions">
+          <button id="interface-btn-rest" class="tab-btn active">Restful API</button>
+          <button id="interface-btn-java" class="tab-btn">Java gRPC</button>
+          <button id="interface-btn-python" class="tab-btn">Python gRPC</button>
+        </div>
+      </div>
+      <div class="panel-body flex-col gap-4">
+        <div class="table-wrapper flex-1">
+          <table>
+            <thead>
+              <tr><th>接口名</th><th>URL</th><th>接口描述</th><th>操作</th></tr>
+            </thead>
+            <tbody id="interface-table-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ===== 模态框: 节点管理 ===== -->
+  <div id="modal-cluster" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title" id="cluster-modal-title">添加节点</span>
+        <button class="modal-close" id="cluster-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">节点名</label>
+          <input type="text" id="cluster-name-input" class="input" placeholder="请输入节点名">
+        </div>
+        <div class="form-group">
+          <label class="form-label">节点IP</label>
+          <input type="text" id="cluster-ip-input" class="input" placeholder="请输入节点IP">
+        </div>
+        <div class="form-group">
+          <label class="form-label">IGinX端口</label>
+          <input type="text" id="cluster-port-input" class="input" placeholder="6888">
+        </div>
+        <div class="form-group">
+          <label class="form-label">描述</label>
+          <textarea id="cluster-desc-input" class="input" rows="2" placeholder="节点描述信息"></textarea>
+        </div>
+        <div id="cluster-deploy-fields">
+          <div class="form-group">
+            <label class="form-label">SSH用户名</label>
+            <input type="text" id="cluster-ssh-user-input" class="input" placeholder="ubuntu">
+          </div>
+          <div class="form-group">
+            <label class="form-label">SSH密码</label>
+            <div class="password-wrapper">
+              <input type="password" id="cluster-ssh-password-input" class="input" placeholder="请输入目标节点登录密码">
+              <button type="button" class="password-toggle" data-target="cluster-ssh-password-input" tabindex="-1">
+                <svg class="eye-icon eye-open" viewBox="0 0 24 24" width="18" height="18"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/></svg>
+                <svg class="eye-icon eye-closed" viewBox="0 0 24 24" width="18" height="18" style="display:none"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" fill="currentColor"/></svg>
+              </button>
+            </div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">远程部署目录</label>
+            <input type="text" id="cluster-deploy-dir-input" class="input" placeholder="~">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">PythonCMD路径</label>
+            <input type="text" id="cluster-python-cmd-input" class="input" placeholder="python3">
+          </div>
+
+          <div class="form-group">
+            <label class="form-label">ZooKeeper连接串</label>
+            <input type="text" id="cluster-zk-input" class="input" placeholder="请输入ZooKeeper连接串">
+          </div>
+        </div>
+        <div class="form-group hidden" id="cluster-deploy-progress-wrap">
+          <label class="form-label">部署进度</label>
+          <div id="cluster-deploy-current-step" class="code-block" style="white-space:normal;padding:8px 10px;">等待开始...</div>
+          <pre id="cluster-deploy-log" class="code-block" style="max-height:150px;overflow:auto;">暂无日志</pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cluster-modal-cancel" class="btn btn-secondary">取消</button>
+        <button id="cluster-modal-save" class="btn btn-primary">确认</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ===== 模态框: 节点删除确认 ===== -->
+  <div id="modal-cluster-delete" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">删除节点</span>
+        <button class="modal-close" id="cluster-delete-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="cluster-delete-info" style="margin-bottom:12px;color:#ff6b6b;font-size:13px;">确定要停止并删除该节点？此操作不可撤销。</p>
+        <div class="form-group">
+          <label class="form-label">SSH用户名</label>
+          <input type="text" id="cluster-delete-ssh-user" class="input" placeholder="ubuntu">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH密码</label>
+          <div class="password-wrapper">
+            <input type="password" id="cluster-delete-ssh-password" class="input" placeholder="请输入SSH密码">
+            <button type="button" class="password-toggle" data-target="cluster-delete-ssh-password" tabindex="-1">
+              <svg class="eye-icon eye-open" viewBox="0 0 24 24" width="18" height="18"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zm0 12.5c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z" fill="currentColor"/></svg>
+              <svg class="eye-icon eye-closed" viewBox="0 0 24 24" width="18" height="18" style="display:none"><path d="M12 7c2.76 0 5 2.24 5 5 0 .65-.13 1.26-.36 1.83l2.92 2.92c1.51-1.26 2.7-2.89 3.43-4.75-1.73-4.39-6-7.5-11-7.5-1.4 0-2.74.25-3.98.7l2.16 2.16C10.74 7.13 11.35 7 12 7zM2 4.27l2.28 2.28.46.46C3.08 8.3 1.78 10.02 1 12c1.73 4.39 6 7.5 11 7.5 1.55 0 3.03-.3 4.38-.84l.42.42L19.73 22 21 20.73 3.27 3 2 4.27zM7.53 9.8l1.55 1.55c-.05.21-.08.43-.08.65 0 1.66 1.34 3 3 3 .22 0 .44-.03.65-.08l1.55 1.55c-.67.33-1.41.53-2.2.53-2.76 0-5-2.24-5-5 0-.79.2-1.53.53-2.2zm4.31-.78l3.15 3.15.02-.16c0-1.66-1.34-3-3-3l-.17.01z" fill="currentColor"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="form-group">
+          <label class="form-label">远程部署目录</label>
+          <input type="text" id="cluster-delete-deploy-dir" class="input" placeholder="~">
+        </div>
+        <div class="form-group hidden" id="cluster-delete-progress-wrap">
+          <label class="form-label">停止进度</label>
+          <div id="cluster-delete-current-step" class="code-block" style="white-space:normal;padding:8px 10px;">等待开始...</div>
+          <pre id="cluster-delete-log" class="code-block" style="max-height:150px;overflow:auto;">暂无日志</pre>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="cluster-delete-modal-cancel" class="btn btn-secondary">取消</button>
+        <button id="cluster-delete-modal-confirm" class="btn btn-danger">确认删除</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 模态框: 用户管理 ===== -->
+  <div id="modal-user" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title" id="user-modal-title">新增用户</span>
+        <button class="modal-close" id="user-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">用户名</label>
+          <input type="text" id="user-name-input" class="input" placeholder="username">
+        </div>
+        <div class="form-group">
+          <label class="form-label">密码</label>
+          <input type="password" id="user-password-input" class="input" placeholder="********">
+        </div>
+        <div class="form-group">
+          <label class="form-label">用户类型</label>
+          <select id="user-type-input" class="input">
+            <option value="admin">超级管理员</option>
+            <option value="user" selected>普通用户</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">邮箱</label>
+          <input type="text" id="user-email-input" class="input" placeholder="user@example.com">
+        </div>
+        <div class="form-group">
+          <label class="form-label">电话</label>
+          <input type="text" id="user-phone-input" class="input" placeholder="13800138000">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="user-modal-cancel" class="btn btn-secondary">取消</button>
+        <button id="user-modal-save" class="btn btn-primary">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-profile" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">个人信息</span>
+        <button class="modal-close" id="profile-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">用户名</label>
+          <input type="text" id="profile-username" class="input" disabled>
+        </div>
+        <div class="form-group">
+          <label class="form-label">用户类型</label>
+          <input type="text" id="profile-type" class="input" disabled>
+        </div>
+        <div class="form-group">
+          <label class="form-label">邮箱</label>
+          <input type="text" id="profile-email" class="input" disabled>
+        </div>
+        <div class="form-group">
+          <label class="form-label">电话</label>
+          <input type="text" id="profile-phone" class="input" disabled>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="profile-modal-close" class="btn btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== 抽屉: 接口详情 ===== -->
+  <div id="drawer-overlay" class="drawer-overlay hidden"></div>
+  <div id="drawer-interface" class="drawer">
+    <div class="drawer-header">
+      <span class="drawer-title">接口详情</span>
+      <button class="modal-close" id="drawer-close">&times;</button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-section">
+        <div class="drawer-label">接口名称</div>
+        <div class="drawer-value" id="drawer-interface-name">-</div>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">URL</div>
+        <div class="code-block" id="drawer-interface-url">-</div>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">接口类型</div>
+        <span class="type-badge" id="drawer-interface-type">-</span>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">接口描述</div>
+        <div class="drawer-value" id="drawer-interface-desc">-</div>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">请求参数</div>
+        <pre class="code-block" id="drawer-interface-params">-</pre>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">返回示例</div>
+        <pre class="code-block" id="drawer-interface-response">-</pre>
+      </div>
+      <div class="drawer-section">
+        <div class="drawer-label">示例代码</div>
+        <pre class="code-block" id="drawer-interface-code">-</pre>
+      </div>
+    </div>
+    <div class="drawer-footer">
+      <button id="interface-download-btn" class="btn btn-primary w-full">下载示例代码</button>
+    </div>
+  </div>
+
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+{
+    "liveServer.settings.proxy": {
+        "enable": true
+    },
+    "java.debug.settings.onBuildFailureProceed": true
+}

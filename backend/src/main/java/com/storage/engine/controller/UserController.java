@@ -1,0 +1,78 @@
+package com.storage.engine.controller;
+
+import com.storage.engine.model.Response;
+import com.storage.engine.model.LoginRequest;
+import com.storage.engine.model.User;
+import com.storage.engine.service.UserService;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+
+@RestController
+public class UserController {
+
+    @Autowired
+    private UserService userService;
+
+    @GetMapping("/config/users")
+    public ResponseEntity<Response<List<User>>> getAllUsers() {
+        return ResponseEntity.ok(Response.success(userService.sanitizeUsers(userService.getAllUsers())));
+    }
+
+    @PostMapping("/config/users")
+    public ResponseEntity<Response<User>> createUser(@RequestBody User user) {
+        try {
+            return ResponseEntity.status(HttpStatus.CREATED)
+                    .body(Response.success(userService.sanitizeUser(userService.createUser(user))));
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Response.error(400, e.getMessage()));
+        }
+    }
+
+    @GetMapping("/config/users/{id}")
+    public ResponseEntity<Response<User>> getUserById(@PathVariable Integer id) {
+        User user = userService.getUserById(id);
+        if (user != null) {
+            return ResponseEntity.ok(Response.success(userService.sanitizeUser(user)));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Response.error(404, "User not found"));
+        }
+    }
+
+    @PutMapping("/config/users/{id}")
+    public ResponseEntity<Response<User>> updateUser(@PathVariable Integer id, @RequestBody User user) {
+        User updatedUser = userService.updateUser(id, user);
+        if (updatedUser != null) {
+            return ResponseEntity.ok(Response.success(userService.sanitizeUser(updatedUser)));
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Response.error(404, "User not found"));
+        }
+    }
+
+    @DeleteMapping("/config/users/{id}")
+    public ResponseEntity<Response<Void>> deleteUser(@PathVariable Integer id) {
+        boolean deleted = userService.deleteUser(id);
+        if (deleted) {
+            return ResponseEntity.ok(Response.success());
+        } else {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Response.error(404, "User not found"));
+        }
+    }
+
+    @PostMapping("/config/login")
+    public ResponseEntity<Response<User>> login(@RequestBody LoginRequest loginRequest) {
+        if (loginRequest == null) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Response.error(400, "Invalid request payload"));
+        }
+
+        User user = userService.login(loginRequest.getUsername(), loginRequest.getPassword());
+        if (user != null) {
+            return ResponseEntity.ok(Response.success(userService.sanitizeUser(user)));
+        } else {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Response.error(401, "Invalid username or password"));
+        }
+    }
+}
