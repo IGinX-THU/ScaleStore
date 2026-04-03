@@ -2,7 +2,7 @@
 import * as echarts from 'echarts';
 
 // ==================== 配置 ====================
-const API_BASE = ''; // Use relative path (proxied by Vite in dev, same origin in production)
+const API_BASE = '/api'; // Unified API prefix for dev and production reverse proxy
 
 // ==================== 数据 ====================
 let clusterData = [];

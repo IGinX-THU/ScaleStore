@@ -4,21 +4,10 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/storage': {
+      '/api': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-      },
-      '/access': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/config': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
-      },
-      '/metadata': {
-        target: 'http://localhost:8080',
-        changeOrigin: true,
+        rewrite: path => path.replace(/^\/api/, ''),
       },
     },
   },
