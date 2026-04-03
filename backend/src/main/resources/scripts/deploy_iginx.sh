@@ -169,12 +169,49 @@ eval "$SSH_CMD 'chmod +x $START_SCRIPT'" \
 info "清理旧日志文件..."
 eval "$SSH_CMD 'rm -f $LOG_FILE'"
 info "正在启动 IGinX..."
-eval "$SSH_CMD \"bash -c '
-export JAVA_HOME=/usr/lib/jvm/jdk1.8.0_461
-export PATH=\$JAVA_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-mkdir -p $(dirname $LOG_FILE)
-setsid nohup $START_SCRIPT > $LOG_FILE 2>&1 < /dev/null &
-'\""
+eval "$SSH_CMD 'LOG_FILE=\"$LOG_FILE\" START_SCRIPT=\"$START_SCRIPT\" bash -l -s'" <<'EOF' || error "启动 IGinX 命令执行失败"
+set -e
+
+# Login shell usually loads JAVA_HOME; source common profiles again for safety.
+[ -f /etc/profile ] && . /etc/profile >/dev/null 2>&1 || true
+[ -f ~/.bash_profile ] && . ~/.bash_profile >/dev/null 2>&1 || true
+[ -f ~/.profile ] && . ~/.profile >/dev/null 2>&1 || true
+[ -f ~/.bashrc ] && . ~/.bashrc >/dev/null 2>&1 || true
+
+if [ -n "${JAVA_HOME:-}" ] && [ -x "$JAVA_HOME/bin/java" ]; then
+    JAVA_BIN="$JAVA_HOME/bin/java"
+else
+    JAVA_BIN=$(command -v java 2>/dev/null || true)
+fi
+
+# Last resort: scan common install roots for any executable java.
+if [ -z "$JAVA_BIN" ] || [ ! -x "$JAVA_BIN" ]; then
+    JAVA_BIN=$(find /usr /opt -type f -path '*/bin/java' -perm -111 2>/dev/null | head -n 1 || true)
+fi
+
+if [ -z "$JAVA_BIN" ] || [ ! -x "$JAVA_BIN" ]; then
+    echo "[ERROR] 未找到 java，请先安装 JDK 并配置 JAVA_HOME 或 PATH"
+    echo "[ERROR] 诊断信息: PATH=$PATH"
+    echo "[ERROR] 诊断信息: JAVA_HOME=${JAVA_HOME:-<empty>}"
+    exit 1
+fi
+
+JAVA_BIN=$(readlink -f "$JAVA_BIN" 2>/dev/null || echo "$JAVA_BIN")
+JAVA_HOME=$(dirname "$(dirname "$JAVA_BIN")")
+export JAVA_HOME
+export JAVA="$JAVA_BIN"
+export JAVA_CMD="$JAVA_BIN"
+export JAVACMD="$JAVA_BIN"
+export PATH="$(dirname "$JAVA_BIN"):/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+echo "[INFO] Java 环境确认: JAVA_HOME=$JAVA_HOME"
+echo "[INFO] Java 环境确认: JAVA_BIN=$JAVA_BIN"
+echo "[INFO] Java 环境确认: PATH=$PATH"
+
+mkdir -p "$(dirname "$LOG_FILE")"
+sed -i 's/\r$//' "$START_SCRIPT"
+setsid nohup env JAVA_HOME="$JAVA_HOME" JAVA="$JAVA_BIN" JAVA_CMD="$JAVA_BIN" JAVACMD="$JAVA_BIN" PATH="$PATH" bash "$START_SCRIPT" > "$LOG_FILE" 2>&1 < /dev/null &
+EOF
 
 # ────────── 轮询检测启动状态 ──────────
 SUCCESS_KEYWORD="IGinX is now in service"

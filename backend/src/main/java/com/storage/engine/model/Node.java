@@ -2,6 +2,7 @@ package com.storage.engine.model;
 
 public class Node {
     private Integer id;
+    private Integer clusterId;
     private String name;
     private String ip;
     private String port;
@@ -17,6 +18,14 @@ public class Node {
 
     public void setId(Integer id) {
         this.id = id;
+    }
+
+    public Integer getClusterId() {
+        return clusterId;
+    }
+
+    public void setClusterId(Integer clusterId) {
+        this.clusterId = clusterId;
     }
 
     public String getName() {

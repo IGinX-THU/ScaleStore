@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # ================================================================
-# IGinX 远程停止脚本（按端口精确停止对应实例）
+# IGinX 远程停止脚本（按端口 + 目录识别实例并停止）
 # 用法: ./stop_iginx.sh <目标IP> <用户名> <密码> <远程安装目录> <IGinX端口>
 # 示例: ./stop_iginx.sh 10.0.21.44 ubuntu password ~ 6888
 # ================================================================
@@ -50,48 +50,71 @@ eval "$SSH_CMD 'echo ok'" &> /dev/null \
     || error "无法连接到 $REMOTE_IP，请检查 IP、用户名、密码或网络"
 info "SSH 连接正常"
 
-# ────────── 按端口找到该实例的 PID（唯一精确匹配） ──────────
-# 优先用 ss，若没有则用 lsof，均失败则尝试从 proc 匹配
+# ────────── 按端口/目录找到该实例的 PID（支持多进程） ──────────
 info "查找监听端口 $IGINX_PORT 的 IGinX 进程..."
 
-TARGET_PID=$(eval "$SSH_CMD '
-  PID=""
-  # 方法1: ss
-  if command -v ss &>/dev/null; then
-    PID=\$(ss -tlnp 2>/dev/null | grep \":${IGINX_PORT} \" | grep -oP \"pid=\\K[0-9]+\" | head -1)
-  fi
-  # 方法2: lsof
-  if [ -z \"\$PID\" ] && command -v lsof &>/dev/null; then
-    PID=\$(lsof -ti tcp:${IGINX_PORT} 2>/dev/null | head -1)
-  fi
-  # 方法3: /proc 扫描
-  if [ -z \"\$PID\" ]; then
-    PORT_HEX=\$(printf \"%04X\" ${IGINX_PORT})
-    for pid in \$(ls /proc | grep -E \"^[0-9]+\$\"); do
-      if grep -q \"\$PORT_HEX\" /proc/\$pid/net/tcp6 2>/dev/null || grep -q \"\$PORT_HEX\" /proc/\$pid/net/tcp 2>/dev/null; then
-        PID=\$pid; break
-      fi
-    done
-  fi
-  echo \$PID
-'" 2>/dev/null | tr -d '[:space:]')
+TARGET_PIDS=$(eval "$SSH_CMD '
+  PIDS=""
 
-if [ -z "$TARGET_PID" ]; then
+  # 方法1: ss（优先）
+  if command -v ss >/dev/null 2>&1; then
+    PIDS=\$(ss -lntp 2>/dev/null \
+      | grep -E ":${IGINX_PORT}([[:space:]]|\$)" \
+      | grep -o "pid=[0-9]*" \
+      | cut -d= -f2 \
+      | sort -u \
+      | xargs)
+  fi
+
+  # 方法2: lsof
+  if [ -z "\$PIDS" ] && command -v lsof >/dev/null 2>&1; then
+    PIDS=\$(lsof -ti tcp:${IGINX_PORT} -sTCP:LISTEN 2>/dev/null | sort -u | xargs)
+  fi
+
+  # 方法3: 目录兜底（按部署目录识别）
+  if [ -z "\$PIDS" ]; then
+    PIDS=\$(pgrep -f "${REMOTE_TARGET_DIR}" 2>/dev/null | sort -u | xargs)
+  fi
+
+  echo "\$PIDS"
+'" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+
+if [ -z "$TARGET_PIDS" ]; then
     warn "未找到监听端口 $IGINX_PORT 的进程，可能已停止"
 else
-    info "找到进程 PID=$TARGET_PID（端口 $IGINX_PORT），正在发送 SIGTERM..."
-    eval "$SSH_CMD 'kill -15 $TARGET_PID'" 2>/dev/null || true
+    info "找到进程 PID: $TARGET_PIDS，正在发送 SIGTERM..."
+    eval "$SSH_CMD 'kill -15 $TARGET_PIDS'" 2>/dev/null || true
 
-    # ────────── 等待该 PID 退出 ──────────
+    # ────────── 等待进程退出并释放端口 ──────────
     WAIT_TIMEOUT=30
     ELAPSED=0
-    info "等待进程退出..."
+    info "等待进程退出并释放端口..."
     while [ $ELAPSED -lt $WAIT_TIMEOUT ]; do
-        ALIVE=$(eval "$SSH_CMD 'kill -0 $TARGET_PID 2>/dev/null && echo alive || echo dead'" 2>/dev/null | tr -d '[:space:]')
-        if [ "$ALIVE" = "dead" ]; then
-            info "IGinX 进程 $TARGET_PID 已退出"
+        ALIVE_PIDS=$(eval "$SSH_CMD '
+          LEFT=""
+          for pid in $TARGET_PIDS; do
+            if kill -0 \$pid 2>/dev/null; then
+              LEFT="\$LEFT \$pid"
+            fi
+          done
+          echo \$LEFT
+        '" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+
+        PORT_OPEN=$(eval "$SSH_CMD '
+          if command -v ss >/dev/null 2>&1; then
+            ss -lnt 2>/dev/null | grep -Eq ":${IGINX_PORT}([[:space:]]|\$)" && echo yes || echo no
+          elif command -v netstat >/dev/null 2>&1; then
+            netstat -lnt 2>/dev/null | grep -Eq ":${IGINX_PORT}([[:space:]]|\$)" && echo yes || echo no
+          else
+            echo unknown
+          fi
+        '" 2>/dev/null | tr -d '[:space:]')
+
+        if [ -z "$ALIVE_PIDS" ] && [ "$PORT_OPEN" != "yes" ]; then
+            info "IGinX 进程已退出，端口 $IGINX_PORT 已释放"
             break
         fi
+
         sleep 2
         ELAPSED=$((ELAPSED + 2))
         echo -n "."
@@ -99,13 +122,24 @@ else
     echo ""
 
     if [ $ELAPSED -ge $WAIT_TIMEOUT ]; then
-        warn "等待超时，强制终止 PID=$TARGET_PID..."
-        eval "$SSH_CMD 'kill -9 $TARGET_PID'" 2>/dev/null || true
+        warn "等待超时，强制终止 PID: $TARGET_PIDS ..."
+        eval "$SSH_CMD 'kill -9 $TARGET_PIDS'" 2>/dev/null || true
         sleep 2
-        ALIVE=$(eval "$SSH_CMD 'kill -0 $TARGET_PID 2>/dev/null && echo alive || echo dead'" 2>/dev/null | tr -d '[:space:]')
-        if [ "$ALIVE" = "alive" ]; then
-            error "无法终止 IGinX 进程 $TARGET_PID"
+
+        ALIVE_PIDS=$(eval "$SSH_CMD '
+          LEFT=""
+          for pid in $TARGET_PIDS; do
+            if kill -0 \$pid 2>/dev/null; then
+              LEFT="\$LEFT \$pid"
+            fi
+          done
+          echo \$LEFT
+        '" 2>/dev/null | tr -s '[:space:]' ' ' | sed 's/^ //; s/ $//')
+
+        if [ -n "$ALIVE_PIDS" ]; then
+            error "无法终止 IGinX 进程: $ALIVE_PIDS"
         fi
+
         info "已强制终止 IGinX"
     fi
 fi

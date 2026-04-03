@@ -36,9 +36,13 @@ public class NodeService {
         List<Node> merged = new ArrayList<Node>();
         try {
             List<Node> metadataNodes = getMetadataNodes();
+            Map<Integer, Node> metadataByClusterId = new HashMap<Integer, Node>();
             Map<String, Node> metadataByIpPort = new HashMap<String, Node>();
             Map<String, Node> metadataByIp = new HashMap<String, Node>();
             for (Node meta : metadataNodes) {
+                if (meta.getClusterId() != null && !metadataByClusterId.containsKey(meta.getClusterId())) {
+                    metadataByClusterId.put(meta.getClusterId(), meta);
+                }
                 if (!isBlank(meta.getIp()) && !isBlank(meta.getPort())) {
                     metadataByIpPort.put(meta.getIp() + ":" + meta.getPort(), meta);
                 }
@@ -49,8 +53,11 @@ public class NodeService {
 
             List<NodeDeployService.ClusterNodeInfo> clusterInfos = nodeDeployService.getClusterNodeInfos();
             for (NodeDeployService.ClusterNodeInfo info : clusterInfos) {
+                Node meta = metadataByClusterId.get(info.getClusterId());
                 String key = info.getIp() + ":" + info.getPort();
-                Node meta = metadataByIpPort.get(key);
+                if (meta == null) {
+                    meta = metadataByIpPort.get(key);
+                }
                 if (meta == null) {
                     meta = metadataByIp.get(info.getIp());
                 }
@@ -58,7 +65,9 @@ public class NodeService {
                 Node node = new Node();
                 // Always use cluster id as the canonical node id
                 node.setId(info.getClusterId());
-                node.setIp(info.getIp());
+                node.setClusterId(info.getClusterId());
+                // Prefer metadata IP for SSH operations; cluster info IP may be an externally advertised address.
+                node.setIp(meta != null && !isBlank(meta.getIp()) ? meta.getIp() : info.getIp());
                 node.setPort(info.getPort());
                 node.setName(meta != null && !isBlank(meta.getName())
                         ? meta.getName()
@@ -101,7 +110,6 @@ public class NodeService {
         validateCreateRequest(request);
 
         final String nodeName = request.getName().trim();
-        final String nodeIp = request.getIp().trim();
         final String nodePort = isBlank(request.getPort()) ? "6888" : request.getPort().trim();
         final String nodeDesc = defaultString(request.getDescription());
         final String nodeDeployDir = defaultString(request.getDeployDirectory());
@@ -109,8 +117,11 @@ public class NodeService {
         return nodeDeployService.startDeployTask(request, 0, nodePort, new Runnable() {
             @Override
             public void run() {
+                String nodeIp = request.getIp() == null ? "" : request.getIp().trim();
+                Integer detectedClusterId = request.getId();
                 long maxId = iginxDao.getMaxNodeId();
-                iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc, "ONLINE", true, nodeDeployDir);
+                iginxDao.insertNode(maxId + 1, nodeName, nodeIp, nodePort, nodeDesc,
+                        "ONLINE", true, nodeDeployDir, detectedClusterId);
                 connectionPool.addNode(nodeIp, nodePort);
             }
         });
@@ -147,13 +158,14 @@ public class NodeService {
 
         if (existingMeta != null) {
             // Update existing sys.node entry
-            iginxDao.updateNode(existingMeta.getId(), name, target.getIp(), target.getPort(),
-                    defaultString(description), "ONLINE");
+            iginxDao.updateNode(existingMeta.getId(), name, existingMeta.getIp(), target.getPort(),
+                defaultString(description), "ONLINE",
+                defaultString(existingMeta.getDeployDirectory()), existingMeta.getClusterId());
         } else {
             // Create new sys.node entry for this cluster node
             long newKey = iginxDao.getMaxNodeId() + 1;
             iginxDao.insertNode(newKey, name, target.getIp(), target.getPort(),
-                    defaultString(description), "ONLINE", true);
+                defaultString(description), "ONLINE", true, "", target.getClusterId());
         }
 
         Node result = new Node();
@@ -179,7 +191,7 @@ public class NodeService {
         ensureNodeCanBeRemoved(node);
 
         return nodeDeployService.startStopTask(
-                node.getIp(), node.getPort(), sshUsername, sshPassword, deployDirectory,
+            node.getIp(), node.getPort(), sshUsername, sshPassword, deployDirectory, clusterId,
                 new Runnable() {
                     @Override
                     public void run() {
@@ -257,7 +269,8 @@ public class NodeService {
         List<List<Object>> values = result.getValues();
         List<String> paths = result.getPaths();
 
-        int nodenameIdx = -1, ipIdx = -1, portIdx = -1, descIdx = -1, isValidIdx = -1, statusIdx = -1, deployDirIdx = -1;
+        int nodenameIdx = -1, ipIdx = -1, portIdx = -1, descIdx = -1,
+                isValidIdx = -1, statusIdx = -1, deployDirIdx = -1, clusterIdIdx = -1;
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
             if (path.endsWith("name")) nodenameIdx = i;
@@ -267,6 +280,7 @@ public class NodeService {
             else if (path.endsWith("status")) statusIdx = i;
             else if (path.endsWith("isValid")) isValidIdx = i;
             else if (path.endsWith("deployDirectory")) deployDirIdx = i;
+            else if (path.endsWith("clusterId")) clusterIdIdx = i;
         }
 
         for (int i = 0; i < keys.length; i++) {
@@ -280,7 +294,7 @@ public class NodeService {
             if (descIdx != -1) node.setDescription(getValueAsString(row.get(descIdx)));
             if (statusIdx != -1) node.setStatus(getValueAsString(row.get(statusIdx)));
             if (deployDirIdx != -1) node.setDeployDirectory(getValueAsString(row.get(deployDirIdx)));
-            if (deployDirIdx != -1) node.setDeployDirectory(getValueAsString(row.get(deployDirIdx)));
+            if (clusterIdIdx != -1) node.setClusterId(getValueAsInteger(row.get(clusterIdIdx)));
 
             boolean isValid = true;
             if (isValidIdx != -1) {
@@ -306,6 +320,21 @@ public class NodeService {
            return Boolean.parseBoolean(new String((byte[])obj));
        }
        return false;
+    }
+
+    private Integer getValueAsInteger(Object obj) {
+        if (obj == null) return null;
+        try {
+            if (obj instanceof Number) {
+                return ((Number) obj).intValue();
+            }
+            if (obj instanceof byte[]) {
+                return Integer.parseInt(new String((byte[]) obj).trim());
+            }
+            return Integer.parseInt(String.valueOf(obj).trim());
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     private void validateCreateRequest(NodeDeployRequest request) {

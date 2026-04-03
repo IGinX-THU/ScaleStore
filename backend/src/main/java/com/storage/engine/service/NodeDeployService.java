@@ -16,12 +16,15 @@ import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
@@ -106,10 +109,22 @@ public class NodeDeployService {
                 taskState.currentStep = "正在执行部署脚本";
                 appendLog(taskState, "[STEP] 开始执行部署脚本");
                 try {
+                    List<ClusterNodeInfo> beforeClusterInfos = safeGetClusterNodeInfos();
                     runCommand(command, taskState);
                     taskState.currentStep = "正在校验 show cluster info";
                     appendLog(taskState, "[STEP] 开始校验节点是否加入集群");
-                    waitForNodeJoinCluster(request.getIp(), nodePort, taskState);
+                    ClusterNodeInfo joinedNode = waitForNodeJoinCluster(
+                            request.getIp(), nodePort, taskState, beforeClusterInfos);
+                    if (joinedNode != null && joinedNode.getClusterId() != null) {
+                        request.setId(joinedNode.getClusterId());
+                    }
+                    if (joinedNode != null
+                            && joinedNode.getIp() != null
+                            && !joinedNode.getIp().equals(request.getIp())) {
+                        appendLog(taskState,
+                                "[INFO] show cluster info 返回IP为 " + joinedNode.getIp()
+                                        + "（与输入IP " + request.getIp() + " 不同，已按 clusterId 关联）");
+                    }
                     successAction.run();
                     taskState.status = "SUCCESS";
                     taskState.completed = true;
@@ -132,7 +147,7 @@ public class NodeDeployService {
 
     public NodeDeployTaskStatus startStopTask(final String targetIp, final String nodePort, final String username,
                                               final String password, final String deployDirectory,
-                                              final Runnable successAction) {
+                                              final Integer expectedClusterId, final Runnable successAction) {
         required(targetIp, "节点IP不能为空");
         required(username, "SSH用户名不能为空");
         required(password, "SSH密码不能为空");
@@ -160,10 +175,11 @@ public class NodeDeployService {
                 taskState.currentStep = "正在执行停止脚本";
                 appendLog(taskState, "[STEP] 开始执行停止脚本");
                 try {
+                    List<ClusterNodeInfo> beforeClusterInfos = safeGetClusterNodeInfos();
                     runCommand(command, taskState);
                     taskState.currentStep = "正在校验节点已移除";
                     appendLog(taskState, "[STEP] 正在校验节点是否已从集群中移除");
-                    waitForNodeLeaveCluster(targetIp, nodePort, taskState);
+                    waitForNodeLeaveCluster(targetIp, nodePort, expectedClusterId, taskState, beforeClusterInfos);
                     successAction.run();
                     taskState.status = "SUCCESS";
                     taskState.completed = true;
@@ -212,12 +228,27 @@ public class NodeDeployService {
 
     // ==================== Internal Helpers ====================
 
-    private void waitForNodeJoinCluster(String targetIp, String nodePort, DeployTaskState taskState) {
+    private ClusterNodeInfo waitForNodeJoinCluster(String targetIp, String nodePort,
+                                                   DeployTaskState taskState,
+                                                   List<ClusterNodeInfo> baselineInfos) {
         String expectedPort = safeValue(nodePort, "6888");
+        List<ClusterNodeInfo> beforeInfos = baselineInfos == null
+                ? Collections.<ClusterNodeInfo>emptyList()
+                : baselineInfos;
+        Set<String> baselineKeys = buildClusterKeySet(beforeInfos);
+        int baselineCount = beforeInfos.size();
+
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CLUSTER_WAIT_SECONDS);
         while (System.currentTimeMillis() < deadline) {
-            if (nodeExistsInClusterInfo(targetIp, expectedPort)) {
-                return;
+            List<ClusterNodeInfo> currentInfos = safeGetClusterNodeInfos();
+            ClusterNodeInfo exact = findNodeByIpPort(currentInfos, targetIp, expectedPort);
+            if (exact != null) {
+                return exact;
+            }
+
+            ClusterNodeInfo newByPort = findNewNodeByPort(currentInfos, baselineKeys, expectedPort);
+            if (newByPort != null && currentInfos.size() > baselineCount) {
+                return newByPort;
             }
             try {
                 Thread.sleep(1500);
@@ -231,11 +262,29 @@ public class NodeDeployService {
                 + targetIp + ":" + expectedPort);
     }
 
-    private void waitForNodeLeaveCluster(String targetIp, String nodePort, DeployTaskState taskState) {
+    private void waitForNodeLeaveCluster(String targetIp, String nodePort, Integer expectedClusterId,
+                                         DeployTaskState taskState,
+                                         List<ClusterNodeInfo> baselineInfos) {
         String expectedPort = safeValue(nodePort, "6888");
+        List<ClusterNodeInfo> beforeInfos = baselineInfos == null
+                ? Collections.<ClusterNodeInfo>emptyList()
+                : baselineInfos;
+        int baselineCount = beforeInfos.size();
+        boolean hadClusterIdAtStart = expectedClusterId != null
+                && clusterNodeIdExists(beforeInfos, expectedClusterId);
+
         long deadline = System.currentTimeMillis() + TimeUnit.SECONDS.toMillis(CLUSTER_WAIT_SECONDS);
         while (System.currentTimeMillis() < deadline) {
-            if (!nodeExistsInClusterInfo(targetIp, expectedPort)) {
+            List<ClusterNodeInfo> currentInfos = safeGetClusterNodeInfos();
+            if (expectedClusterId != null) {
+                if (!clusterNodeIdExists(currentInfos, expectedClusterId)) {
+                    return;
+                }
+            } else if (!nodeExistsInClusterInfo(currentInfos, targetIp, expectedPort)) {
+                if (currentInfos.size() < baselineCount || baselineCount == 0) {
+                    return;
+                }
+            } else if (!hadClusterIdAtStart && currentInfos.size() < baselineCount) {
                 return;
             }
             try {
@@ -245,6 +294,10 @@ public class NodeDeployService {
                 throw new RuntimeException("等待节点离开集群被中断", e);
             }
             appendLog(taskState, "[WAIT] show cluster info 中仍存在 " + targetIp + ":" + expectedPort);
+        }
+        if (expectedClusterId != null) {
+            throw new RuntimeException("停止脚本执行成功，但在 show cluster info 中仍检测到节点 clusterId="
+                    + expectedClusterId + " (" + targetIp + ":" + expectedPort + ")");
         }
         throw new RuntimeException("停止脚本执行成功，但在 show cluster info 中仍检测到节点: " + targetIp + ":" + expectedPort);
     }
@@ -264,6 +317,66 @@ public class NodeDeployService {
         } catch (Exception e) {
             return false;
         }
+    }
+
+    private boolean nodeExistsInClusterInfo(List<ClusterNodeInfo> infos, String targetIp, String targetPort) {
+        for (ClusterNodeInfo info : infos) {
+            if (targetIp.equals(info.getIp()) && targetPort.equals(info.getPort())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<ClusterNodeInfo> safeGetClusterNodeInfos() {
+        try {
+            return getClusterNodeInfos();
+        } catch (Exception e) {
+            return Collections.emptyList();
+        }
+    }
+
+    private Set<String> buildClusterKeySet(List<ClusterNodeInfo> infos) {
+        Set<String> keys = new HashSet<String>();
+        for (ClusterNodeInfo info : infos) {
+            keys.add(clusterKey(info.getIp(), info.getPort()));
+        }
+        return keys;
+    }
+
+    private ClusterNodeInfo findNodeByIpPort(List<ClusterNodeInfo> infos, String targetIp, String targetPort) {
+        for (ClusterNodeInfo info : infos) {
+            if (targetIp.equals(info.getIp()) && targetPort.equals(info.getPort())) {
+                return info;
+            }
+        }
+        return null;
+    }
+
+    private ClusterNodeInfo findNewNodeByPort(List<ClusterNodeInfo> infos, Set<String> baselineKeys, String targetPort) {
+        for (ClusterNodeInfo info : infos) {
+            if (targetPort.equals(info.getPort())
+                    && !baselineKeys.contains(clusterKey(info.getIp(), info.getPort()))) {
+                return info;
+            }
+        }
+        return null;
+    }
+
+    private boolean clusterNodeIdExists(List<ClusterNodeInfo> infos, Integer clusterId) {
+        if (clusterId == null) {
+            return false;
+        }
+        for (ClusterNodeInfo info : infos) {
+            if (clusterId.equals(info.getClusterId())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String clusterKey(String ip, String port) {
+        return safeValue(ip, "") + ":" + safeValue(port, "");
     }
 
     private boolean nodeExistsInClusterByIp(String targetIp) {
@@ -295,7 +408,9 @@ public class NodeDeployService {
         StringBuilder output = new StringBuilder();
         try {
             Process process = builder.start();
-            BufferedReader reader = new BufferedReader(new InputStreamReader(process.getInputStream()));
+            // Force UTF-8 decoding so script logs are stable across different server locales.
+            BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream(), StandardCharsets.UTF_8));
             String line;
             while ((line = reader.readLine()) != null) {
                 String cleanLine = stripAnsi(line);

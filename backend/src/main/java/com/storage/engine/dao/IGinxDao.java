@@ -62,29 +62,48 @@ public class IGinxDao {
   // Node operations
 
   public void insertNode(long key, String name, String ip, String port, String description, String status, boolean isValid) {
-      insertNode(key, name, ip, port, description, status, isValid, null);
+      insertNode(key, name, ip, port, description, status, isValid, null, null);
   }
 
   public void insertNode(long key, String name, String ip, String port, String description, String status, boolean isValid, String deployDirectory) {
+      insertNode(key, name, ip, port, description, status, isValid, deployDirectory, null);
+  }
+
+  public void insertNode(long key, String name, String ip, String port, String description,
+                         String status, boolean isValid, String deployDirectory, Integer clusterId) {
+      StringBuilder columns = new StringBuilder("key, name, ip, port, description, status, isValid");
+      StringBuilder values = new StringBuilder(String.format(Locale.ROOT,
+              "%d, '%s', '%s', '%s', '%s', '%s', %b",
+              key, escapeSql(name), escapeSql(ip), escapeSql(port), escapeSql(description), escapeSql(status), isValid));
+
       if (deployDirectory != null && !deployDirectory.isEmpty()) {
-          String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid, deployDirectory) values (%d, '%s', '%s', '%s', '%s', '%s', %b, '%s');",
-                  IGinxConstants.NODES_PATH,
-                  key, name, ip, port, description, status, isValid, deployDirectory);
-          executeSql(sql);
-      } else {
-          String sql = String.format("insert into %s(key, name, ip, port, description, status, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', %b);",
-                  IGinxConstants.NODES_PATH,
-                  key, name, ip, port, description, status, isValid);
-          executeSql(sql);
+          columns.append(", deployDirectory");
+          values.append(String.format(Locale.ROOT, ", '%s'", escapeSql(deployDirectory)));
       }
+      if (clusterId != null) {
+          columns.append(", clusterId");
+          values.append(String.format(Locale.ROOT, ", %d", clusterId));
+      }
+
+      String sql = String.format(Locale.ROOT,
+              "insert into %s(%s) values (%s);",
+              IGinxConstants.NODES_PATH,
+              columns,
+              values);
+      executeSql(sql);
   }
 
   public void updateNode(long key, String name, String ip, String port, String description, String status) {
-      insertNode(key, name, ip, port, description, status, true, null);
+      insertNode(key, name, ip, port, description, status, true, null, null);
   }
 
   public void updateNode(long key, String name, String ip, String port, String description, String status, String deployDirectory) {
-      insertNode(key, name, ip, port, description, status, true, deployDirectory);
+      insertNode(key, name, ip, port, description, status, true, deployDirectory, null);
+  }
+
+  public void updateNode(long key, String name, String ip, String port, String description,
+                         String status, String deployDirectory, Integer clusterId) {
+      insertNode(key, name, ip, port, description, status, true, deployDirectory, clusterId);
   }
 
   public void deleteNode(long key) {
