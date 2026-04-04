@@ -12,8 +12,30 @@ let policyData = [];
 
 const interfaceData = {
   rest: [],
-  java: [],
-  python: [],
+  java: [
+    {
+      id: 'java-coming-soon',
+      name: 'Java gRPC（开发中）',
+      url: '-',
+      type: 'gRPC',
+      desc: '当前版本仅开放 RESTful API，Java gRPC 即将上线。',
+      params: '-',
+      response: '-',
+      code: '// gRPC interface is not available yet.',
+    },
+  ],
+  python: [
+    {
+      id: 'python-coming-soon',
+      name: 'Python gRPC（开发中）',
+      url: '-',
+      type: 'gRPC',
+      desc: '当前版本仅开放 RESTful API，Python gRPC 即将上线。',
+      params: '-',
+      response: '-',
+      code: '# gRPC interface is not available yet.',
+    },
+  ],
 };
 
 // ==================== 状态 ====================
@@ -256,21 +278,6 @@ function mapRestfulApiFromBackend(item) {
   };
 }
 
-function mapGrpcApiFromBackend(item, typePrefix) {
-  const id = Number(item.id);
-  return {
-    id: `${typePrefix}-${id}`,
-    rawId: id,
-    name: item.name || '',
-    url: item.url || '',
-    type: item.method || 'UNARY',
-    desc: item.description || '',
-    params: item.paramsExample || '-',
-    response: item.responseExample || '-',
-    code: item.curlExample || '-',
-  };
-}
-
 const HIDDEN_REST_INTERFACE_NAMES = new Set([
   '查询节点部署任务状态',
   '删除节点元数据',
@@ -324,16 +331,6 @@ async function loadRestfulInterfaces() {
     .map(mapRestfulApiFromBackend)
     .map(normalizeRestInterfaceItem)
     .filter(shouldKeepRestInterfaceItem);
-}
-
-async function loadJavaGrpcInterfaces() {
-  const items = await requestJson(`${API_BASE}/config/interfaces/java-grpc`);
-  interfaceData.java = (items || []).map(item => mapGrpcApiFromBackend(item, 'java'));
-}
-
-async function loadPythonGrpcInterfaces() {
-  const items = await requestJson(`${API_BASE}/config/interfaces/python-grpc`);
-  interfaceData.python = (items || []).map(item => mapGrpcApiFromBackend(item, 'python'));
 }
 
 function setCurrentUser(user) {
@@ -470,8 +467,6 @@ async function refreshDashboardData() {
     loadUsers(),
     loadPolicies(),
     loadRestfulInterfaces(),
-    loadJavaGrpcInterfaces(),
-    loadPythonGrpcInterfaces(),
   ]);
 
   renderClusterTable();
@@ -2350,6 +2345,15 @@ function closeDrawer() {
     this.classList.add('active');
     currentInterfaceType = id.replace('interface-btn-', '');
     renderInterfaceTable();
+
+    if (currentInterfaceType !== 'rest') {
+      pushAgentMessage({
+        level: 'info',
+        status: '通知',
+        text: `${currentInterfaceType.toUpperCase()} gRPC 暂未开放，当前仅支持 RESTful API。`,
+        smooth: false,
+      });
+    }
   });
 });
 

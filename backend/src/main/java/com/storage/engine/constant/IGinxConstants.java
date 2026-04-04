@@ -11,8 +11,6 @@ public class IGinxConstants {
     public static final String STORAGE_META_PATH = "storage.meta";
     // RESTful interface persistence path
     public static final String INTERFACE_RESTFUL_PATH = "interface.restful";
-    public static final String INTERFACE_JAVA_GRPC_PATH = "interface.java_grpc";
-    public static final String INTERFACE_PYTHON_GRPC_PATH = "interface.python_grpc";
     // Data path prefix for actual data
     public static final String DATA_PATH_PREFIX = "data";
 
