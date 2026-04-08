@@ -4,15 +4,15 @@ export default defineConfig({
   server: {
     port: 5173,
     proxy: {
-      '/api': {
+      '^/(config|metadata|storage|access)(/|$)': {
         target: 'http://localhost:8080',
         changeOrigin: true,
-        rewrite: path => path.replace(/^\/api/, ''),
       },
     },
   },
   build: {
-    outDir: 'dist',
+    outDir: '../backend/src/main/resources/static',
+    emptyOutDir: true,
     assetsDir: 'assets',
   },
 })

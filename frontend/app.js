@@ -2,7 +2,7 @@
 import * as echarts from 'echarts';
 
 // ==================== 配置 ====================
-const API_BASE = '/api'; // Unified API prefix for dev and production reverse proxy
+const API_BASE = '';
 
 // ==================== 数据 ====================
 let clusterData = [];
@@ -480,8 +480,17 @@ async function refreshDashboardData() {
   renderInterfaceTable();
 }
 
+function bootstrapAccessRootVisit() {
+  const input = $('access-path-input');
+  const visitBtn = $('access-visit-btn');
+  if (!input || !visitBtn) return;
+  input.value = '/';
+  visitBtn.click();
+}
+
 async function bootstrapDashboard() {
   await refreshDashboardData();
+  bootstrapAccessRootVisit();
 
   if (dashboardBootstrapped) {
     initClusterTopology();
@@ -2024,6 +2033,18 @@ $('access-visit-btn').addEventListener('click', async () => {
   const accessAgentName = pickAgentName();
   const preview = $('access-preview');
   const btn = $('access-visit-btn');
+  const showRootNoDataHint = () => {
+    $('access-data-type').textContent = '-';
+    $('access-data-size').textContent = '-';
+    $('access-data-time').textContent = '-';
+    preview.innerHTML = '<div class="preview-placeholder">当前没有数据，请先在“存储服务”中存储数据</div>';
+    pushAgentMessage({
+      level: 'info',
+      status: '提示',
+      agentName: accessAgentName,
+      text: '当前尚无可访问数据，请先在存储服务中写入数据',
+    });
+  };
 
   btn.disabled = true;
   btn.textContent = '访问中...';
@@ -2042,10 +2063,20 @@ $('access-visit-btn').addEventListener('click', async () => {
     const result = contentType.includes('application/json') ? await response.json() : null;
 
     if (!response.ok) {
-      throw new Error(result?.message || `HTTP ${response.status}`);
+      const message = result?.message || `HTTP ${response.status}`;
+      const isNotFound = response.status === 404 || /data\s+not\s+found\s+for\s+path/i.test(message);
+      if (path === '/' && isNotFound) {
+        showRootNoDataHint();
+        return;
+      }
+      throw new Error(message);
     }
 
     if (!result || result.code !== 200 || !result.data) {
+      if (path === '/') {
+        showRootNoDataHint();
+        return;
+      }
       $('access-data-type').textContent = '-';
       $('access-data-size').textContent = '-';
       $('access-data-time').textContent = '-';
