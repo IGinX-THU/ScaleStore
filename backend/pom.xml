@@ -31,17 +31,17 @@
         <dependency>
             <groupId>cn.edu.tsinghua</groupId>
             <artifactId>iginx-session</artifactId>
-            <version>0.7.2</version>
+            <version>0.8.0</version>
         </dependency>
         <dependency>
             <groupId>cn.edu.tsinghua</groupId>
             <artifactId>iginx-thrift</artifactId>
-            <version>0.7.2</version>
+            <version>0.8.0</version>
         </dependency>
         <dependency>
             <groupId>cn.edu.tsinghua</groupId>
             <artifactId>iginx-shared</artifactId>
-            <version>0.7.2</version>
+            <version>0.8.0</version>
         </dependency>
         <dependency>
             <groupId>org.neo4j.driver</groupId>

@@ -1,6 +1,13 @@
 package com.storage.engine.service;
 
+import cn.edu.tsinghua.iginx.exception.SessionException;
+import cn.edu.tsinghua.iginx.session.Session;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import cn.edu.tsinghua.iginx.thrift.DataFlowType;
+import cn.edu.tsinghua.iginx.thrift.ExportType;
+import cn.edu.tsinghua.iginx.thrift.JobState;
+import cn.edu.tsinghua.iginx.thrift.TaskInfo;
+import cn.edu.tsinghua.iginx.thrift.TaskType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
 import org.slf4j.Logger;
@@ -29,9 +36,28 @@ public class BootstrapWorkflowInitializer {
 
     private static final Logger logger = LoggerFactory.getLogger(BootstrapWorkflowInitializer.class);
     private static final String INIT_WORKFLOW_RELATIVE_PATH = "init/init-data-workflow.yaml";
+    private static final String TRANSFORM_SQL_TAIL_QUERY = "select key from sys.user where key = 1;";
 
     @Value("${resource.base-path:classpath:/}")
     private String resourceBasePath;
+
+    @Value("${iginx.host}")
+    private String iginxHost;
+
+    @Value("${iginx.port}")
+    private int iginxPort;
+
+    @Value("${iginx.username}")
+    private String iginxUsername;
+
+    @Value("${iginx.password}")
+    private String iginxPassword;
+
+    @Value("${bootstrap.workflow.timeout-ms:600000}")
+    private long bootstrapWorkflowTimeoutMs;
+
+    @Value("${bootstrap.workflow.poll-interval-ms:500}")
+    private long bootstrapWorkflowPollIntervalMs;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -46,22 +72,105 @@ public class BootstrapWorkflowInitializer {
                 return;
             }
 
-            List<String> sqlStatements = loadSqlStatements(workflowLocation);
-            if (sqlStatements.isEmpty()) {
-                logger.warn("Bootstrap workflow file {} has no SQL statements.", workflowLocation);
+            WorkflowSpec workflowSpec = loadWorkflowSpec(workflowLocation);
+            if (workflowSpec == null || workflowSpec.taskInfoList.isEmpty()) {
+                logger.warn("Bootstrap workflow file {} has no valid task definitions.", workflowLocation);
                 return;
             }
 
-            for (String sql : sqlStatements) {
-                logger.info("Executing bootstrap SQL: {}", sql);
-                iginxDao.executeSql(sql);
+            JobExecution execution = commitAndWaitBootstrapJob(workflowSpec);
+            if (!isBootstrapSuccess(execution.finalState)) {
+                throw new IllegalStateException("Bootstrap transform job finished with state " + execution.finalState);
             }
 
-            markBootstrapDone(workflowLocation);
-            logger.info("Bootstrap workflow completed successfully.");
+            markBootstrapDone(workflowLocation, execution.jobId, execution.finalState);
+            logger.info("Bootstrap workflow completed successfully via transform job: jobId={}, state={}",
+                    execution.jobId, execution.finalState);
         } catch (Exception e) {
             logger.error("Bootstrap workflow failed: {}", e.getMessage(), e);
         }
+    }
+
+    private JobExecution commitAndWaitBootstrapJob(WorkflowSpec workflowSpec) throws SessionException {
+        Session session = null;
+        try {
+            session = new Session(iginxHost, iginxPort, iginxUsername, iginxPassword);
+            session.openSession();
+
+            long jobId = commitTransformJob(session, workflowSpec);
+            logger.info("Bootstrap workflow submitted as transform job: jobId={}", jobId);
+
+            JobState finalState = waitForTerminalState(session, jobId);
+            return new JobExecution(jobId, finalState);
+        } finally {
+            if (session != null) {
+                try {
+                    session.closeSession();
+                } catch (Exception ignore) {
+                    // ignore close exception
+                }
+            }
+        }
+    }
+
+    private long commitTransformJob(Session session, WorkflowSpec workflowSpec) throws SessionException {
+        String exportFile = safe(workflowSpec.exportFile);
+        if (workflowSpec.exportType == ExportType.FILE && exportFile.isEmpty()) {
+            throw new IllegalArgumentException("Bootstrap workflow exportType=FILE requires non-empty exportFile");
+        }
+
+        String schedule = safe(workflowSpec.schedule);
+        if (schedule.isEmpty()) {
+            return session.commitTransformJob(workflowSpec.taskInfoList, workflowSpec.exportType, exportFile);
+        }
+
+        return session.commitTransformJob(
+                workflowSpec.taskInfoList,
+                workflowSpec.exportType,
+                exportFile,
+                schedule,
+                workflowSpec.stopOnFailure);
+    }
+
+    private JobState waitForTerminalState(Session session, long jobId) throws SessionException {
+        long timeoutMs = Math.max(1000L, bootstrapWorkflowTimeoutMs);
+        long pollInterval = Math.max(100L, bootstrapWorkflowPollIntervalMs);
+        long deadline = System.currentTimeMillis() + timeoutMs;
+
+        JobState latest = JobState.JOB_UNKNOWN;
+        while (System.currentTimeMillis() <= deadline) {
+            latest = session.queryTransformJobStatus(jobId);
+            if (isTerminal(latest)) {
+                return latest;
+            }
+
+            try {
+                Thread.sleep(pollInterval);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return latest;
+            }
+        }
+
+        return latest;
+    }
+
+    private boolean isTerminal(JobState state) {
+        if (state == null) {
+            return false;
+        }
+
+        return state == JobState.JOB_FINISHED
+                || state == JobState.JOB_CLOSED
+                || state == JobState.JOB_FAILED
+                || state == JobState.JOB_FAILING
+                || state == JobState.JOB_PARTIALLY_FAILED
+                || state == JobState.JOB_PARTIALLY_FAILING
+                || state == JobState.JOB_UNKNOWN;
+    }
+
+    private boolean isBootstrapSuccess(JobState state) {
+        return state == JobState.JOB_FINISHED || state == JobState.JOB_CLOSED;
     }
 
     private boolean isBootstrapDone() {
@@ -98,19 +207,24 @@ public class BootstrapWorkflowInitializer {
         }
     }
 
-    private void markBootstrapDone(String workflowLocation) {
+    private void markBootstrapDone(String workflowLocation, long jobId, JobState finalState) {
         String initTime = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"));
         String sql = String.format(
                 Locale.ROOT,
-                "insert into %s(key, initialized, workflowFile, initTime) values (1, true, '%s', '%s');",
+                "insert into %s(key, initialized, workflowFile, initTime, initJobId, initJobState) values (1, true, '%s', '%s', %d, '%s');",
                 IGinxConstants.BOOTSTRAP_PATH,
                 escapeSql(workflowLocation),
-                initTime);
+                initTime,
+                jobId,
+                escapeSql(finalState == null ? "" : finalState.name()));
         iginxDao.executeSql(sql);
     }
 
-    private List<String> loadSqlStatements(String workflowLocation) throws Exception {
-        List<String> sqlStatements = new ArrayList<String>();
+    private WorkflowSpec loadWorkflowSpec(String workflowLocation) throws Exception {
+        WorkflowSpec spec = new WorkflowSpec();
+        spec.exportType = ExportType.LOG;
+        spec.exportFile = "";
+        spec.schedule = "";
 
         InputStream in = null;
         try {
@@ -118,14 +232,14 @@ public class BootstrapWorkflowInitializer {
                 ClassPathResource resource = new ClassPathResource(workflowLocation);
                 if (!resource.exists()) {
                     logger.warn("Bootstrap workflow file not found: {}", workflowLocation);
-                    return sqlStatements;
+                    return null;
                 }
                 in = resource.getInputStream();
             } else {
                 File workflowFile = new File(workflowLocation);
                 if (!workflowFile.exists()) {
                     logger.warn("Bootstrap workflow file not found: {}", workflowLocation);
-                    return sqlStatements;
+                    return null;
                 }
                 in = new FileInputStream(workflowFile);
             }
@@ -133,46 +247,113 @@ public class BootstrapWorkflowInitializer {
             Yaml yaml = new Yaml();
             Object root = yaml.load(in);
             if (!(root instanceof Map)) {
-                return sqlStatements;
+                return null;
             }
 
-            Object taskListObj = ((Map<?, ?>) root).get("taskList");
+            Map<?, ?> map = (Map<?, ?>) root;
+
+            Object taskListObj = map.get("taskList");
             if (!(taskListObj instanceof List)) {
-                return sqlStatements;
+                return null;
             }
 
-            List<?> taskList = (List<?>) taskListObj;
-            for (Object taskObj : taskList) {
-                if (!(taskObj instanceof Map)) {
-                    continue;
-                }
-
-                Map<?, ?> task = (Map<?, ?>) taskObj;
-                String taskType = asString(task.get("taskType"));
-                if (!("sql".equalsIgnoreCase(taskType) || "iginx".equalsIgnoreCase(taskType))) {
-                    continue;
-                }
-
-                Object sqlListObj = task.containsKey("sqlList") ? task.get("sqlList") : task.get("sqllist");
-                if (!(sqlListObj instanceof List)) {
-                    continue;
-                }
-
-                List<?> sqlList = (List<?>) sqlListObj;
-                for (Object sqlObj : sqlList) {
-                    String sql = asString(sqlObj).trim();
-                    if (!sql.isEmpty()) {
-                        sqlStatements.add(sql);
-                    }
-                }
-            }
+            spec.taskInfoList = parseTaskInfoList((List<?>) taskListObj);
+            spec.exportType = parseExportType(asString(map.get("exportType")));
+            spec.exportFile = safe(asString(map.get("exportFile")));
+            spec.schedule = safe(asString(map.get("schedule")));
+            spec.stopOnFailure = parseBoolean(map.get("stopOnFailure"), true);
         } finally {
             if (in != null) {
                 in.close();
             }
         }
 
-        return sqlStatements;
+        return spec;
+    }
+
+    private List<TaskInfo> parseTaskInfoList(List<?> taskList) {
+        List<TaskInfo> out = new ArrayList<TaskInfo>();
+        for (Object taskObj : taskList) {
+            if (!(taskObj instanceof Map)) {
+                continue;
+            }
+
+            Map<?, ?> task = (Map<?, ?>) taskObj;
+            String taskTypeRaw = safe(asString(task.get("taskType"))).toLowerCase(Locale.ROOT);
+            TaskType taskType;
+            if ("sql".equals(taskTypeRaw) || "iginx".equals(taskTypeRaw)) {
+                taskType = TaskType.IGINX;
+            } else if ("python".equals(taskTypeRaw)) {
+                taskType = TaskType.PYTHON;
+            } else {
+                continue;
+            }
+
+            String flowRaw = safe(asString(task.get("dataFlowType"))).toLowerCase(Locale.ROOT);
+            DataFlowType flowType = "batch".equals(flowRaw) ? DataFlowType.BATCH : DataFlowType.STREAM;
+            TaskInfo info = new TaskInfo(taskType, flowType);
+
+            Long timeout = parseLong(task.get("timeout"));
+            if (timeout != null && timeout > 0L) {
+                info.setTimeout(timeout);
+            }
+
+            if (taskType == TaskType.IGINX) {
+                Object sqlListObj = task.containsKey("sqlList") ? task.get("sqlList") : task.get("sqllist");
+                if (!(sqlListObj instanceof List)) {
+                    continue;
+                }
+
+                List<String> sqlList = new ArrayList<String>();
+                for (Object sqlObj : (List<?>) sqlListObj) {
+                    String sql = safe(asString(sqlObj));
+                    if (!sql.isEmpty()) {
+                        sqlList.add(sql);
+                    }
+                }
+                if (sqlList.isEmpty()) {
+                    continue;
+                }
+
+                ensureTransformSqlTail(sqlList);
+                info.setSqlList(sqlList);
+            } else {
+                String pyTaskName = safe(asString(task.get("pyTaskName")));
+                if (pyTaskName.isEmpty()) {
+                    continue;
+                }
+                info.setPyTaskName(pyTaskName);
+            }
+
+            out.add(info);
+        }
+
+        return out;
+    }
+
+    private void ensureTransformSqlTail(List<String> sqlList) {
+        if (sqlList == null || sqlList.isEmpty()) {
+            return;
+        }
+
+        String tail = safe(sqlList.get(sqlList.size() - 1)).toLowerCase(Locale.ROOT);
+        if (tail.startsWith("select") || tail.startsWith("show")) {
+            return;
+        }
+
+        // Transform SQL stage requires the last statement to be query-like (select/show).
+        sqlList.add(TRANSFORM_SQL_TAIL_QUERY);
+    }
+
+    private ExportType parseExportType(String exportTypeRaw) {
+        String value = safe(exportTypeRaw).toLowerCase(Locale.ROOT);
+        if ("file".equals(value)) {
+            return ExportType.FILE;
+        }
+        if ("iginx".equals(value)) {
+            return ExportType.IGINX;
+        }
+        return ExportType.LOG;
     }
 
     private String resolveWorkflowLocation() {
@@ -292,6 +473,45 @@ public class BootstrapWorkflowInitializer {
         return String.valueOf(value);
     }
 
+    private Long parseLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        String raw = safe(String.valueOf(value));
+        if (raw.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(raw);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private boolean parseBoolean(Object value, boolean defaultValue) {
+        if (value == null) {
+            return defaultValue;
+        }
+        if (value instanceof Boolean) {
+            return (Boolean) value;
+        }
+        String raw = safe(asString(value)).toLowerCase(Locale.ROOT);
+        if ("true".equals(raw)) {
+            return true;
+        }
+        if ("false".equals(raw)) {
+            return false;
+        }
+        return defaultValue;
+    }
+
+    private String safe(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private String escapeSql(String value) {
         if (value == null) {
             return "";
@@ -313,5 +533,23 @@ public class BootstrapWorkflowInitializer {
             }
         }
         return null;
+    }
+
+    private static class WorkflowSpec {
+        private List<TaskInfo> taskInfoList;
+        private ExportType exportType;
+        private String exportFile;
+        private String schedule;
+        private boolean stopOnFailure;
+    }
+
+    private static class JobExecution {
+        private final long jobId;
+        private final JobState finalState;
+
+        private JobExecution(long jobId, JobState finalState) {
+            this.jobId = jobId;
+            this.finalState = finalState;
+        }
     }
 }
