@@ -1892,6 +1892,160 @@ document.addEventListener('keydown', e => {
 const uploadZone = $('storage-upload');
 const fileInput = $('file-input');
 
+const storageSourceDefaultPorts = {
+  filesystem: '6669',
+  mysql: '3306',
+  postgres: '5432',
+  iotdb: '6667',
+};
+
+function getStorageSourceLabel(sourceType) {
+  const labels = {
+    filesystem: 'filesystem',
+    mysql: 'MySQL',
+    postgres: 'PostgreSQL',
+    iotdb: 'IoTDB',
+  };
+  return labels[sourceType] || sourceType;
+}
+
+function syncStorageSourceFormOptions(resetPort = false) {
+  const sourceType = $('storage-source-type-input').value;
+  const fsFields = $('storage-source-filesystem-fields');
+  const authFields = $('storage-source-auth-fields');
+  const portInput = $('storage-source-port-input');
+
+  fsFields.classList.toggle('hidden', sourceType !== 'filesystem');
+  authFields.classList.toggle('hidden', sourceType === 'filesystem');
+
+  const defaultPort = storageSourceDefaultPorts[sourceType] || '';
+  if (resetPort || !portInput.value.trim()) {
+    portInput.value = defaultPort;
+  }
+
+  if (sourceType === 'filesystem' && !$('storage-source-iginx-port-input').value.trim()) {
+    $('storage-source-iginx-port-input').value = '6888';
+  }
+}
+
+function openStorageSourceModal() {
+  $('storage-source-type-input').value = 'filesystem';
+  $('storage-source-ip-input').value = '127.0.0.1';
+  $('storage-source-port-input').value = storageSourceDefaultPorts.filesystem;
+  $('storage-source-username-input').value = '';
+  $('storage-source-password-input').value = '';
+  $('storage-source-dummy-dir-input').value = '';
+  $('storage-source-iginx-port-input').value = '6888';
+  syncStorageSourceFormOptions(true);
+  showModal('modal-storage-source');
+}
+
+function closeStorageSourceModal() {
+  hideModal('modal-storage-source');
+}
+
+function buildStorageSourcePayload() {
+  const sourceType = $('storage-source-type-input').value;
+  const ip = $('storage-source-ip-input').value.trim();
+  const port = Number($('storage-source-port-input').value.trim());
+
+  if (!ip) {
+    throw new Error('请输入数据源IP');
+  }
+  if (!Number.isFinite(port) || port <= 0) {
+    throw new Error('请输入正确的端口');
+  }
+
+  const payload = {
+    sourceType,
+    ip,
+    port,
+  };
+
+  if (sourceType === 'filesystem') {
+    const dummyDir = $('storage-source-dummy-dir-input').value.trim();
+    const iginxPort = Number($('storage-source-iginx-port-input').value.trim());
+    if (!dummyDir) {
+      throw new Error('filesystem 需要填写 dummy_dir');
+    }
+    if (!Number.isFinite(iginxPort) || iginxPort <= 0) {
+      throw new Error('filesystem 需要填写正确的 iginx_port');
+    }
+    payload.dummyDir = dummyDir;
+    payload.iginxPort = iginxPort;
+  } else {
+    const username = $('storage-source-username-input').value.trim();
+    const password = $('storage-source-password-input').value;
+    if (!username || !password) {
+      throw new Error('请填写 username 和 password');
+    }
+    payload.username = username;
+    payload.password = password;
+  }
+
+  return payload;
+}
+
+$('storage-source-add-btn').addEventListener('click', openStorageSourceModal);
+$('storage-source-modal-cancel').addEventListener('click', closeStorageSourceModal);
+$('storage-source-modal-close-x').addEventListener('click', closeStorageSourceModal);
+$('storage-source-type-input').addEventListener('change', () => syncStorageSourceFormOptions(true));
+
+$('storage-source-modal-save').addEventListener('click', async () => {
+  const saveBtn = $('storage-source-modal-save');
+  if (saveBtn.disabled) {
+    return;
+  }
+
+  let payload;
+  try {
+    payload = buildStorageSourcePayload();
+  } catch (e) {
+    alert(e.message || '表单校验失败');
+    return;
+  }
+
+  saveBtn.disabled = true;
+  saveBtn.textContent = '添加中...';
+
+  const sourceLabel = getStorageSourceLabel(payload.sourceType);
+  const storageAgentName = pickAgentName();
+  try {
+    const result = await requestJson(`${API_BASE}/storage/sources`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+
+    const discovered = Number(result?.discoveredAssetCount || 0);
+    const imported = Number(result?.importedMetaCount || 0);
+    const skipped = Number(result?.skippedMetaCount || 0);
+
+    pushAgentMessage({
+      level: 'success',
+      status: '完成',
+      agentName: storageAgentName,
+      text: `新增${sourceLabel}数据源成功，发现 ${discovered} 个资产，同步 ${imported} 条元数据（跳过 ${skipped} 条），已进入定时UDF抽取队列`,
+    });
+
+    alert(`新增数据源成功\n发现资产: ${discovered}\n同步元数据: ${imported}\n跳过: ${skipped}`);
+    closeStorageSourceModal();
+  } catch (e) {
+    pushAgentMessage({
+      level: 'warn',
+      status: '失败',
+      agentName: storageAgentName,
+      text: `新增${sourceLabel}数据源失败：${e.message}`,
+    });
+    alert('新增数据源失败: ' + e.message);
+  } finally {
+    saveBtn.disabled = false;
+    saveBtn.textContent = '确认添加';
+  }
+});
+
+syncStorageSourceFormOptions(true);
+
 // File extension accept map per data type
 const acceptMap = {
   relational: '.csv,.txt',
@@ -2027,109 +2181,170 @@ $('storage-save-btn').addEventListener('click', async () => {
 });
 
 // ==================== 访问服务 ====================
-$('access-visit-btn').addEventListener('click', async () => {
-  const path = $('access-path-input').value.trim();
-  if (!path) { alert('请输入逻辑路径'); return; }
-  const accessAgentName = pickAgentName();
+const accessBrowserState = {
+  currentFolderPath: '/',
+  currentFolderChildren: [],
+  currentFileName: '',
+  isFileView: false,
+  folderHistory: [],
+};
+
+function normalizeAccessPath(path) {
+  const raw = (path || '').trim();
+  if (!raw) return '/';
+  let normalized = raw.startsWith('/') ? raw : `/${raw}`;
+  while (normalized.length > 1 && normalized.endsWith('/')) {
+    normalized = normalized.slice(0, -1);
+  }
+  return normalized;
+}
+
+function updateAccessBackButtonState() {
+  const backBtn = $('access-back-btn');
+  if (!backBtn) return;
+  const canBack = accessBrowserState.isFileView || accessBrowserState.folderHistory.length > 1;
+  backBtn.disabled = !canBack;
+}
+
+function setAccessInfo(typeText, sizeText, timeText) {
+  $('access-data-type').textContent = typeText;
+  $('access-data-size').textContent = sizeText;
+  $('access-data-time').textContent = timeText;
+}
+
+function showAccessRootNoDataHint(agentName) {
+  const preview = $('access-preview');
+  setAccessInfo('-', '-', '-');
+  preview.innerHTML = '<div class="preview-placeholder">当前没有数据，请先在“存储服务”中存储数据</div>';
+  pushAgentMessage({
+    level: 'info',
+    status: '提示',
+    agentName,
+    text: '当前尚无可访问数据，请先在存储服务中写入数据',
+  });
+}
+
+async function requestAccessData(logicalPath, fileName = '') {
+  let url = `${API_BASE}/access/data?logicalPath=${encodeURIComponent(logicalPath)}`;
+  if (fileName) {
+    url += `&fileName=${encodeURIComponent(fileName)}`;
+  }
+  const response = await fetch(url);
+  const contentType = response.headers.get('content-type') || '';
+  const result = contentType.includes('application/json') ? await response.json() : null;
+  return { response, result };
+}
+
+function renderAccessItem(item) {
+  const preview = $('access-preview');
+  const dataType = item?.dataType || '';
+  const previewData = item?.previewData;
+
+  const typeLabels = {
+    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    document: '文档数据', keyvalue: '键值数据', directory: '目录'
+  };
+
+  setAccessInfo(
+    typeLabels[dataType] || dataType || '-',
+    dataType === 'directory' ? '-' : formatFileSize(item?.fileSize),
+    dataType === 'directory' ? '-' : (item?.createTime || '-')
+  );
+
+  if (dataType === 'directory') {
+    renderDirectoryListing(preview, previewData, item.logicalPath || accessBrowserState.currentFolderPath);
+    return;
+  }
+
+  if (dataType === 'image') {
+    renderImagePreview(preview, previewData, item);
+  } else if (dataType === 'timeseries' || dataType === 'relational') {
+    renderTablePreview(preview, previewData, dataType);
+  } else if (dataType === 'document') {
+    renderDocumentPreview(preview, previewData, item);
+  } else if (dataType === 'keyvalue') {
+    renderKeyValuePreview(preview, previewData);
+  } else {
+    preview.innerHTML = '<div class="preview-placeholder">不支持预览此数据类型</div>';
+  }
+}
+
+async function openFolderView(path, options = {}) {
+  const { recordHistory = true, accessAgentName = pickAgentName(), showRunningMessage = true } = options;
+  const folderPath = normalizeAccessPath(path);
   const preview = $('access-preview');
   const btn = $('access-visit-btn');
-  const showRootNoDataHint = () => {
-    $('access-data-type').textContent = '-';
-    $('access-data-size').textContent = '-';
-    $('access-data-time').textContent = '-';
-    preview.innerHTML = '<div class="preview-placeholder">当前没有数据，请先在“存储服务”中存储数据</div>';
-    pushAgentMessage({
-      level: 'info',
-      status: '提示',
-      agentName: accessAgentName,
-      text: '当前尚无可访问数据，请先在存储服务中写入数据',
-    });
-  };
 
   btn.disabled = true;
   btn.textContent = '访问中...';
   preview.innerHTML = '<div class="preview-placeholder">加载中...</div>';
 
-  pushAgentMessage({
-    level: 'running',
-    status: '进行中',
-    agentName: accessAgentName,
-    text: `正在访问存储数据，路径 ${path}`,
-  });
+  if (showRunningMessage) {
+    pushAgentMessage({
+      level: 'running',
+      status: '进行中',
+      agentName: accessAgentName,
+      text: `正在访问目录，路径 ${folderPath}`,
+    });
+  }
 
   try {
-    const response = await fetch(`${API_BASE}/access/data?logicalPath=${encodeURIComponent(path)}`);
-    const contentType = response.headers.get('content-type') || '';
-    const result = contentType.includes('application/json') ? await response.json() : null;
-
+    const { response, result } = await requestAccessData(folderPath);
     if (!response.ok) {
       const message = result?.message || `HTTP ${response.status}`;
       const isNotFound = response.status === 404 || /data\s+not\s+found\s+for\s+path/i.test(message);
-      if (path === '/' && isNotFound) {
-        showRootNoDataHint();
+      if (folderPath === '/' && isNotFound) {
+        showAccessRootNoDataHint(accessAgentName);
         return;
       }
       throw new Error(message);
     }
 
     if (!result || result.code !== 200 || !result.data) {
-      if (path === '/') {
-        showRootNoDataHint();
+      if (folderPath === '/') {
+        showAccessRootNoDataHint(accessAgentName);
         return;
       }
-      $('access-data-type').textContent = '-';
-      $('access-data-size').textContent = '-';
-      $('access-data-time').textContent = '-';
+      setAccessInfo('-', '-', '-');
       preview.innerHTML = '<div class="preview-placeholder">未找到该路径对应的数据</div>';
       pushAgentMessage({
         level: 'warn',
         status: '失败',
         agentName: accessAgentName,
-        text: `访问失败，路径 ${path} 未找到对应数据`,
+        text: `访问失败，路径 ${folderPath} 未找到对应数据`,
       });
       return;
     }
 
     const item = result.data;
-    const dataType = item.dataType;
-    const previewData = item.previewData;
+    const normalizedFolder = normalizeAccessPath(item.logicalPath || folderPath);
+    accessBrowserState.currentFolderPath = normalizedFolder;
+    accessBrowserState.currentFolderChildren = Array.isArray(item.previewData) ? item.previewData : [];
+    accessBrowserState.currentFileName = '';
+    accessBrowserState.isFileView = false;
 
-    // Show metadata
-    const typeLabels = {
-      timeseries: '时序数据', relational: '关系数据', image: '图像数据',
-      document: '文档数据', keyvalue: '键值数据', directory: '目录'
-    };
-    $('access-data-type').textContent = typeLabels[dataType] || dataType;
-    $('access-data-size').textContent = dataType === 'directory' ? '-' : formatFileSize(item.fileSize);
-    $('access-data-time').textContent = item.createTime || '-';
+    $('access-path-input').value = normalizedFolder;
 
-    // Render preview based on data type
-    if (dataType === 'directory') {
-      renderDirectoryListing(preview, previewData, item.logicalPath);
-    } else if (dataType === 'image') {
-      renderImagePreview(preview, previewData, item);
-    } else if (dataType === 'timeseries' || dataType === 'relational') {
-      renderTablePreview(preview, previewData, dataType);
-    } else if (dataType === 'document') {
-      renderDocumentPreview(preview, previewData, item);
-    } else if (dataType === 'keyvalue') {
-      renderKeyValuePreview(preview, previewData);
-    } else {
-      preview.innerHTML = '<div class="preview-placeholder">不支持预览此数据类型</div>';
+    if (recordHistory) {
+      const history = accessBrowserState.folderHistory;
+      if (history.length === 0 || history[history.length - 1] !== normalizedFolder) {
+        history.push(normalizedFolder);
+      }
     }
+
+    renderAccessItem(item);
+    updateAccessBackButtonState();
 
     pushAgentMessage({
       level: 'success',
       status: '完成',
       agentName: accessAgentName,
-      text: `完成数据访问，路径 ${path}，类型 ${dataType || '-'}`,
+      text: `完成目录访问，路径 ${normalizedFolder}`,
     });
   } catch (e) {
     console.error('Access error:', e);
     preview.innerHTML = `<div class="preview-placeholder">访问失败: ${e.message}</div>`;
-    $('access-data-type').textContent = '-';
-    $('access-data-size').textContent = '-';
-    $('access-data-time').textContent = '-';
+    setAccessInfo('-', '-', '-');
     pushAgentMessage({
       level: 'warn',
       status: '失败',
@@ -2139,8 +2354,104 @@ $('access-visit-btn').addEventListener('click', async () => {
   } finally {
     btn.disabled = false;
     btn.textContent = '访问';
+    updateAccessBackButtonState();
   }
+}
+
+async function openFileInFolder(folderPath, fileName, accessAgentName = pickAgentName()) {
+  const normalizedFolder = normalizeAccessPath(folderPath || accessBrowserState.currentFolderPath);
+  const targetFile = (fileName || '').trim();
+  if (!targetFile) {
+    alert('未找到文件名，无法访问文件内容');
+    return;
+  }
+
+  const preview = $('access-preview');
+  preview.innerHTML = '<div class="preview-placeholder">加载中...</div>';
+
+  pushAgentMessage({
+    level: 'running',
+    status: '进行中',
+    agentName: accessAgentName,
+    text: `正在访问文件 ${targetFile}（目录 ${normalizedFolder}）`,
+  });
+
+  try {
+    const { response, result } = await requestAccessData(normalizedFolder, targetFile);
+    if (!response.ok || !result || result.code !== 200 || !result.data) {
+      const message = result?.message || `HTTP ${response.status}`;
+      throw new Error(message);
+    }
+
+    const item = result.data;
+    accessBrowserState.currentFolderPath = normalizeAccessPath(item.logicalPath || normalizedFolder);
+    accessBrowserState.currentFileName = item.fileName || targetFile;
+    accessBrowserState.isFileView = true;
+
+    // Keep logical path input unchanged as current folder.
+    $('access-path-input').value = accessBrowserState.currentFolderPath;
+
+    renderAccessItem(item);
+    updateAccessBackButtonState();
+
+    pushAgentMessage({
+      level: 'success',
+      status: '完成',
+      agentName: accessAgentName,
+      text: `完成文件访问，目录 ${accessBrowserState.currentFolderPath}，文件 ${accessBrowserState.currentFileName}`,
+    });
+  } catch (e) {
+    console.error('File access error:', e);
+    preview.innerHTML = `<div class="preview-placeholder">访问文件失败: ${e.message}</div>`;
+    setAccessInfo('-', '-', '-');
+    pushAgentMessage({
+      level: 'warn',
+      status: '失败',
+      agentName: accessAgentName,
+      text: `文件访问失败：${e.message}`,
+    });
+  }
+}
+
+$('access-visit-btn').addEventListener('click', async () => {
+  const path = $('access-path-input').value.trim();
+  if (!path) { alert('请输入逻辑路径'); return; }
+  await openFolderView(path, { recordHistory: true, accessAgentName: pickAgentName(), showRunningMessage: true });
 });
+
+$('access-back-btn').addEventListener('click', async () => {
+  const accessAgentName = pickAgentName();
+
+  if (accessBrowserState.isFileView) {
+    accessBrowserState.isFileView = false;
+    accessBrowserState.currentFileName = '';
+    const folderItem = {
+      logicalPath: accessBrowserState.currentFolderPath,
+      dataType: 'directory',
+      previewData: accessBrowserState.currentFolderChildren,
+    };
+    $('access-path-input').value = accessBrowserState.currentFolderPath;
+    renderAccessItem(folderItem);
+    updateAccessBackButtonState();
+    pushAgentMessage({
+      level: 'info',
+      status: '返回',
+      agentName: accessAgentName,
+      text: `已返回目录 ${accessBrowserState.currentFolderPath}`,
+    });
+    return;
+  }
+
+  if (accessBrowserState.folderHistory.length <= 1) {
+    return;
+  }
+
+  accessBrowserState.folderHistory.pop();
+  const previousFolder = accessBrowserState.folderHistory[accessBrowserState.folderHistory.length - 1];
+  await openFolderView(previousFolder, { recordHistory: false, accessAgentName, showRunningMessage: false });
+});
+
+updateAccessBackButtonState();
 
 function renderImagePreview(container, previewData, meta) {
   if (!previewData || !previewData.base64) {
@@ -2245,10 +2556,11 @@ function renderDirectoryListing(container, children, parentPath) {
     const icon = dt === 'directory' ? '📁' : '📄';
     const nameDisplay = escapeHtml(child.name);
     const pathDisplay = escapeHtml(child.fullPath);
+    const fileToken = escapeHtml(child.fileName || child.name || '');
     const extra = child.fileName ? ` · ${escapeHtml(child.fileName)}` : '';
     const timeInfo = child.createTime ? ` · ${escapeHtml(child.createTime)}` : '';
 
-    html += `<div class="dir-listing-item" data-path="${pathDisplay}" 
+    html += `<div class="dir-listing-item" data-path="${pathDisplay}" data-type="${escapeHtml(dt)}" data-file="${fileToken}"
       style="padding:6px 10px;background:rgba(0,40,80,0.4);border:1px solid rgba(0,180,255,0.15);border-radius:4px;cursor:pointer;transition:all 0.2s;"
       onmouseover="this.style.borderColor='rgba(0,180,255,0.5)';this.style.background='rgba(0,60,120,0.5)'"
       onmouseout="this.style.borderColor='rgba(0,180,255,0.15)';this.style.background='rgba(0,40,80,0.4)'"
@@ -2262,12 +2574,19 @@ function renderDirectoryListing(container, children, parentPath) {
   html += '</div></div>';
   container.innerHTML = html;
 
-  // Bind click events – navigate into the child path
+  // Bind click events – directory navigates by path, file opens in current folder without changing logical path.
   container.querySelectorAll('.dir-listing-item').forEach(item => {
-    item.addEventListener('click', function() {
+    item.addEventListener('click', async function() {
       const childPath = this.getAttribute('data-path');
-      $('access-path-input').value = childPath;
-      $('access-visit-btn').click();
+      const type = this.getAttribute('data-type') || '';
+      const fileName = this.getAttribute('data-file') || '';
+
+      if (type === 'directory') {
+        await openFolderView(childPath, { recordHistory: true, accessAgentName: pickAgentName(), showRunningMessage: true });
+        return;
+      }
+
+      await openFileInFolder(parentPath, fileName, pickAgentName());
     });
   });
 }
@@ -2286,15 +2605,17 @@ function formatFileSize(bytes) {
 }
 
 $('access-download-btn').addEventListener('click', async () => {
-  const path = $('access-path-input').value.trim();
-  if (!path) { alert('请先访问数据'); return; }
+  const folderPath = normalizeAccessPath(accessBrowserState.currentFolderPath || $('access-path-input').value.trim());
+  const fileName = (accessBrowserState.currentFileName || '').trim();
+  if (!folderPath) { alert('请先访问数据'); return; }
+  if (!fileName) { alert('请先在目录中点击一个文件，再执行下载'); return; }
 
   const btn = $('access-download-btn');
   btn.disabled = true;
   btn.textContent = '下载中...';
 
   try {
-    const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(path)}`);
+    const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(folderPath)}&fileName=${encodeURIComponent(fileName)}`);
     if (!response.ok) {
       throw new Error('下载失败: HTTP ' + response.status);
     }

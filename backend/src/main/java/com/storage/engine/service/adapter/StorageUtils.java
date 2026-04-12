@@ -1,6 +1,7 @@
 package com.storage.engine.service.adapter;
 
 import java.nio.charset.StandardCharsets;
+import java.nio.ByteBuffer;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -112,6 +113,74 @@ public final class StorageUtils {
     }
 
     /**
+     * Build a filesystem-style leaf path under a logical IGinX prefix.
+     * Example: data.project.asset + file.txt -> data.project.asset.file\\.txt
+     */
+    public static String toFileLeafPath(String iginxPath, String originalFileName) {
+        String base = originalFileName == null ? "" : originalFileName.trim();
+        if (base.contains("\\")) {
+            base = base.replace("\\", "/");
+        }
+        int slash = base.lastIndexOf('/');
+        if (slash >= 0 && slash < base.length() - 1) {
+            base = base.substring(slash + 1);
+        }
+        base = base.replaceAll("[^a-zA-Z0-9._-]", "_");
+        if (base.isEmpty()) {
+            base = "content.bin";
+        }
+        return iginxPath + "." + base.replace(".", "\\.");
+    }
+
+    /**
+     * Find last unescaped dot in an IGinX path (escaped dot is written as \\. ).
+     */
+    public static int findLastUnescapedDot(String text) {
+        if (text == null || text.isEmpty()) {
+            return -1;
+        }
+        for (int i = text.length() - 1; i >= 0; i--) {
+            if (text.charAt(i) != '.') {
+                continue;
+            }
+            int slashCount = 0;
+            int j = i - 1;
+            while (j >= 0 && text.charAt(j) == '\\') {
+                slashCount++;
+                j--;
+            }
+            if ((slashCount % 2) == 0) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * Normalize SQL-escaped path text to a canonical in-memory form.
+     * Example: data.a.b\\.csv -> data.a.b\.csv
+     */
+    public static String normalizeEscapedPath(String path) {
+        String normalized = path == null ? "" : path.trim();
+        while (normalized.contains("\\\\")) {
+            normalized = normalized.replace("\\\\", "\\");
+        }
+        return normalized;
+    }
+
+    /**
+     * Split full path into parent path and leaf field token.
+     */
+    public static String[] splitParentAndLeaf(String fullPath) {
+        String path = normalizeEscapedPath(fullPath);
+        int idx = findLastUnescapedDot(path);
+        if (idx <= 0 || idx >= path.length() - 1) {
+            return new String[]{"", ""};
+        }
+        return new String[]{path.substring(0, idx), path.substring(idx + 1)};
+    }
+
+    /**
      * Get file extension from filename.
      */
     public static String getFileExtension(String fileName) {
@@ -127,6 +196,7 @@ public final class StorageUtils {
     public static Object convertValue(Object val) {
         if (val == null) return null;
         if (val instanceof byte[]) return new String((byte[]) val, StandardCharsets.UTF_8);
+        if (val instanceof ByteBuffer) return new String(toByteArray(val), StandardCharsets.UTF_8);
         return val;
     }
 
@@ -136,7 +206,27 @@ public final class StorageUtils {
     public static String convertValueToString(Object val) {
         if (val == null) return "";
         if (val instanceof byte[]) return new String((byte[]) val, StandardCharsets.UTF_8);
+        if (val instanceof ByteBuffer) return new String(toByteArray(val), StandardCharsets.UTF_8);
         return val.toString();
+    }
+
+    /**
+     * Convert an IGinX query value into bytes.
+     */
+    public static byte[] toByteArray(Object value) {
+        if (value == null) {
+            return new byte[0];
+        }
+        if (value instanceof byte[]) {
+            return (byte[]) value;
+        }
+        if (value instanceof ByteBuffer) {
+            ByteBuffer buf = ((ByteBuffer) value).duplicate();
+            byte[] out = new byte[buf.remaining()];
+            buf.get(out);
+            return out;
+        }
+        return String.valueOf(value).getBytes(StandardCharsets.UTF_8);
     }
 
     /**

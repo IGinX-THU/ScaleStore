@@ -110,4 +110,5 @@ public class KeyValueAdapter implements StorageAdapter {
         result.setFields(new ArrayList<String>(kv.keySet()));
         return result;
     }
+
 }

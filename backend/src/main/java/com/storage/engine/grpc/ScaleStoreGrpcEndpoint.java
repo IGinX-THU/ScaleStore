@@ -368,7 +368,7 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
     @Override
     public void downloadData(LogicalPathRequest request, StreamObserver<DownloadDataResponse> responseObserver) {
         try {
-            DataItem meta = accessService.getMetaByPath(request.getLogicalPath());
+            DataItem meta = accessService.getMetaByAccessPath(request.getLogicalPath());
             if (meta == null) {
                 responseObserver.onNext(DownloadDataResponse.newBuilder()
                         .setCode(404)

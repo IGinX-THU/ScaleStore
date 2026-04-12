@@ -40,7 +40,7 @@ public class DocumentAdapter implements StorageAdapter {
     public void store(MultipartFile file, String iginxPath) throws Exception {
         byte[] contentBytes = file.getBytes();
 
-        List<String> paths = Collections.singletonList(iginxPath + ".content");
+        List<String> paths = Collections.singletonList(iginxPath);
         long[] timestamps = new long[]{0};
         Object[] valuesList = new Object[]{new byte[][]{contentBytes}};
         List<DataType> types = Collections.singletonList(DataType.BINARY);
@@ -50,42 +50,23 @@ public class DocumentAdapter implements StorageAdapter {
 
     @Override
     public Object getPreviewData(String iginxPath, int limit) throws Exception {
-        SessionExecuteSqlResult result = iginxDao.queryDataByPath(iginxPath);
+        SessionExecuteSqlResult result = queryLeafFromParent(iginxPath, Math.max(limit, 1));
 
-        List<String> paths = result.getPaths();
-        List<List<Object>> values = result.getValues();
-
-        if (values != null && !values.isEmpty()) {
-            for (int i = 0; i < paths.size(); i++) {
-                if (paths.get(i).endsWith("content")) {
-                    Object val = values.get(0).get(i);
-                    if (val instanceof byte[]) {
-                        return new String((byte[]) val, StandardCharsets.UTF_8);
-                    }
-                }
-            }
+        byte[] bytes = extractPrimaryBytes(result, iginxPath);
+        if (bytes.length == 0) {
+            throw new RuntimeException("文档预览失败: 未查询到文档内容, path=" + iginxPath);
         }
-        return "";
+        return new String(bytes, StandardCharsets.UTF_8);
     }
 
     @Override
     public byte[] getDownloadBytes(String iginxPath) throws Exception {
-        SessionExecuteSqlResult result = iginxDao.queryDataByPath(iginxPath);
-
-        List<String> paths = result.getPaths();
-        List<List<Object>> values = result.getValues();
-
-        if (values != null && !values.isEmpty()) {
-            for (int i = 0; i < paths.size(); i++) {
-                if (paths.get(i).endsWith("content")) {
-                    Object val = values.get(0).get(i);
-                    if (val instanceof byte[]) {
-                        return (byte[]) val;
-                    }
-                }
-            }
+        SessionExecuteSqlResult result = queryLeafFromParent(iginxPath, null);
+        byte[] bytes = extractPrimaryBytes(result, iginxPath);
+        if (bytes.length == 0) {
+            throw new RuntimeException("文档下载失败: 未查询到文档内容, path=" + iginxPath);
         }
-        return new byte[0];
+        return bytes;
     }
 
     @Override
@@ -104,5 +85,44 @@ public class DocumentAdapter implements StorageAdapter {
         result.setLlmResponse(llm.getRawResponse());
         result.setLlmError(llm.getError());
         return result;
+    }
+
+    private byte[] extractPrimaryBytes(SessionExecuteSqlResult result, String expectedPath) {
+        if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
+            return new byte[0];
+        }
+
+        List<String> paths = result.getPaths();
+        if (paths == null || paths.size() != 1) {
+            return new byte[0];
+        }
+        String resolvedPath = StorageUtils.normalizeEscapedPath(paths.get(0));
+        String expected = StorageUtils.normalizeEscapedPath(expectedPath);
+        if (!resolvedPath.equals(expected)) {
+            return new byte[0];
+        }
+
+        List<Object> firstRow = result.getValues().get(0);
+        if (firstRow == null || firstRow.size() != 1) {
+            return new byte[0];
+        }
+        return StorageUtils.toByteArray(firstRow.get(0));
+    }
+
+    private SessionExecuteSqlResult queryLeafFromParent(String fullPath, Integer limit) {
+        String[] pair = StorageUtils.splitParentAndLeaf(fullPath);
+        String parentPath = pair[0];
+        String leafPath = pair[1];
+        if (parentPath.isEmpty() || leafPath.isEmpty()) {
+            throw new RuntimeException("文档访问路径非法: " + fullPath);
+        }
+
+        String leaf = StorageUtils.normalizeEscapedPath(leafPath);
+        String sql = "select " + leaf + " from " + parentPath;
+        if (limit != null && limit.intValue() > 0) {
+            sql += " limit " + limit.intValue();
+        }
+        sql += ";";
+        return iginxDao.executeSql(sql);
     }
 }

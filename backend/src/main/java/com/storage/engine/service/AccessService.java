@@ -30,12 +30,51 @@ public class AccessService {
             SessionExecuteSqlResult result = iginxDao.getAllMeta();
             List<DataItem> items = parseMeta(result);
             for (DataItem item : items) {
-                if (logicalPath.equals(item.getLogicalPath())) {
+                if (logicalPath.equals(normalizePath(item.getLogicalPath()))) {
                     return item;
                 }
             }
         } catch (Exception e) {
-            e.printStackTrace();
+            throw new RuntimeException("按逻辑路径查询元数据失败: " + e.getMessage(), e);
+        }
+        return null;
+    }
+
+    /**
+     * Get metadata by folder logical path + file name.
+     */
+    public DataItem getMetaByPathAndFileName(String logicalPath, String fileName) {
+        String folder = normalizePath(logicalPath);
+        String name = normalizeFileName(fileName);
+        if (name.isEmpty()) {
+            return null;
+        }
+
+        try {
+            SessionExecuteSqlResult result = iginxDao.getAllMeta();
+            List<DataItem> items = parseMeta(result);
+            return findByFolderAndFileExact(items, folder, name);
+        } catch (Exception e) {
+            throw new RuntimeException("按目录和文件名查询元数据失败: " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Resolve metadata from access input path.
+     * - /folder/file.ext => exact file under folder
+     * - /folder => file only when folder has exactly one file
+     */
+    public DataItem getMetaByAccessPath(String accessPath) {
+        return getMetaByAccessPath(accessPath, null);
+    }
+
+    public DataItem getMetaByAccessPath(String accessPath, String fileName) {
+        String normalized = normalizePath(accessPath);
+        List<DataItem> allMeta = getAllMeta();
+
+        String targetFile = normalizeFileName(fileName);
+        if (!targetFile.isEmpty()) {
+            return findByFolderAndFile(allMeta, normalized, targetFile);
         }
         return null;
     }
@@ -48,8 +87,7 @@ public class AccessService {
             SessionExecuteSqlResult result = iginxDao.getAllMeta();
             return parseMeta(result);
         } catch (Exception e) {
-            e.printStackTrace();
-            return new ArrayList<>();
+            throw new RuntimeException("查询全部元数据失败: " + e.getMessage(), e);
         }
     }
 
@@ -60,71 +98,30 @@ public class AccessService {
      * - Nothing found → returns null.
      */
     public DataItem accessData(String logicalPath) {
+        return accessData(logicalPath, null);
+    }
+
+    public DataItem accessData(String logicalPath, String fileName) {
         logicalPath = normalizePath(logicalPath);
 
-        // 1. Try exact match
-        DataItem meta = getMetaByPath(logicalPath);
-        if (meta != null) {
-            String iginxPath = com.storage.engine.service.adapter.StorageUtils.toIginxDataPath(meta.getLogicalPath());
-            String dataType = meta.getDataType();
-
-            try {
-                StorageAdapter adapter = adapterFactory.getAdapter(dataType);
-                Object previewData = adapter.getPreviewData(iginxPath, 100);
-                meta.setPreviewData(previewData);
-            } catch (Exception e) {
-                e.printStackTrace();
-                meta.setPreviewData("Error loading data: " + e.getMessage());
-            }
-            return meta;
-        }
-
-        // 2. Issue 4: Directory listing — check for children under this path prefix
         List<DataItem> allMeta = getAllMeta();
-        String prefix = logicalPath.endsWith("/") ? logicalPath : logicalPath + "/";
-        List<Map<String, Object>> children = new ArrayList<>();
 
-        for (DataItem item : allMeta) {
-            String itemPath = item.getLogicalPath();
-            if (itemPath != null && itemPath.startsWith(prefix)) {
-                // Find the immediate child name (next segment after prefix)
-                String remainder = itemPath.substring(prefix.length());
-                String childName = remainder.contains("/") ? remainder.substring(0, remainder.indexOf('/')) : remainder;
-                String childFullPath = prefix + childName;
-
-                // Avoid duplicates: check if already added
-                boolean alreadyAdded = false;
-                for (Map<String, Object> c : children) {
-                    if (childFullPath.equals(c.get("fullPath"))) {
-                        alreadyAdded = true;
-                        break;
-                    }
-                }
-                if (!alreadyAdded) {
-                    Map<String, Object> child = new LinkedHashMap<>();
-                    child.put("name", childName);
-                    child.put("fullPath", childFullPath);
-                    // If the childFullPath is an exact data item, show its type; otherwise mark as directory
-                    boolean isExact = childFullPath.equals(itemPath);
-                    child.put("dataType", isExact ? item.getDataType() : "directory");
-                    if (isExact) {
-                        child.put("fileName", item.getFileName());
-                        child.put("createTime", item.getCreateTime());
-                    }
-                    children.add(child);
-                }
+        String targetFile = normalizeFileName(fileName);
+        if (!targetFile.isEmpty()) {
+            DataItem direct = findByFolderAndFile(allMeta, logicalPath, targetFile);
+            if (direct == null) {
+                return null;
             }
+            return loadPreview(direct);
         }
 
-        if (!children.isEmpty()) {
-            DataItem dirItem = new DataItem();
-            dirItem.setLogicalPath(logicalPath);
-            dirItem.setDataType("directory");
-            dirItem.setPreviewData(children);
-            return dirItem;
+        List<DataItem> selfFiles = listByLogicalPath(allMeta, logicalPath);
+        Map<String, String> childFolders = listImmediateChildFolders(allMeta, logicalPath);
+
+        if (!childFolders.isEmpty() || !selfFiles.isEmpty()) {
+            return buildDirectoryItem(logicalPath, selfFiles, childFolders);
         }
 
-        // 3. Nothing found
         return null;
     }
 
@@ -132,19 +129,241 @@ public class AccessService {
      * Get raw data bytes for download (delegates to the adapter).
      */
     public byte[] downloadData(String logicalPath) {
-        DataItem meta = getMetaByPath(logicalPath);
+        return downloadData(logicalPath, null);
+    }
+
+    public byte[] downloadData(String logicalPath, String fileName) {
+        DataItem meta = getMetaByAccessPath(logicalPath, fileName);
         if (meta == null) return null;
 
-        String iginxPath = StorageUtils.toIginxDataPath(meta.getLogicalPath());
+        String iginxPath = resolveIginxDataPath(meta);
         String dataType = meta.getDataType();
 
         try {
             StorageAdapter adapter = adapterFactory.getAdapter(dataType);
             return adapter.getDownloadBytes(iginxPath);
         } catch (Exception e) {
-            e.printStackTrace();
+            throw new RuntimeException("下载失败: " + e.getMessage(), e);
+        }
+    }
+
+    private DataItem loadPreview(DataItem meta) {
+        String iginxPath = resolveIginxDataPath(meta);
+        String dataType = meta.getDataType();
+
+        try {
+            StorageAdapter adapter = adapterFactory.getAdapter(dataType);
+            Object previewData = adapter.getPreviewData(iginxPath, 100);
+            meta.setPreviewData(previewData);
+        } catch (Exception e) {
+            throw new RuntimeException("预览失败: " + e.getMessage(), e);
+        }
+        return meta;
+    }
+
+    private List<DataItem> listByLogicalPath(List<DataItem> items, String logicalPath) {
+        List<DataItem> out = new ArrayList<DataItem>();
+        if (items == null) {
+            return out;
+        }
+        String target = normalizePath(logicalPath);
+        for (DataItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            String itemPath = normalizePath(item.getLogicalPath());
+            if (target.equals(itemPath) || isLegacyExternalStructuredItemInParent(item, target)) {
+                out.add(item);
+            }
+        }
+        return out;
+    }
+
+    private DataItem findByFolderAndFile(List<DataItem> items, String folderPath, String fileName) {
+        if (items == null || fileName == null || fileName.isEmpty()) {
             return null;
         }
+
+        String targetFolder = normalizePath(folderPath);
+        String targetFile = normalizeFileName(fileName);
+        DataItem picked = null;
+
+        for (DataItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            String folder = normalizePath(item.getLogicalPath());
+            String name = normalizeFileName(item.getFileName());
+            if (!targetFolder.equals(folder) || !targetFile.equals(name)) {
+                continue;
+            }
+
+            if (picked == null || compareId(item.getId(), picked.getId()) > 0) {
+                picked = item;
+            }
+        }
+
+        if (picked != null) {
+            return picked;
+        }
+
+        // Compatibility for legacy external structured metadata shape:
+        // logicalPath=/extern/.../school/lessons, fileName=lessons.
+        String legacyFolder = normalizePath(targetFolder + "/" + targetFile);
+        for (DataItem item : items) {
+            if (item == null || !isExternalStructuredDataItem(item)) {
+                continue;
+            }
+            String folder = normalizePath(item.getLogicalPath());
+            String name = normalizeFileName(item.getFileName());
+            if (!legacyFolder.equals(folder) || !targetFile.equals(name)) {
+                continue;
+            }
+            if (picked == null || compareId(item.getId(), picked.getId()) > 0) {
+                picked = item;
+            }
+        }
+        return picked;
+    }
+
+    private DataItem findByFolderAndFileExact(List<DataItem> items, String folderPath, String fileName) {
+        if (items == null || fileName == null || fileName.isEmpty()) {
+            return null;
+        }
+
+        String targetFolder = normalizePath(folderPath);
+        String targetFile = normalizeFileName(fileName);
+        DataItem picked = null;
+
+        for (DataItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            String folder = normalizePath(item.getLogicalPath());
+            String name = normalizeFileName(item.getFileName());
+            if (!targetFolder.equals(folder) || !targetFile.equals(name)) {
+                continue;
+            }
+            if (picked == null || compareId(item.getId(), picked.getId()) > 0) {
+                picked = item;
+            }
+        }
+        return picked;
+    }
+
+    private DataItem buildDirectoryItem(String logicalPath,
+                                        List<DataItem> folderItems,
+                                        Map<String, String> childFolders) {
+        List<Map<String, Object>> children = new ArrayList<Map<String, Object>>();
+
+        List<String> folderPaths = new ArrayList<String>();
+        if (childFolders != null) {
+            folderPaths.addAll(childFolders.keySet());
+        }
+        Collections.sort(folderPaths);
+
+        for (String folderPath : folderPaths) {
+            Map<String, Object> child = new LinkedHashMap<String, Object>();
+            child.put("name", lastPathSegment(folderPath));
+            child.put("fullPath", folderPath);
+            child.put("dataType", "directory");
+            children.add(child);
+        }
+
+        Map<String, DataItem> dedup = new LinkedHashMap<String, DataItem>();
+        for (DataItem item : folderItems) {
+            if (item == null) {
+                continue;
+            }
+            String key = normalizeFileName(item.getFileName());
+            if (key.isEmpty()) {
+                key = "item-" + (item.getId() == null ? 0 : item.getId());
+            }
+            DataItem existing = dedup.get(key);
+            if (existing == null || compareId(item.getId(), existing.getId()) > 0) {
+                dedup.put(key, item);
+            }
+        }
+
+        List<String> names = new ArrayList<String>(dedup.keySet());
+        Collections.sort(names);
+
+        for (String name : names) {
+            DataItem childItem = dedup.get(name);
+            Map<String, Object> child = new LinkedHashMap<String, Object>();
+            child.put("name", name);
+            child.put("fullPath", normalizePath(logicalPath + "/" + name));
+            child.put("dataType", childItem.getDataType());
+            child.put("fileName", childItem.getFileName());
+            child.put("createTime", childItem.getCreateTime());
+            children.add(child);
+        }
+
+        DataItem folder = new DataItem();
+        folder.setLogicalPath(logicalPath);
+        folder.setDataType("directory");
+        folder.setPreviewData(children);
+        return folder;
+    }
+
+    private Map<String, String> listImmediateChildFolders(List<DataItem> items, String parentPath) {
+        Map<String, String> out = new LinkedHashMap<String, String>();
+        if (items == null) {
+            return out;
+        }
+
+        String parent = normalizePath(parentPath);
+        String prefix = "/".equals(parent) ? "/" : parent + "/";
+
+        for (DataItem item : items) {
+            if (item == null) {
+                continue;
+            }
+            String itemPath = normalizePath(item.getLogicalPath());
+            if (!itemPath.startsWith(prefix) || itemPath.equals(parent)) {
+                continue;
+            }
+
+            String remainder = itemPath.substring(prefix.length());
+            if (remainder.isEmpty()) {
+                continue;
+            }
+
+            String childName = remainder.contains("/")
+                    ? remainder.substring(0, remainder.indexOf('/'))
+                    : remainder;
+            if (childName.isEmpty()) {
+                continue;
+            }
+
+            // Legacy external structured metadata keeps file name as last path segment.
+            // Treat it as file, not directory, when listing parent folder.
+            if (!remainder.contains("/")
+                    && isExternalStructuredDataItem(item)
+                    && childName.equals(normalizeFileName(item.getFileName()))) {
+                continue;
+            }
+
+            String childFullPath = "/".equals(parent) ? "/" + childName : parent + "/" + childName;
+            out.put(normalizePath(childFullPath), childName);
+        }
+
+        return out;
+    }
+
+    private String lastPathSegment(String path) {
+        String p = normalizePath(path);
+        int idx = p.lastIndexOf('/');
+        if (idx < 0 || idx == p.length() - 1) {
+            return p;
+        }
+        return p.substring(idx + 1);
+    }
+
+    private int compareId(Integer left, Integer right) {
+        int l = left == null ? Integer.MIN_VALUE : left.intValue();
+        int r = right == null ? Integer.MIN_VALUE : right.intValue();
+        return Integer.compare(l, r);
     }
 
     // ==================== Parse Helpers ====================
@@ -207,8 +426,165 @@ public class AccessService {
         return path;
     }
 
+    private String normalizeFileName(String fileName) {
+        if (fileName == null) {
+            return "";
+        }
+        String name = fileName.trim();
+        if (name.contains("\\")) {
+            name = name.replace("\\", "/");
+        }
+        int slash = name.lastIndexOf('/');
+        if (slash >= 0 && slash < name.length() - 1) {
+            name = name.substring(slash + 1);
+        }
+        return name.trim();
+    }
+
+    private String resolveIginxDataPath(DataItem item) {
+        if (item == null) {
+            return "";
+        }
+
+        String logicalPath = item.getLogicalPath();
+        String fileName = normalizeFileName(item.getFileName());
+        if (logicalPath != null && logicalPath.startsWith("/extern/")) {
+            if (logicalPath.startsWith("/extern/filesystem/")) {
+                String prefix = "/extern/filesystem/";
+                String body = logicalPath.substring(prefix.length());
+                String[] segs = body.isEmpty() ? new String[0] : body.split("/");
+                StringBuilder fsBase = new StringBuilder("data.extern");
+                for (String seg : segs) {
+                    String cleaned = seg == null ? "" : seg.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
+                    if (!cleaned.isEmpty()) {
+                        fsBase.append('.').append(cleaned.replace(".", "\\\\."));
+                    }
+                }
+                String base = fsBase.toString();
+                if (!fileName.isEmpty()) {
+                    return StorageUtils.toFileLeafPath(base, fileName);
+                }
+                return base;
+            }
+
+            String suffix = logicalPath.substring("/extern/".length());
+            if (suffix.isEmpty()) {
+                return "data.extern";
+            }
+
+            int slash = suffix.indexOf('/');
+            String sourceKey = slash >= 0 ? suffix.substring(0, slash) : suffix;
+            String externalBody = slash >= 0 ? suffix.substring(slash + 1) : "";
+
+            String schemaPrefix;
+            if (isDefaultExternalSourceKey(sourceKey)) {
+                schemaPrefix = "data.extern";
+            } else {
+                schemaPrefix = "data.extern." + sanitizeExternalSourceKey(sourceKey);
+            }
+
+            if (isDefaultExternalSourceKey(sourceKey) && externalBody.startsWith(sourceKey + "/")) {
+                externalBody = externalBody.substring(sourceKey.length() + 1);
+            }
+
+            String normalized = externalBody.replace("/", ".").replaceAll("[^a-zA-Z0-9._-]", "_");
+            String basePath = normalized.isEmpty() ? schemaPrefix : (schemaPrefix + "." + normalized);
+            if (!fileName.isEmpty()) {
+                if (isFilesystemLikeSourceKey(sourceKey)) {
+                    return StorageUtils.toFileLeafPath(basePath, fileName);
+                }
+                if (isStructuredExternalSourceKey(sourceKey)) {
+                    return appendExternalLeafPath(basePath, fileName);
+                }
+            }
+            return basePath;
+        }
+
+        String basePath = StorageUtils.toIginxDataPath(logicalPath);
+        if (!fileName.isEmpty()) {
+            return StorageUtils.toFileLeafPath(basePath, fileName);
+        }
+        return basePath;
+    }
+
+    private boolean isDefaultExternalSourceKey(String sourceKey) {
+        String key = sourceKey == null ? "" : sourceKey.trim().toLowerCase(Locale.ROOT);
+        return "filesystem".equals(key)
+                || "mysql".equals(key)
+                || "postgres".equals(key)
+                || "iotdb".equals(key);
+    }
+
+    private boolean isFilesystemLikeSourceKey(String sourceKey) {
+        String key = sourceKey == null ? "" : sourceKey.trim().toLowerCase(Locale.ROOT);
+        return "filesystem".equals(key) || key.startsWith("filesystem");
+    }
+
+    private boolean isStructuredExternalSourceKey(String sourceKey) {
+        String key = sourceKey == null ? "" : sourceKey.trim().toLowerCase(Locale.ROOT);
+        return "mysql".equals(key) || key.startsWith("mysql")
+                || "postgres".equals(key) || key.startsWith("postgres")
+                || "iotdb".equals(key) || key.startsWith("iotdb");
+    }
+
+    private String appendExternalLeafPath(String basePath, String fileName) {
+        String base = basePath == null ? "" : basePath.trim();
+        String leaf = sanitizeExternalSourceKey(fileName);
+        if (base.isEmpty() || leaf.isEmpty()) {
+            return base;
+        }
+
+        int idx = StorageUtils.findLastUnescapedDot(base);
+        String currentLeaf = idx >= 0 ? base.substring(idx + 1) : base;
+        currentLeaf = StorageUtils.normalizeEscapedPath(currentLeaf);
+        if (currentLeaf.equals(leaf)) {
+            return base;
+        }
+        return base + "." + leaf;
+    }
+
+    private boolean isLegacyExternalStructuredItemInParent(DataItem item, String parentPath) {
+        if (item == null || !isExternalStructuredDataItem(item)) {
+            return false;
+        }
+        String name = normalizeFileName(item.getFileName());
+        if (name.isEmpty()) {
+            return false;
+        }
+        String expected = normalizePath(parentPath + "/" + name);
+        return expected.equals(normalizePath(item.getLogicalPath()));
+    }
+
+    private boolean isExternalStructuredDataItem(DataItem item) {
+        if (item == null) {
+            return false;
+        }
+        String logicalPath = normalizePath(item.getLogicalPath());
+        if (!logicalPath.startsWith("/extern/")) {
+            return false;
+        }
+        String type = item.getDataType() == null ? "" : item.getDataType().trim().toLowerCase(Locale.ROOT);
+        return "relational".equals(type) || "timeseries".equals(type) || "keyvalue".equals(type);
+    }
+
+    private String sanitizeExternalSourceKey(String sourceKey) {
+        if (sourceKey == null) {
+            return "";
+        }
+        return sourceKey.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
+    }
+
     private String getValueAsString(Object obj) {
-        return obj == null ? null : (obj instanceof byte[] ? new String((byte[]) obj, StandardCharsets.UTF_8) : obj.toString());
+        if (obj == null) {
+            return null;
+        }
+        if (obj instanceof byte[]) {
+            return new String((byte[]) obj, StandardCharsets.UTF_8);
+        }
+        if (obj instanceof java.nio.ByteBuffer) {
+            return new String(StorageUtils.toByteArray(obj), StandardCharsets.UTF_8);
+        }
+        return obj.toString();
     }
 
     private Long getValueAsLong(Object obj) {

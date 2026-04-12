@@ -11,21 +11,10 @@ class RelationalMetadataExtractor(BaseMetadataExtractor):
                 continue
             fields.append(field)
 
-        root = self.get_root_entity()
-
-        entities = [root]
-        triples = []
-        for field in fields[:80]:
-            entities.append(field)
-            triples.append({"subject": root, "predicate": "has_field", "object": field})
-
-        if not triples:
-            triples.append({"subject": root, "predicate": "has_type", "object": "relational"})
-
         return {
             "fieldKind": "column",
             "fields": fields,
-            "entities": self.dedup_strings(entities, 120),
-            "triples": self.dedup_triples(triples, 180),
-            "message": "relational extraction by udf",
+            "entities": [],
+            "triples": [],
+            "message": "relational field extraction by udf",
         }

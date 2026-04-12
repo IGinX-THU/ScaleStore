@@ -36,6 +36,20 @@ class UDFMetadataExtract:
             if not fields and field_kind in ("column", "key"):
                 field_kind = "field"
 
+            if data_type in ("relational", "timeseries", "keyvalue"):
+                entities = []
+                triples = []
+                if data_type == "keyvalue":
+                    if field_kind not in ("key", "column"):
+                        field_kind = "key"
+                else:
+                    if field_kind not in ("column", "key"):
+                        field_kind = "column"
+            elif data_type in ("document", "image"):
+                fields = []
+                if field_kind in ("column", "key"):
+                    field_kind = "field"
+
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(
                 logical_path=params.get("logicalPath", ""),

@@ -27,6 +27,7 @@ class Neo4jGraphWriter(object):
 
         payload = {
             "asset_path": asset_path,
+            "asset_ukey": self._asset_ukey(asset_path, self._safe(file_name)),
             "data_type": self._safe(data_type),
             "file_name": self._safe(file_name),
             "file_format": self._safe(file_format),
@@ -55,7 +56,8 @@ class Neo4jGraphWriter(object):
 
         statements = [
             "CREATE CONSTRAINT logical_path_unique IF NOT EXISTS FOR (p:LogicalPath) REQUIRE p.path IS UNIQUE",
-            "CREATE CONSTRAINT data_asset_unique IF NOT EXISTS FOR (a:DataAsset) REQUIRE a.logicalPath IS UNIQUE",
+            "DROP CONSTRAINT data_asset_unique IF EXISTS",
+            "CREATE CONSTRAINT data_asset_ukey_unique IF NOT EXISTS FOR (a:DataAsset) REQUIRE a.ukey IS UNIQUE",
             "CREATE CONSTRAINT field_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.ukey IS UNIQUE",
             "CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE",
         ]
@@ -94,35 +96,51 @@ class Neo4jGraphWriter(object):
 
         tx.run(
             """
-            MERGE (a:DataAsset {logicalPath: $logical_path})
-            ON CREATE SET a.dataType = $data_type,
+            MERGE (a:DataAsset {ukey: $asset_ukey})
+            ON CREATE SET a.logicalPath = $logical_path,
+                          a.dataType = $data_type,
                           a.fileName = $file_name,
                           a.fileFormat = $file_format,
                           a.fileSize = $file_size,
                           a.createTime = $create_time
-            ON MATCH SET a.dataType = $data_type,
+            ON MATCH SET a.logicalPath = $logical_path,
+                         a.dataType = $data_type,
                          a.fileName = $file_name,
                          a.fileFormat = $file_format,
                          a.fileSize = $file_size,
                          a.createTime = $create_time
             """,
+            asset_ukey=payload.get("asset_ukey", ""),
             logical_path=asset_path,
             file_name=payload.get("file_name", ""),
             file_format=payload.get("file_format", ""),
             file_size=payload.get("file_size", 0),
             create_time=payload.get("create_time", ""),
             data_type=payload.get("data_type", ""),
-            field_kind=payload.get("field_kind", "field"),
         )
 
-        parent_path = self._parent_path_of_data(asset_path)
+        parent_path = asset_path
         tx.run(
             """
-            MATCH (p:LogicalPath {path: $parent_path}), (a:DataAsset {logicalPath: $logical_path})
+            MATCH (p:LogicalPath {path: $parent_path}), (a:DataAsset {ukey: $asset_ukey})
             MERGE (p)-[:HAS_DATA]->(a)
             """,
             parent_path=parent_path,
-            logical_path=asset_path,
+            asset_ukey=payload.get("asset_ukey", ""),
+        )
+
+        # Keep the graph model clean for structured data: no Domain nodes/links.
+        tx.run(
+            """
+            MATCH ()-[r:IN_DOMAIN]->(:Domain)
+            DELETE r
+            """
+        )
+        tx.run(
+            """
+            MATCH (d:Domain)
+            DETACH DELETE d
+            """
         )
 
         for field in payload.get("fields", []):
@@ -136,7 +154,7 @@ class Neo4jGraphWriter(object):
             field_ukey = field_kind + "::" + norm
             tx.run(
                 """
-                MATCH (a:DataAsset {logicalPath: $logical_path})
+                MATCH (a:DataAsset {ukey: $asset_ukey})
                 MERGE (f:Field {ukey: $field_ukey})
                 ON CREATE SET f.norm = $norm, f.kind = $field_kind, f.name = $field_name
                 ON MATCH SET f.norm = coalesce(f.norm, $norm),
@@ -144,7 +162,7 @@ class Neo4jGraphWriter(object):
                              f.name = coalesce(f.name, $field_name)
                 MERGE (a)-[:HAS_FILED]->(f)
                 """,
-                logical_path=asset_path,
+                asset_ukey=payload.get("asset_ukey", ""),
                 field_ukey=field_ukey,
                 norm=norm,
                 field_name=field_name,
@@ -161,12 +179,12 @@ class Neo4jGraphWriter(object):
                 continue
             tx.run(
                 """
-                MATCH (a:DataAsset {logicalPath: $logical_path})
+                MATCH (a:DataAsset {ukey: $asset_ukey})
                 MERGE (e:Entity {norm: $entity_norm})
                 ON CREATE SET e.name = $entity_name
                 MERGE (a)-[:MENTIONS]->(e)
                 """,
-                logical_path=asset_path,
+                asset_ukey=payload.get("asset_ukey", ""),
                 entity_norm=entity_norm,
                 entity_name=entity_name,
             )
@@ -185,7 +203,7 @@ class Neo4jGraphWriter(object):
 
             tx.run(
                 """
-                MATCH (a:DataAsset {logicalPath: $logical_path})
+                MATCH (a:DataAsset {ukey: $asset_ukey})
                 MERGE (s:Entity {norm: $subject_norm}) ON CREATE SET s.name = $subject_name
                 MERGE (o:Entity {norm: $object_norm}) ON CREATE SET o.name = $object_name
                 MERGE (a)-[:MENTIONS]->(s)
@@ -193,6 +211,7 @@ class Neo4jGraphWriter(object):
                 MERGE (s)-[r:SEMANTIC_RELATION {relation: $relation, sourcePath: $logical_path}]->(o)
                 SET r.updatedAt = timestamp()
                 """,
+                asset_ukey=payload.get("asset_ukey", ""),
                 logical_path=asset_path,
                 subject_norm=subject_norm,
                 subject_name=subject_name,
@@ -217,23 +236,18 @@ class Neo4jGraphWriter(object):
             return chain
 
         parts = logical_path[1:].split("/")
-        dir_count = max(0, len(parts) - 1)
         current = ""
-        for i in range(dir_count):
-            part = parts[i]
+        for part in parts:
             if not part:
                 continue
             current += "/" + part
             chain.append(current)
         return chain
 
-    def _parent_path_of_data(self, logical_path):
-        if not logical_path or logical_path == "/":
-            return "/"
-        idx = logical_path.rfind("/")
-        if idx <= 0:
-            return "/"
-        return logical_path[:idx]
+    def _asset_ukey(self, logical_path, file_name):
+        lp = self._normalize_path(logical_path)
+        fn = self._safe(file_name)
+        return lp + "::" + fn
 
     def _leaf_name(self, path):
         if not path or path == "/":

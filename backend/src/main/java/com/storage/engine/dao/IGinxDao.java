@@ -7,12 +7,16 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.constant.IGinxConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.util.*;
 
 @Repository
 public class IGinxDao {
+    private static final Logger logger = LoggerFactory.getLogger(IGinxDao.class);
+
   private final IGinxConnectionPool connectionPool;
 
   private interface SessionAction<T> {
@@ -379,12 +383,17 @@ public class IGinxDao {
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
                          long fileSize, String fileFormat, String createTime) {
-      String sql = String.format(Locale.ROOT,
-          "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) " +
-              "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
               IGinxConstants.STORAGE_META_PATH,
-              key, escapeSql(logicalPath), escapeSql(dataType), escapeSql(fileName),
-              fileSize, escapeSql(fileFormat), escapeSql(createTime));
+              key,
+              escapeSql(logicalPath),
+              escapeSql(dataType),
+              escapeSql(fileName),
+              fileSize,
+              escapeSql(fileFormat),
+              escapeSql(createTime));
       executeSql(sql);
   }
 
@@ -431,15 +440,26 @@ public class IGinxDao {
   // ==================== Data Query Operations ====================
 
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
-      return executeSql("select * from " + pathPrefix + ";");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      return executeSql("select * from " + queryPath + ";");
   }
 
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
-      return executeSql("select * from " + pathPrefix + " limit " + limit + ";");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      return executeSql("select * from " + queryPath + " limit " + limit + ";");
   }
 
   public void deleteDataByPath(String pathPrefix) {
-      executeSql("delete from " + pathPrefix + ".*;");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      executeSql("delete from " + queryPath + ".*;");
+  }
+
+  private String normalizePathForQuery(String pathPrefix) {
+      String path = pathPrefix == null ? "" : pathPrefix.trim();
+      while (path.contains("\\\\")) {
+          path = path.replace("\\\\", "\\");
+      }
+      return path;
   }
 
   // ==================== Cluster Info Operations ====================
@@ -455,10 +475,11 @@ public class IGinxDao {
 
   private String escapeSql(String value) {
       if (value == null) return "";
-      return value.replace("'", "\\'");
+      return value.replace("\\", "\\\\").replace("'", "''");
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {
+      logger.info("[IGinX-SQL] {}", sql);
       return withRetry("executeSql", new SessionAction<SessionExecuteSqlResult>() {
           @Override
           public SessionExecuteSqlResult run(Session session) throws SessionException {

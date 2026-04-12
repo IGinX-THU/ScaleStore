@@ -106,57 +106,86 @@ public class RelationalAdapter implements StorageAdapter {
         List<String> columns = new ArrayList<>();
         List<List<Object>> tableRows = new ArrayList<>();
 
-        List<String> paths = result.getPaths();
-        long[] keys = result.getKeys();
-        List<List<Object>> values = result.getValues();
-
-        for (String path : paths) {
-            int lastDot = path.lastIndexOf('.');
-            columns.add(lastDot >= 0 ? path.substring(lastDot + 1) : path);
+        if (result == null) {
+            preview.put("columns", columns);
+            preview.put("rows", tableRows);
+            preview.put("totalRows", 0);
+            return preview;
         }
 
-        if (keys != null) {
-            for (int i = 0; i < keys.length; i++) {
-                List<Object> row = new ArrayList<>();
-                // Skip key column – it's just a row index, not part of the original data
-                List<Object> valueRow = values.get(i);
-                for (Object val : valueRow) {
-                    row.add(StorageUtils.convertValue(val));
-                }
-                tableRows.add(row);
+        List<String> paths = result.getPaths() == null ? Collections.<String>emptyList() : result.getPaths();
+        List<List<Object>> values = result.getValues() == null ? Collections.<List<Object>>emptyList() : result.getValues();
+
+        int valueStart = 0;
+        if (!paths.isEmpty() && isKeyColumnName(extractColumnName(paths.get(0)))) {
+            valueStart = 1;
+        }
+
+        for (int i = valueStart; i < paths.size(); i++) {
+            columns.add(extractColumnName(paths.get(i)));
+        }
+
+        for (List<Object> valueRow : values) {
+            if (valueRow == null) {
+                continue;
             }
+            List<Object> row = new ArrayList<Object>();
+            for (int j = valueStart; j < valueRow.size(); j++) {
+                row.add(StorageUtils.convertValue(valueRow.get(j)));
+            }
+            tableRows.add(row);
         }
 
         preview.put("columns", columns);
         preview.put("rows", tableRows);
-        preview.put("totalRows", keys != null ? keys.length : 0);
+        preview.put("totalRows", tableRows.size());
         return preview;
     }
 
     private byte[] reconstructCsv(SessionExecuteSqlResult result) {
         StringBuilder sb = new StringBuilder();
-        List<String> paths = result.getPaths();
-        long[] keys = result.getKeys();
-        List<List<Object>> values = result.getValues();
+        if (result == null) {
+            return sb.toString().getBytes(StandardCharsets.UTF_8);
+        }
 
-        for (int p = 0; p < paths.size(); p++) {
-            if (p > 0) sb.append(",");
-            int lastDot = paths.get(p).lastIndexOf('.');
-            sb.append(lastDot >= 0 ? paths.get(p).substring(lastDot + 1) : paths.get(p));
+        List<String> paths = result.getPaths() == null ? Collections.<String>emptyList() : result.getPaths();
+        List<List<Object>> values = result.getValues() == null ? Collections.<List<Object>>emptyList() : result.getValues();
+
+        int valueStart = 0;
+        if (!paths.isEmpty() && isKeyColumnName(extractColumnName(paths.get(0)))) {
+            valueStart = 1;
+        }
+
+        for (int p = valueStart; p < paths.size(); p++) {
+            if (p > valueStart) sb.append(",");
+            sb.append(extractColumnName(paths.get(p)));
         }
         sb.append("\n");
 
-        if (keys != null) {
-            for (int i = 0; i < keys.length; i++) {
-                List<Object> row = values.get(i);
-                for (int j = 0; j < row.size(); j++) {
-                    if (j > 0) sb.append(",");
-                    sb.append(StorageUtils.convertValueToString(row.get(j)));
-                }
-                sb.append("\n");
+        for (List<Object> row : values) {
+            if (row == null) {
+                continue;
             }
+            for (int j = valueStart; j < row.size(); j++) {
+                if (j > valueStart) sb.append(",");
+                sb.append(StorageUtils.convertValueToString(row.get(j)));
+            }
+            sb.append("\n");
         }
 
         return sb.toString().getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String extractColumnName(String path) {
+        if (path == null) {
+            return "";
+        }
+        int lastDot = path.lastIndexOf('.');
+        String token = lastDot >= 0 ? path.substring(lastDot + 1) : path;
+        return token.replace("\\\\.", ".").replace("\\.", ".");
+    }
+
+    private boolean isKeyColumnName(String name) {
+        return "key".equalsIgnoreCase(name == null ? "" : name.trim());
     }
 }

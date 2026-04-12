@@ -149,7 +149,7 @@ public class MetadataExtractionSchedulerService {
     }
 
     private void processOne(DataItem snapshot) {
-        DataItem latest = accessService.getMetaByPath(snapshot.getLogicalPath());
+        DataItem latest = accessService.getMetaByPathAndFileName(snapshot.getLogicalPath(), snapshot.getFileName());
         if (latest == null || latest.getId() == null) {
             return;
         }
@@ -161,6 +161,7 @@ public class MetadataExtractionSchedulerService {
 
         long id = latest.getId().longValue();
         String logicalPath = safe(latest.getLogicalPath());
+        String fileName = safe(latest.getFileName());
         String dataType = safe(latest.getDataType());
         String agentName = pickAgentName(latest);
 
@@ -168,7 +169,7 @@ public class MetadataExtractionSchedulerService {
         publishEvent(
                 "running",
                 "进行中",
-                "正在执行UDF抽取，逻辑路径 " + logicalPath + "，类型 " + dataType + "。",
+            "正在执行UDF抽取，逻辑目录 " + logicalPath + "，文件 " + fileName + "，类型 " + dataType + "。",
                 agentName);
 
         try {
@@ -178,15 +179,16 @@ public class MetadataExtractionSchedulerService {
             publishEvent(
                     "success",
                     "完成",
-                    buildSuccessText(logicalPath, dataType, result),
+                    buildSuccessText(logicalPath, fileName, dataType, result),
                     agentName);
         } catch (Exception e) {
             safeUpdateStatus(id, "FAILED");
-            logger.error("元数据定时抽取失败: id={}, path={}, error={}", id, logicalPath, e.getMessage(), e);
+                logger.error("元数据定时抽取失败: id={}, logicalPath={}, fileName={}, error={}",
+                    id, logicalPath, fileName, e.getMessage(), e);
             publishEvent(
                     "warn",
                     "失败",
-                    "UDF抽取失败，逻辑路径 " + logicalPath + "，原因: " + safe(e.getMessage()),
+                    "UDF抽取失败，逻辑目录 " + logicalPath + "，文件 " + fileName + "，原因: " + safe(e.getMessage()),
                     agentName);
         }
     }
@@ -199,11 +201,11 @@ public class MetadataExtractionSchedulerService {
         }
     }
 
-    private String buildSuccessText(String logicalPath, String dataType, MetadataExtractResult result) {
+    private String buildSuccessText(String logicalPath, String fileName, String dataType, MetadataExtractResult result) {
         String dt = safe(dataType).toLowerCase(Locale.ROOT);
         if ("relational".equals(dt) || "timeseries".equals(dt) || "keyvalue".equals(dt)) {
             int fieldCount = result == null || result.getFields() == null ? 0 : result.getFields().size();
-            String text = "UDF抽取完成，逻辑路径 " + logicalPath + "，field实体 " + fieldCount + " 个。";
+            String text = "UDF抽取完成，逻辑目录 " + logicalPath + "，文件 " + fileName + "，field实体 " + fieldCount + " 个。";
             String udfMessage = result == null ? "" : sanitizeUdfMessage(result.getLlmResponse());
             if (!udfMessage.isEmpty()) {
                 text = text + " " + udfMessage;
@@ -213,7 +215,7 @@ public class MetadataExtractionSchedulerService {
 
         int entityCount = result == null || result.getEntities() == null ? 0 : result.getEntities().size();
         int tripleCount = result == null || result.getTriples() == null ? 0 : result.getTriples().size();
-        String text = "UDF抽取完成，逻辑路径 " + logicalPath + "，实体 " + entityCount + " 个，三元组 " + tripleCount + " 条。";
+        String text = "UDF抽取完成，逻辑目录 " + logicalPath + "，文件 " + fileName + "，实体 " + entityCount + " 个，三元组 " + tripleCount + " 条。";
         String udfMessage = result == null ? "" : sanitizeUdfMessage(result.getLlmResponse());
         if (!udfMessage.isEmpty()) {
             text = text + " " + udfMessage;
