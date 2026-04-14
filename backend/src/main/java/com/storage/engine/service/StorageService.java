@@ -110,9 +110,10 @@ public class StorageService {
         // Convert logical folder path to a file-scoped IGinX path.
         String folderPath = StorageUtils.toIginxDataPath(logicalPath);
         String iginxPath = StorageUtils.toFileLeafPath(folderPath, fileName);
+        String contentPath = buildContentPath(iginxPath, dataType);
 
         // Store metadata
-        iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, fileSize, fileFormat, createTime);
+        iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime);
 
         // Delegate to adapter for actual data storage
         adapter.store(file, iginxPath);
@@ -127,8 +128,41 @@ public class StorageService {
         item.setCreateTime(createTime);
         item.setIsValid(true);
         item.setKnowledgeExtractStatus("PENDING");
+        item.setContentPath(contentPath);
 
         return item;
+    }
+
+    private String buildContentPath(String iginxDataPath, String dataType) {
+        String normalizedPath = StorageUtils.normalizeEscapedPath(safe(iginxDataPath));
+        if (normalizedPath.isEmpty()) {
+            return "";
+        }
+
+        String prefix = IGinxConstants.DATA_PATH_PREFIX + ".";
+        String relativePath = normalizedPath;
+        if (normalizedPath.startsWith(prefix)) {
+            relativePath = normalizedPath.substring(prefix.length());
+        } else if (IGinxConstants.DATA_PATH_PREFIX.equals(normalizedPath)) {
+            relativePath = "";
+        }
+
+        if (relativePath.isEmpty()) {
+            return "";
+        }
+
+        if (isStructuredDataType(dataType) && !relativePath.endsWith(".*")) {
+            relativePath = relativePath + ".*";
+        }
+
+        return relativePath;
+    }
+
+    private boolean isStructuredDataType(String dataType) {
+        String type = safe(dataType).toLowerCase(Locale.ROOT);
+        return IGinxConstants.TYPE_RELATIONAL.equals(type)
+                || IGinxConstants.TYPE_TIMESERIES.equals(type)
+                || IGinxConstants.TYPE_KEYVALUE.equals(type);
     }
 
     // ==================== Utility Methods ====================
@@ -166,12 +200,14 @@ public class StorageService {
 
             String fileFormat = getFileExtension(fileName);
             String inferredDataType = inferExternalDataType(context, fileName, fileFormat);
+            String contentPath = buildContentPath(assetPath, inferredDataType);
 
             iginxDao.insertMeta(
                     nextMetaId,
                     logicalPath,
                     inferredDataType,
                     fileName,
+                    contentPath,
                     0L,
                     fileFormat,
                     createTime);
@@ -184,6 +220,7 @@ public class StorageService {
             added.setLogicalPath(logicalPath);
             added.setFileName(fileName);
             added.setDataType(inferredDataType);
+            added.setContentPath(contentPath);
             existingMeta.add(added);
 
             nextMetaId++;

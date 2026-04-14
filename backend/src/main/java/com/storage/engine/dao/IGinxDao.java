@@ -382,15 +382,16 @@ public class IGinxDao {
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-                         long fileSize, String fileFormat, String createTime) {
+             String contentPath, long fileSize, String fileFormat, String createTime) {
       String sql = String.format(
               Locale.ROOT,
-              "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
+          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
               IGinxConstants.STORAGE_META_PATH,
               key,
               escapeSql(logicalPath),
               escapeSql(dataType),
               escapeSql(fileName),
+          escapeSqlKeepBackslash(contentPath),
               fileSize,
               escapeSql(fileFormat),
               escapeSql(createTime));
@@ -476,6 +477,11 @@ public class IGinxDao {
   private String escapeSql(String value) {
       if (value == null) return "";
       return value.replace("\\", "\\\\").replace("'", "''");
+  }
+
+  private String escapeSqlKeepBackslash(String value) {
+      if (value == null) return "";
+      return value.replace("'", "''");
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {

@@ -149,37 +149,35 @@ public class MetadataUdfService {
         }
 
         String args = kvBuilder.length() > 0 ? (", " + kvBuilder.toString()) : "";
-        String dataType = safe(item.getDataType()).toLowerCase(Locale.ROOT);
-
-        String[] pathPair = resolveParentAndLeaf(item);
-        String parentPath = pathPair[0];
-        String leafPath = pathPair[1];
-        if (isBlank(parentPath) || isBlank(leafPath)) {
-            throw new IllegalArgumentException("缺少文件级数据路径，无法构建UDF SQL");
+        String contentPath = safe(item.getContentPath());
+        if (isBlank(contentPath)) {
+            throw new IllegalArgumentException("缺少contentPath，无法构建统一UDF SQL");
         }
 
-        String sourceSql;
-        if (isStructuredType(dataType)) {
-            sourceSql = "select * from " + parentPath + "." + leafPath + " limit 0";
-        } else if (isSemanticType(dataType)) {
-            sourceSql = "select " + leafPath + " from " + parentPath;
-        } else {
-            sourceSql = "select * from " + parentPath + "." + leafPath;
-        }
+        String[] sqlParts = buildUnifiedSourceSql(item, contentPath);
+        String withSql = sqlParts[0];
+        String sourceSql = sqlParts[1];
 
-        return "select " + safeUdf + "(*" + args + ") from (" + sourceSql + ");";
+        String udfQuery = "select " + safeUdf + "(*" + args + ") from (" + sourceSql + ");";
+        return withSql + " " + udfQuery;
     }
 
-    private String[] resolveParentAndLeaf(DataItem item) {
-        if (item == null) {
-            return new String[]{"", ""};
+    private String[] buildUnifiedSourceSql(DataItem item, String contentPath) {
+        if (item != null && item.getId() != null && !isBlank(item.getContentPath())) {
+            long key = item.getId().longValue();
+            String withSql = "WITH a AS ("
+                    + "SELECT contentPath AS cp "
+                    + "FROM " + IGinxConstants.STORAGE_META_PATH + " "
+                    + "WHERE key = " + key + " "
+                    + "ORDER BY key ASC "
+                    + "LIMIT 1"
+                    + ")";
+            String sourceSql = "SELECT VALUE2META(SELECT cp FROM a) FROM " + IGinxConstants.DATA_PATH_PREFIX + " LIMIT 1";
+            return new String[]{withSql, sourceSql};
         }
 
-        String fullPath = resolveIginxDataPath(item);
-        if (isBlank(fullPath)) {
-            return new String[]{"", ""};
-        }
-        return StorageUtils.splitParentAndLeaf(fullPath);
+        String sourceSql = "SELECT VALUE2META('" + contentPath + "') FROM " + IGinxConstants.DATA_PATH_PREFIX;
+        return new String[]{"", sourceSql};
     }
 
     private MetadataExtractResult parseUdfResult(SessionExecuteSqlResult result) {
@@ -415,167 +413,6 @@ public class MetadataUdfService {
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
-    }
-
-    private String resolveIginxDataPath(DataItem item) {
-        if (item == null) {
-            return "";
-        }
-
-        String logicalPath = safe(item.getLogicalPath());
-        String fileName = safe(item.getFileName());
-
-        if (logicalPath.startsWith("/extern/filesystem/")) {
-            String fsPath = buildFilesystemExternalPath(logicalPath);
-            if (!fsPath.isEmpty()) {
-                if (!fileName.isEmpty()) {
-                    return StorageUtils.toFileLeafPath(fsPath, fileName);
-                }
-                return fsPath;
-            }
-        }
-
-        if (logicalPath.startsWith("/extern/")) {
-            String sourceKey = extractExternalSourceKey(logicalPath);
-            String externalPath = buildGenericExternalPath(logicalPath);
-            if (!externalPath.isEmpty()) {
-                if (!fileName.isEmpty()) {
-                    if (isFilesystemLikeSourceKey(sourceKey)) {
-                        return StorageUtils.toFileLeafPath(externalPath, fileName);
-                    }
-                    if (isStructuredExternalSourceKey(sourceKey)) {
-                        return appendExternalLeafPath(externalPath, fileName);
-                    }
-                }
-                return externalPath;
-            }
-        }
-
-        if (!logicalPath.isEmpty()) {
-            String basePath = StorageUtils.toIginxDataPath(logicalPath);
-            if (!fileName.isEmpty()) {
-                return StorageUtils.toFileLeafPath(basePath, fileName);
-            }
-            return basePath;
-        }
-
-        return "";
-    }
-
-    private String buildGenericExternalPath(String logicalPath) {
-        String suffix = logicalPath.substring("/extern/".length());
-        if (suffix.isEmpty()) {
-            return "data.extern";
-        }
-
-        int slash = suffix.indexOf('/');
-        String sourceKey = slash >= 0 ? suffix.substring(0, slash) : suffix;
-        String externalBody = slash >= 0 ? suffix.substring(slash + 1) : "";
-
-        String schemaPrefix = resolveSchemaPrefixBySourceKey(sourceKey);
-        if (isDefaultExternalSourceKey(sourceKey) && externalBody.startsWith(sourceKey + "/")) {
-            externalBody = externalBody.substring(sourceKey.length() + 1);
-        }
-
-        if (externalBody.isEmpty()) {
-            return schemaPrefix;
-        }
-
-        String[] segs = externalBody.split("/");
-        StringBuilder sb = new StringBuilder(schemaPrefix);
-        for (String seg : segs) {
-            String cleaned = sanitizeSegment(seg, false);
-            if (!cleaned.isEmpty()) {
-                sb.append('.').append(cleaned);
-            }
-        }
-        return sb.toString();
-    }
-
-    private String buildFilesystemExternalPath(String logicalPath) {
-        String prefix = "/extern/filesystem/";
-        if (!logicalPath.startsWith(prefix)) {
-            return "";
-        }
-        String body = logicalPath.substring(prefix.length());
-        if (body.isEmpty()) {
-            return "data.extern";
-        }
-
-        String[] segs = body.split("/");
-        StringBuilder sb = new StringBuilder("data.extern");
-        for (String seg : segs) {
-            String cleaned = sanitizeSegment(seg, true);
-            if (!cleaned.isEmpty()) {
-                sb.append('.').append(cleaned);
-            }
-        }
-        return sb.toString();
-    }
-
-    private String sanitizeSegment(String segment, boolean escapeDot) {
-        String cleaned = safe(segment)
-                .replace("\\", "")
-                .replace("/", "_")
-                .replaceAll("[^a-zA-Z0-9._-]", "_");
-        if (escapeDot) {
-            cleaned = cleaned.replace(".", "\\\\.");
-        }
-        return cleaned;
-    }
-
-    private String resolveSchemaPrefixBySourceKey(String sourceKey) {
-        String key = sanitizeSegment(sourceKey, false);
-        if (key.isEmpty() || isDefaultExternalSourceKey(key)) {
-            return "data.extern";
-        }
-        return "data.extern." + key;
-    }
-
-    private String extractExternalSourceKey(String logicalPath) {
-        String lp = safe(logicalPath);
-        if (!lp.startsWith("/extern/")) {
-            return "";
-        }
-        String suffix = lp.substring("/extern/".length());
-        int slash = suffix.indexOf('/');
-        return slash >= 0 ? suffix.substring(0, slash) : suffix;
-    }
-
-    private boolean isDefaultExternalSourceKey(String sourceKey) {
-        String key = safe(sourceKey).toLowerCase(Locale.ROOT);
-        return "filesystem".equals(key)
-                || "mysql".equals(key)
-                || "postgres".equals(key)
-                || "iotdb".equals(key);
-    }
-
-    private boolean isFilesystemLikeSourceKey(String sourceKey) {
-        String key = safe(sourceKey).toLowerCase(Locale.ROOT);
-        return "filesystem".equals(key) || key.startsWith("filesystem");
-    }
-
-    private boolean isStructuredExternalSourceKey(String sourceKey) {
-        String key = safe(sourceKey).toLowerCase(Locale.ROOT);
-        return "mysql".equals(key) || key.startsWith("mysql")
-                || "postgres".equals(key) || key.startsWith("postgres")
-                || "iotdb".equals(key) || key.startsWith("iotdb");
-    }
-
-    private String appendExternalLeafPath(String basePath, String fileName) {
-        String base = safe(basePath);
-        String leaf = sanitizeSegment(fileName, false);
-        if (base.isEmpty() || leaf.isEmpty()) {
-            return base;
-        }
-
-        int idx = StorageUtils.findLastUnescapedDot(base);
-        String currentLeaf = idx >= 0 ? base.substring(idx + 1) : base;
-        currentLeaf = StorageUtils.normalizeEscapedPath(currentLeaf);
-        if (currentLeaf.equals(leaf)) {
-            return base;
-        }
-        return base + "." + leaf;
     }
 
     private boolean isBlank(String value) {

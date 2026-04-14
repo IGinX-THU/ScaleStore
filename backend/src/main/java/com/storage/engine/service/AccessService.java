@@ -378,13 +378,14 @@ public class AccessService {
 
         if (keys == null || values == null || paths == null) return items;
 
-        int pathIdx = -1, typeIdx = -1, nameIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1;
+        int pathIdx = -1, typeIdx = -1, nameIdx = -1, contentPathIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
             if (path.endsWith("logicalPath")) pathIdx = i;
             else if (path.endsWith("dataType")) typeIdx = i;
             else if (path.endsWith("fileName")) nameIdx = i;
+            else if (path.endsWith("contentPath")) contentPathIdx = i;
             else if (path.endsWith("fileSize")) sizeIdx = i;
             else if (path.endsWith("fileFormat")) formatIdx = i;
             else if (path.endsWith("createTime")) timeIdx = i;
@@ -406,6 +407,7 @@ public class AccessService {
             if (pathIdx != -1) item.setLogicalPath(getValueAsString(row.get(pathIdx)));
             if (typeIdx != -1) item.setDataType(getValueAsString(row.get(typeIdx)));
             if (nameIdx != -1) item.setFileName(getValueAsString(row.get(nameIdx)));
+            if (contentPathIdx != -1) item.setContentPath(getValueAsString(row.get(contentPathIdx)));
             if (sizeIdx != -1) item.setFileSize(getValueAsLong(row.get(sizeIdx)));
             if (formatIdx != -1) item.setFileFormat(getValueAsString(row.get(formatIdx)));
             if (timeIdx != -1) item.setCreateTime(getValueAsString(row.get(timeIdx)));
