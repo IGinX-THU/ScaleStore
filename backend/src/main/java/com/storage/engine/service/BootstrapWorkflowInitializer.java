@@ -282,7 +282,7 @@ public class BootstrapWorkflowInitializer {
             String taskTypeRaw = safe(asString(task.get("taskType"))).toLowerCase(Locale.ROOT);
             TaskType taskType;
             if ("sql".equals(taskTypeRaw) || "iginx".equals(taskTypeRaw)) {
-                taskType = TaskType.IGINX;
+                taskType = TaskType.SQL;
             } else if ("python".equals(taskTypeRaw)) {
                 taskType = TaskType.PYTHON;
             } else {
@@ -298,7 +298,7 @@ public class BootstrapWorkflowInitializer {
                 info.setTimeout(timeout);
             }
 
-            if (taskType == TaskType.IGINX) {
+            if (taskType == TaskType.SQL) {
                 Object sqlListObj = task.containsKey("sqlList") ? task.get("sqlList") : task.get("sqllist");
                 if (!(sqlListObj instanceof List)) {
                     continue;

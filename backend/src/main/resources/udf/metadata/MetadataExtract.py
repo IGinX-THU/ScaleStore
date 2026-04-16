@@ -1,19 +1,10 @@
 import json
-
-try:
-    from metadata.extractors.document_extractor import DocumentMetadataExtractor
-    from metadata.extractors.image_extractor import ImageMetadataExtractor
-    from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
-    from metadata.extractors.relational_extractor import RelationalMetadataExtractor
-    from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
-    from metadata.neo4j_writer import Neo4jGraphWriter
-except Exception:
-    from extractors.document_extractor import DocumentMetadataExtractor
-    from extractors.image_extractor import ImageMetadataExtractor
-    from extractors.keyvalue_extractor import KeyValueMetadataExtractor
-    from extractors.relational_extractor import RelationalMetadataExtractor
-    from extractors.timeseries_extractor import TimeSeriesMetadataExtractor
-    from neo4j_writer import Neo4jGraphWriter
+from metadata.extractors.document_extractor import DocumentMetadataExtractor
+from metadata.extractors.image_extractor import ImageMetadataExtractor
+from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
+from metadata.extractors.relational_extractor import RelationalMetadataExtractor
+from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
+from metadata.neo4j_writer import Neo4jGraphWriter
 
 
 class UDFMetadataExtract:
