@@ -6,9 +6,13 @@ import com.storage.engine.model.DataItem;
 import com.storage.engine.model.MetadataExtractResult;
 import com.storage.engine.model.Node;
 import com.storage.engine.model.Policy;
+import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
@@ -17,9 +21,12 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -30,11 +37,14 @@ public class MetadataExtractionSchedulerService {
     private static final Logger logger = LoggerFactory.getLogger(MetadataExtractionSchedulerService.class);
 
     private static final int MAX_EVENT_CACHE = 300;
+    private static final String MODE_WEBSERVER = "webserver";
+    private static final int TRANSFORM_FETCH_LIMIT = 80;
 
     private static final long DEFAULT_SCAN_INTERVAL_MS = 60000L;
     private static final int DEFAULT_SCAN_BATCH_SIZE = 20;
 
     private volatile long nextScanTimestamp = 0L;
+    private final Set<Long> seenTransformKeys = Collections.synchronizedSet(new HashSet<Long>());
 
     @Autowired
     private AccessService accessService;
@@ -51,17 +61,31 @@ public class MetadataExtractionSchedulerService {
     @Autowired
     private PolicyService policyService;
 
+    @Value("${metadata.extraction.scheduler-mode:webserver}")
+    private String schedulerMode;
+
     private final Set<Integer> processingIds = Collections.newSetFromMap(new ConcurrentHashMap<Integer, Boolean>());
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     @PostConstruct
     public void init() {
-        publishEvent("info", "初始化", "元数据定时抽取调度已启动，等待扫描任务。", "IGinX-Scheduler");
+        if (isWebserverMode()) {
+            publishEvent("info", "初始化", "元数据定时抽取调度已启动，等待扫描任务。", "IGinX-Scheduler");
+            return;
+        }
+
+        publishEvent("info", "初始化", "当前采用IGinX Transform定时任务模式，WebServer定时抽取已禁用。", "IGinX-Transform");
     }
 
     @Scheduled(fixedDelay = 2000)
     public void scanAndExtract() {
+        if (!isWebserverMode()) {
+            pollTransformAgentEvents();
+            return;
+        }
+
         Policy effectivePolicy = policyService.getPolicy();
         boolean enabled = effectivePolicy != null && Boolean.TRUE.equals(effectivePolicy.getExtractionEnabled());
         if (!enabled) {
@@ -334,6 +358,315 @@ public class MetadataExtractionSchedulerService {
             return l;
         }
         return "info";
+    }
+
+    private boolean isWebserverMode() {
+        return MODE_WEBSERVER.equalsIgnoreCase(safe(schedulerMode));
+    }
+
+    private void pollTransformAgentEvents() {
+        try {
+            SessionExecuteSqlResult result = iginxDao.getTransformMetaExtractRows(TRANSFORM_FETCH_LIMIT);
+            if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
+                return;
+            }
+
+            List<String> paths = result.getPaths() == null ? new ArrayList<String>() : result.getPaths();
+            int keyIdx = findColumnIndex(paths, "key");
+            int statusIdx = findColumnIndex(paths, "transform.metaExtract.status");
+            int messageIdx = findColumnIndex(paths, "transform.metaExtract.message");
+            int errorIdx = findColumnIndex(paths, "transform.metaExtract.error");
+            int entityCountIdx = findColumnIndex(paths, "transform.metaExtract.entityCount");
+            int relationCountIdx = findColumnIndex(paths, "transform.metaExtract.relationCount");
+                int detailsJsonIdx = findColumnIndex(paths, "transform.metaExtract.detailsJson");
+            int logicalPathIdx = findColumnIndex(paths, "transform.metaExtract.logicalPath");
+            int fileNameIdx = findColumnIndex(paths, "transform.metaExtract.fileName");
+                int metaKeyIdx = findAnyColumnIndex(paths,
+                    "transform.metaExtract.metaKey",
+                    "transform.metaExtract.key");
+
+            if (keyIdx < 0 || statusIdx < 0) {
+                return;
+            }
+
+            Map<Long, DataItem> metaById = null;
+            List<TransformMetaRow> items = new ArrayList<TransformMetaRow>();
+            List<List<Object>> rows = result.getValues();
+            for (int i = 0; i < rows.size(); i++) {
+                List<Object> row = rows.get(i);
+                if (row == null || keyIdx >= row.size()) {
+                    continue;
+                }
+
+                Long transformKey = asLong(row.get(keyIdx));
+                if (transformKey == null) {
+                    continue;
+                }
+
+                if (!seenTransformKeys.add(transformKey)) {
+                    continue;
+                }
+
+                String status = asString(row, statusIdx).toUpperCase(Locale.ROOT);
+                String message = asString(row, messageIdx);
+                String error = asString(row, errorIdx);
+                Long entityCount = asLong(row, entityCountIdx);
+                Long relationCount = asLong(row, relationCountIdx);
+                String detailsJson = asString(row, detailsJsonIdx);
+                String logicalPath = asString(row, logicalPathIdx);
+                String fileName = asString(row, fileNameIdx);
+                Long metaKey = asLong(row, metaKeyIdx);
+                Long fieldCount = extractCountFromDetails(detailsJson, "fieldCount");
+
+                Long entityFromDetails = extractCountFromDetails(detailsJson, "entityCount");
+                if ((entityCount == null || entityCount.longValue() <= 0L) && entityFromDetails != null) {
+                    entityCount = entityFromDetails;
+                }
+
+                Long relationFromDetails = extractCountFromDetails(detailsJson, "relationCount");
+                if ((relationCount == null || relationCount.longValue() <= 0L) && relationFromDetails != null) {
+                    relationCount = relationFromDetails;
+                }
+
+                if ((safe(logicalPath).isEmpty() || safe(fileName).isEmpty()) && metaKey != null) {
+                    if (metaById == null) {
+                        metaById = buildMetaByIdIndex();
+                    }
+                    DataItem meta = metaById.get(metaKey);
+                    if (meta != null) {
+                        if (safe(logicalPath).isEmpty()) {
+                            logicalPath = safe(meta.getLogicalPath());
+                        }
+                        if (safe(fileName).isEmpty()) {
+                            fileName = safe(meta.getFileName());
+                        }
+                    }
+                }
+
+                items.add(new TransformMetaRow(
+                    transformKey,
+                    status,
+                    message,
+                    error,
+                    entityCount,
+                    relationCount,
+                    fieldCount,
+                    logicalPath,
+                    fileName));
+            }
+
+            Collections.sort(items, new Comparator<TransformMetaRow>() {
+                @Override
+                public int compare(TransformMetaRow a, TransformMetaRow b) {
+                    return Long.compare(a.key, b.key);
+                }
+            });
+
+            for (TransformMetaRow item : items) {
+                if ("SUCCESS".equals(item.status)) {
+                    String text = buildTransformSuccessText(
+                            item.logicalPath,
+                            item.fileName,
+                            item.entityCount,
+                            item.relationCount,
+                            item.fieldCount,
+                            item.message);
+                    publishEvent("success", "完成", text, "IGinX-Transform");
+                } else {
+                    String text = buildTransformFailText(item);
+                    publishEvent("warn", "失败", text, "IGinX-Transform");
+                }
+            }
+        } catch (Exception e) {
+            logger.debug("pollTransformAgentEvents skipped: {}", e.getMessage());
+        }
+    }
+
+    private String buildTransformSuccessText(
+            String logicalPath,
+            String fileName,
+            Long entityCount,
+            Long relationCount,
+            Long fieldCount,
+            String message) {
+        long safeEntityCount = entityCount == null ? 0L : entityCount.longValue();
+        long safeRelationCount = relationCount == null ? 0L : relationCount.longValue();
+        long safeFieldCount = fieldCount == null ? 0L : fieldCount.longValue();
+
+        String pathPart = safe(logicalPath).isEmpty() ? "(unknown)" : safe(logicalPath);
+        String filePart = safe(fileName).isEmpty() ? "(unknown)" : safe(fileName);
+        String text;
+        if (safeEntityCount <= 0L && safeRelationCount <= 0L && safeFieldCount > 0L) {
+            text = "Transform抽取完成，逻辑目录 " + pathPart + "，文件名 " + filePart
+                    + "，字段实体 " + safeFieldCount + " 个。";
+        } else {
+            text = "Transform抽取完成，逻辑目录 " + pathPart + "，文件名 " + filePart
+                    + "，实体 " + safeEntityCount + " 个，三元组 " + safeRelationCount + " 条。";
+        }
+
+        String clean = sanitizeUdfMessage(message);
+        if (!clean.isEmpty()) {
+            text = text + " " + clean;
+        }
+        return text;
+    }
+
+    private String buildTransformFailText(TransformMetaRow item) {
+        String pathPart = safe(item.logicalPath).isEmpty() ? "(unknown)" : safe(item.logicalPath);
+        String filePart = safe(item.fileName).isEmpty() ? "(unknown)" : safe(item.fileName);
+        String reason = item.error.isEmpty() ? item.message : item.error;
+        return "Transform抽取失败，逻辑目录 " + pathPart + "，文件名 " + filePart + "，原因: " + safe(reason);
+    }
+
+    private int findAnyColumnIndex(List<String> paths, String... tails) {
+        if (tails == null) {
+            return -1;
+        }
+        for (String tail : tails) {
+            int idx = findColumnIndex(paths, tail);
+            if (idx >= 0) {
+                return idx;
+            }
+        }
+        return -1;
+    }
+
+    private int findColumnIndex(List<String> paths, String tail) {
+        if (paths == null || tail == null) {
+            return -1;
+        }
+        String normalizedTail = tail.toLowerCase(Locale.ROOT);
+        for (int i = 0; i < paths.size(); i++) {
+            String p = paths.get(i);
+            if (p == null) {
+                continue;
+            }
+            String normalizedPath = p.trim().toLowerCase(Locale.ROOT);
+            if (normalizedPath.equals(normalizedTail) || normalizedPath.endsWith(normalizedTail)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String asString(List<Object> row, int idx) {
+        if (row == null || idx < 0 || idx >= row.size()) {
+            return "";
+        }
+        Object value = row.get(idx);
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof byte[]) {
+            return new String((byte[]) value).trim();
+        }
+        return String.valueOf(value).trim();
+    }
+
+    private Long asLong(List<Object> row, int idx) {
+        if (row == null || idx < 0 || idx >= row.size()) {
+            return null;
+        }
+        return asLong(row.get(idx));
+    }
+
+    private Long asLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        if (value instanceof byte[]) {
+            try {
+                return Long.parseLong(new String((byte[]) value).trim());
+            } catch (Exception ignore) {
+                return null;
+            }
+        }
+        try {
+            return Long.parseLong(String.valueOf(value).trim());
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private Long extractCountFromDetails(String detailsJson, String countName) {
+        String raw = safe(detailsJson);
+        if (raw.isEmpty() || safe(countName).isEmpty()) {
+            return null;
+        }
+        try {
+            JsonNode root = objectMapper.readTree(raw);
+
+            JsonNode counts = root.get("counts");
+            if (counts != null) {
+                JsonNode direct = counts.get(countName);
+                if (direct != null && direct.isNumber()) {
+                    return Long.valueOf(direct.longValue());
+                }
+            }
+
+            JsonNode fallback = root.get(countName);
+            if (fallback != null && fallback.isNumber()) {
+                return Long.valueOf(fallback.longValue());
+            }
+        } catch (Exception ignore) {
+            return null;
+        }
+        return null;
+    }
+
+    private Map<Long, DataItem> buildMetaByIdIndex() {
+        Map<Long, DataItem> out = new LinkedHashMap<Long, DataItem>();
+        try {
+            List<DataItem> all = accessService.getAllMeta();
+            if (all == null) {
+                return out;
+            }
+            for (DataItem item : all) {
+                if (item == null || item.getId() == null) {
+                    continue;
+                }
+                out.put(Long.valueOf(item.getId().longValue()), item);
+            }
+        } catch (Exception e) {
+            logger.debug("buildMetaByIdIndex skipped: {}", e.getMessage());
+        }
+        return out;
+    }
+
+    private static class TransformMetaRow {
+        private final long key;
+        private final String status;
+        private final String message;
+        private final String error;
+        private final Long entityCount;
+        private final Long relationCount;
+        private final Long fieldCount;
+        private final String logicalPath;
+        private final String fileName;
+
+        private TransformMetaRow(
+                long key,
+                String status,
+                String message,
+                String error,
+                Long entityCount,
+                Long relationCount,
+                Long fieldCount,
+                String logicalPath,
+                String fileName) {
+            this.key = key;
+            this.status = status;
+            this.message = message;
+            this.error = error;
+            this.entityCount = entityCount;
+            this.relationCount = relationCount;
+            this.fieldCount = fieldCount;
+            this.logicalPath = logicalPath;
+            this.fileName = fileName;
+        }
     }
 
     private String safe(String value) {

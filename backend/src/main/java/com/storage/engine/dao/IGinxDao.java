@@ -159,6 +159,18 @@ public class IGinxDao {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
   }
 
+  public SessionExecuteSqlResult getTransformMetaExtractRows(int limit) {
+      int safeLimit = Math.max(1, limit);
+      try {
+          String latestSql = "select * from transform order by key desc limit " + safeLimit + ";";
+          return executeSql(latestSql);
+      } catch (RuntimeException e) {
+          // Fallback for engines that do not support ORDER BY on this path.
+          String fallbackSql = "select * from transform limit " + safeLimit + ";";
+          return executeSql(fallbackSql);
+      }
+  }
+
   // RESTful interface operations
 
   public void insertRestfulApi(long key,

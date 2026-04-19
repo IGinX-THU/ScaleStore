@@ -22,6 +22,9 @@ public class PolicyService {
     @Autowired
     private Environment environment;
 
+    @Autowired
+    private MetadataTransformJobInitializer metadataTransformJobInitializer;
+
     public Policy getPolicy() {
         Policy policy = buildStartupPolicy();
 
@@ -75,7 +78,22 @@ public class PolicyService {
             }
         }
 
-        iginxDao.updatePolicy(extractionEnabled, scanIntervalMs, scanBatchSize);
+        boolean oldEnabled = current.getExtractionEnabled() != null
+                ? current.getExtractionEnabled()
+                : DEFAULT_EXTRACTION_ENABLED;
+        long oldIntervalMs = current.getExtractionScanIntervalMs() != null
+                ? sanitizeScanInterval(current.getExtractionScanIntervalMs())
+                : DEFAULT_SCAN_INTERVAL_MS;
+        long newIntervalMs = sanitizeScanInterval(scanIntervalMs);
+
+        iginxDao.updatePolicy(extractionEnabled, newIntervalMs, scanBatchSize);
+
+        metadataTransformJobInitializer.onPolicyUpdated(
+                oldEnabled,
+                oldIntervalMs,
+                extractionEnabled,
+                newIntervalMs);
+
         return getPolicy();
     }
 
