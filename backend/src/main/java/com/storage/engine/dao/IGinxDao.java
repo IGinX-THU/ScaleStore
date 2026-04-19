@@ -16,6 +16,23 @@ import java.util.*;
 @Repository
 public class IGinxDao {
     private static final Logger logger = LoggerFactory.getLogger(IGinxDao.class);
+    private static final String[] EVICTABLE_ERROR_MARKERS = new String[] {
+            "connection refused",
+            "connect timed out",
+            "connection timed out",
+            "connection reset",
+            "broken pipe",
+            "no route to host",
+            "network is unreachable",
+            "socketexception",
+            "ioexception",
+            "transport",
+            "session is closed",
+            "session closed",
+            "not open",
+            "end of file",
+            "channel inactive"
+    };
 
   private final IGinxConnectionPool connectionPool;
 
@@ -506,6 +523,40 @@ public class IGinxDao {
       });
   }
 
+  private boolean shouldEvictSession(SessionException e) {
+      String details = flattenExceptionMessage(e).toLowerCase(Locale.ROOT);
+      if (details.isEmpty()) {
+          return true;
+      }
+      for (String marker : EVICTABLE_ERROR_MARKERS) {
+          if (details.contains(marker)) {
+              return true;
+          }
+      }
+      // Default to keeping the session for SQL/business errors so one failed request
+      // cannot collapse the whole pool.
+      return false;
+  }
+
+  private String flattenExceptionMessage(Throwable throwable) {
+      StringBuilder sb = new StringBuilder();
+      Throwable current = throwable;
+      while (current != null) {
+          String message = current.getMessage();
+          if (message != null) {
+              String trimmed = message.trim();
+              if (!trimmed.isEmpty()) {
+                  if (sb.length() > 0) {
+                      sb.append(" | ");
+                  }
+                  sb.append(trimmed);
+              }
+          }
+          current = current.getCause();
+      }
+      return sb.toString();
+  }
+
   private <T> T withRetry(String opName, SessionAction<T> action) {
       int attempts = Math.max(connectionPool.getPoolSize(), 1);
       RuntimeException last = null;
@@ -515,8 +566,12 @@ public class IGinxDao {
               try {
                   return action.run(s);
               } catch (SessionException e) {
-                  connectionPool.evictSession(s, opName + " failed: " + e.getMessage());
-                  last = new RuntimeException("Failed to " + opName, e);
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(s, opName + " failed: " + e.getMessage());
+                      last = new RuntimeException("Failed to " + opName, e);
+                  } else {
+                      throw new RuntimeException("Failed to " + opName + ": " + e.getMessage(), e);
+                  }
               }
           }
       }
@@ -533,7 +588,11 @@ public class IGinxDao {
               try {
                   return action.run(seed);
               } catch (SessionException e) {
-                  connectionPool.evictSession(seed, opName + " failed on seed: " + e.getMessage());
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(seed, opName + " failed on seed: " + e.getMessage());
+                  } else {
+                      throw new RuntimeException("Failed to " + opName + ": " + e.getMessage(), e);
+                  }
               }
           }
       }
