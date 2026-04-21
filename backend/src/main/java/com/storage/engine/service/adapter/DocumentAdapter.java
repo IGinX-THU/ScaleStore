@@ -69,24 +69,6 @@ public class DocumentAdapter implements StorageAdapter {
         return bytes;
     }
 
-    @Override
-    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
-        MetadataExtractResult result = new MetadataExtractResult();
-        if (fileBytes == null || fileBytes.length == 0) {
-            return result;
-        }
-
-        String text = new String(fileBytes, StandardCharsets.UTF_8);
-
-        LlmService.ExtractResult llm = llmService.extractSemanticTriplesFromTextStrict("文档", text);
-        result.setEntities(llm.getEntities());
-        result.setTriples(llm.getTriples());
-        result.setLlmUsed(llm.isLlmUsed());
-        result.setLlmResponse(llm.getRawResponse());
-        result.setLlmError(llm.getError());
-        return result;
-    }
-
     private byte[] extractPrimaryBytes(SessionExecuteSqlResult result, String expectedPath) {
         if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
             return new byte[0];

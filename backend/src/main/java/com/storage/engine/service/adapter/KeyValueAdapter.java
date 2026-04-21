@@ -96,19 +96,4 @@ public class KeyValueAdapter implements StorageAdapter {
         return sb.toString().getBytes(StandardCharsets.UTF_8);
     }
 
-    @Override
-    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
-        MetadataExtractResult result = new MetadataExtractResult();
-        if (fileBytes == null || fileBytes.length == 0) {
-            return result;
-        }
-
-        String text = new String(fileBytes, StandardCharsets.UTF_8);
-        Map<String, String> kv = StorageUtils.parseKeyValueContent(text, fileFormat);
-
-        result.setFieldKind("key");
-        result.setFields(new ArrayList<String>(kv.keySet()));
-        return result;
-    }
-
 }

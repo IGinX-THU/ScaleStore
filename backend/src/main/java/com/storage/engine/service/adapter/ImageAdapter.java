@@ -71,23 +71,6 @@ public class ImageAdapter implements StorageAdapter {
         return bytes;
     }
 
-    @Override
-    public MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception {
-        MetadataExtractResult result = new MetadataExtractResult();
-        if (fileBytes == null || fileBytes.length == 0) {
-            return result;
-        }
-
-        String mimeType = mimeByFormat(fileFormat);
-        LlmService.ExtractResult llm = llmService.extractSemanticTriplesFromImageStrict(mimeType, fileBytes);
-        result.setEntities(llm.getEntities());
-        result.setTriples(llm.getTriples());
-        result.setLlmUsed(llm.isLlmUsed());
-        result.setLlmResponse(llm.getRawResponse());
-        result.setLlmError(llm.getError());
-        return result;
-    }
-
     private String mimeByFormat(String format) {
         if (format == null) return "image/png";
         String f = format.toLowerCase(Locale.ROOT);
