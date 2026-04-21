@@ -1,4 +1,4 @@
-package com.storage.engine.service;
+package com.storage.engine.component;
 
 import cn.edu.tsinghua.iginx.exception.SessionException;
 import cn.edu.tsinghua.iginx.session.ClusterInfo;
@@ -39,7 +39,6 @@ public class MetadataTransformJobInitializer {
 
     private static final String METADATA_WORKFLOW_RELATIVE_PATH = "init/metadata-extraction-workflow.yaml";
     private static final String TRANSFORM_SQL_TAIL_QUERY = "select key from sys.user where key = 1;";
-    private static final String MODE_TRANSFORM = "transform";
 
     @Value("${resource.base-path:classpath:/}")
     private String resourceBasePath;
@@ -56,9 +55,6 @@ public class MetadataTransformJobInitializer {
     @Value("${iginx.password}")
     private String iginxPassword;
 
-    @Value("${metadata.extraction.scheduler-mode:webserver}")
-    private String schedulerMode;
-
     @Value("${metadata.extraction.enabled:true}")
     private boolean startupExtractionEnabled;
 
@@ -72,11 +68,6 @@ public class MetadataTransformJobInitializer {
 
     @EventListener(ApplicationReadyEvent.class)
     public void onReady() {
-        if (!isTransformMode()) {
-            logger.info("Metadata extraction startup mode is webserver, skip transform workflow registration.");
-            return;
-        }
-
         if (!startupExtractionEnabled) {
             logger.info("Metadata transform workflow startup registration skipped because extraction.enabled=false.");
             return;
@@ -91,12 +82,8 @@ public class MetadataTransformJobInitializer {
 
     @EventListener(ContextClosedEvent.class)
     public void onShutdown() {
-        if (!isTransformMode()) {
-            return;
-        }
-
         try {
-            cancelAllRegisteredJobs("webserver shutdown");
+            cancelAllRegisteredJobs("application shutdown");
         } catch (Exception e) {
             logger.warn("Failed to cancel metadata transform jobs on shutdown: {}", e.getMessage());
         }
@@ -107,10 +94,6 @@ public class MetadataTransformJobInitializer {
             long oldIntervalMs,
             boolean newEnabled,
             long newIntervalMs) {
-        if (!isTransformMode()) {
-            return;
-        }
-
         long safeOldIntervalMs = sanitizeScanInterval(oldIntervalMs);
         long safeNewIntervalMs = sanitizeScanInterval(newIntervalMs);
 
@@ -653,10 +636,6 @@ public class MetadataTransformJobInitializer {
             return false;
         }
         return defaultValue;
-    }
-
-    private boolean isTransformMode() {
-        return MODE_TRANSFORM.equalsIgnoreCase(safe(schedulerMode));
     }
 
     private String safe(String value) {

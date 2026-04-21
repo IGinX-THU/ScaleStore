@@ -161,14 +161,13 @@ public class IGinxDao {
 
   // Policy operations
 
-  public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int extractionScanBatchSize) {
+    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs) {
       String sql = String.format(
               Locale.ROOT,
-              "insert into %s(key, extractionEnabled, extractionScanIntervalMs, extractionScanBatchSize) values (0, %b, %d, %d);",
+                            "insert into %s(key, extractionEnabled, extractionScanIntervalMs) values (0, %b, %d);",
               IGinxConstants.POLICY_PATH,
               extractionEnabled,
-              extractionScanIntervalMs,
-              extractionScanBatchSize);
+                            extractionScanIntervalMs);
       executeSql(sql);
   }
 

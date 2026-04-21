@@ -1,4 +1,4 @@
-package com.storage.engine.service;
+package com.storage.engine.component;
 
 import cn.edu.tsinghua.iginx.exception.SessionException;
 import cn.edu.tsinghua.iginx.session.Session;

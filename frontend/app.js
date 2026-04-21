@@ -202,14 +202,6 @@ function mapPolicyFromBackend(policy) {
       desc: policy.extractionScanIntervalMsDesc || '扫描间隔（毫秒）',
       inputType: 'number',
     },
-    {
-      id: 'scan-batch-size',
-      key: 'extractionScanBatchSize',
-      name: 'extraction.scan-batch-size',
-      value: String(policy.extractionScanBatchSize ?? 20),
-      desc: policy.extractionScanBatchSizeDesc || '每轮扫描批大小',
-      inputType: 'number',
-    },
   ];
 }
 
@@ -222,7 +214,6 @@ function buildPolicyPayloadFromRows(rows) {
   return {
     extractionEnabled: String(rowByKey.extractionEnabled?.value || 'false').toLowerCase() === 'true',
     extractionScanIntervalMs: Number(rowByKey.extractionScanIntervalMs?.value || 60000),
-    extractionScanBatchSize: Number(rowByKey.extractionScanBatchSize?.value || 20),
   };
 }
 

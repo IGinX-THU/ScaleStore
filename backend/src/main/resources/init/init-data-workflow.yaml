@@ -31,7 +31,7 @@ taskList:
       - |-
         insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/config/policies', 'GET', '查询元数据抽取策略配置。', '无', 'code=200; data=Policy', 'curl -X GET "http://localhost:8080/config/policies"', true);
       - |-
-        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/config/policies', 'PUT', '更新元数据抽取策略配置。', 'body={"extractionEnabled":true,"extractionScanIntervalMs":60000,"extractionScanBatchSize":20}', 'code=200; data=Policy', 'curl -X PUT "http://localhost:8080/config/policies" -H "Content-Type: application/json" -d "{\"extractionEnabled\":true,\"extractionScanIntervalMs\":60000,\"extractionScanBatchSize\":20}"', true);
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/config/policies', 'PUT', '更新元数据抽取策略配置。', 'body={"extractionEnabled":true,"extractionScanIntervalMs":60000}', 'code=200; data=Policy', 'curl -X PUT "http://localhost:8080/config/policies" -H "Content-Type: application/json" -d "{\"extractionEnabled\":true,\"extractionScanIntervalMs\":60000}"', true);
 
       - |-
         insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/metadata/graph', 'GET', '按逻辑路径查询知识图谱。', 'logicalPath=/demo; limit=300', 'code=200; data={nodes,links,categories}', 'curl -X GET "http://localhost:8080/metadata/graph?logicalPath=/demo&limit=300"', true);
@@ -78,7 +78,7 @@ taskList:
       - |-
         insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/scalestore.grpc.ScaleStoreGrpcService/GetPolicies', 'UNARY', '查询元数据抽取策略配置。', '{}', 'code=200; jsonData=Policy', 'stub.getPolicies(EmptyRequest.newBuilder().build());', true);
       - |-
-        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000,"extractionScanBatchSize":20}', 'code=200; jsonData=Policy', 'stub.updatePolicies(PolicyUpdateRequest.newBuilder().setExtractionEnabled(true).setExtractionScanIntervalMs(60000).setExtractionScanBatchSize(20).build());', true);
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000}', 'code=200; jsonData=Policy', 'stub.updatePolicies(PolicyUpdateRequest.newBuilder().setExtractionEnabled(true).setExtractionScanIntervalMs(60000).build());', true);
 
       - |-
         insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/scalestore.grpc.ScaleStoreGrpcService/GetMetadataGraph', 'UNARY', '按逻辑路径查询知识图谱。', '{"logicalPath":"/demo","limit":300}', 'code=200; jsonData={nodes,links,categories}', 'stub.getMetadataGraph(MetadataGraphRequest.newBuilder().setLogicalPath("/demo").setLimit(300).build());', true);
@@ -125,7 +125,7 @@ taskList:
       - |-
         insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/scalestore.grpc.ScaleStoreGrpcService/GetPolicies', 'UNARY', '查询元数据抽取策略配置。', '{}', 'code=200; jsonData=Policy', 'stub.GetPolicies(pb2.EmptyRequest())', true);
       - |-
-        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000,"extractionScanBatchSize":20}', 'code=200; jsonData=Policy', 'stub.UpdatePolicies(pb2.PolicyUpdateRequest(extraction_enabled=True, extraction_scan_interval_ms=60000, extraction_scan_batch_size=20))', true);
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000}', 'code=200; jsonData=Policy', 'stub.UpdatePolicies(pb2.PolicyUpdateRequest(extraction_enabled=True, extraction_scan_interval_ms=60000))', true);
 
       - |-
         insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/scalestore.grpc.ScaleStoreGrpcService/GetMetadataGraph', 'UNARY', '按逻辑路径查询知识图谱。', '{"logicalPath":"/demo","limit":300}', 'code=200; jsonData={nodes,links,categories}', 'stub.GetMetadataGraph(pb2.MetadataGraphRequest(logical_path="/demo", limit=300))', true);

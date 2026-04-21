@@ -292,9 +292,6 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
             if (request.hasExtractionScanIntervalMs()) {
                 patch.setExtractionScanIntervalMs(request.getExtractionScanIntervalMs());
             }
-            if (request.hasExtractionScanBatchSize()) {
-                patch.setExtractionScanBatchSize(request.getExtractionScanBatchSize());
-            }
             sendJson(responseObserver, 200, "Success", policyService.updatePolicy(patch));
         } catch (Exception e) {
             sendError(responseObserver, 500, "Update policies failed: " + safeMessage(e));

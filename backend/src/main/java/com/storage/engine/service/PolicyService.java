@@ -1,12 +1,14 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import com.storage.engine.component.MetadataTransformJobInitializer;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Policy;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Service;
 
+import javax.annotation.PostConstruct;
 import java.util.List;
 
 @Service
@@ -14,7 +16,6 @@ public class PolicyService {
 
     private static final boolean DEFAULT_EXTRACTION_ENABLED = true;
     private static final long DEFAULT_SCAN_INTERVAL_MS = 60000L;
-    private static final int DEFAULT_SCAN_BATCH_SIZE = 20;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -25,7 +26,60 @@ public class PolicyService {
     @Autowired
     private MetadataTransformJobInitializer metadataTransformJobInitializer;
 
-    public Policy getPolicy() {
+    private volatile Policy cachedPolicy;
+
+    @PostConstruct
+    public synchronized void initializePolicyCache() {
+        cachedPolicy = loadEffectivePolicy();
+    }
+
+    public synchronized Policy getPolicy() {
+        if (cachedPolicy == null) {
+            cachedPolicy = loadEffectivePolicy();
+        }
+        return copyPolicy(cachedPolicy);
+    }
+
+    public synchronized Policy updatePolicy(Policy policy) {
+        Policy current = getPolicy();
+
+        boolean extractionEnabled = current.getExtractionEnabled() != null
+                ? current.getExtractionEnabled()
+                : DEFAULT_EXTRACTION_ENABLED;
+        long scanIntervalMs = current.getExtractionScanIntervalMs() != null
+                ? current.getExtractionScanIntervalMs()
+                : DEFAULT_SCAN_INTERVAL_MS;
+
+        if (policy != null) {
+            if (policy.getExtractionEnabled() != null) {
+                extractionEnabled = policy.getExtractionEnabled();
+            }
+            if (policy.getExtractionScanIntervalMs() != null) {
+                scanIntervalMs = sanitizeScanInterval(policy.getExtractionScanIntervalMs());
+            }
+        }
+
+        boolean oldEnabled = current.getExtractionEnabled() != null
+                ? current.getExtractionEnabled()
+                : DEFAULT_EXTRACTION_ENABLED;
+        long oldIntervalMs = current.getExtractionScanIntervalMs() != null
+                ? sanitizeScanInterval(current.getExtractionScanIntervalMs())
+                : DEFAULT_SCAN_INTERVAL_MS;
+        long newIntervalMs = sanitizeScanInterval(scanIntervalMs);
+
+        iginxDao.updatePolicy(extractionEnabled, newIntervalMs);
+
+        metadataTransformJobInitializer.onPolicyUpdated(
+                oldEnabled,
+                oldIntervalMs,
+                extractionEnabled,
+                newIntervalMs);
+
+        cachedPolicy = loadEffectivePolicy();
+        return copyPolicy(cachedPolicy);
+    }
+
+    private Policy loadEffectivePolicy() {
         Policy policy = buildStartupPolicy();
 
         try {
@@ -40,10 +94,6 @@ public class PolicyService {
                     policy.setExtractionScanIntervalMs(sanitizeScanInterval(userOverride.getExtractionScanIntervalMs()));
                     policy.setExtractionScanIntervalMsSource("USER_OVERRIDE");
                 }
-                if (userOverride.getExtractionScanBatchSize() != null) {
-                    policy.setExtractionScanBatchSize(sanitizeScanBatchSize(userOverride.getExtractionScanBatchSize()));
-                    policy.setExtractionScanBatchSizeSource("USER_OVERRIDE");
-                }
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -53,48 +103,20 @@ public class PolicyService {
         return policy;
     }
 
-    public synchronized Policy updatePolicy(Policy policy) {
-        Policy current = getPolicy();
-
-        boolean extractionEnabled = current.getExtractionEnabled() != null
-                ? current.getExtractionEnabled()
-                : DEFAULT_EXTRACTION_ENABLED;
-        long scanIntervalMs = current.getExtractionScanIntervalMs() != null
-                ? current.getExtractionScanIntervalMs()
-                : DEFAULT_SCAN_INTERVAL_MS;
-        int scanBatchSize = current.getExtractionScanBatchSize() != null
-                ? current.getExtractionScanBatchSize()
-                : DEFAULT_SCAN_BATCH_SIZE;
-
-        if (policy != null) {
-            if (policy.getExtractionEnabled() != null) {
-                extractionEnabled = policy.getExtractionEnabled();
-            }
-            if (policy.getExtractionScanIntervalMs() != null) {
-                scanIntervalMs = sanitizeScanInterval(policy.getExtractionScanIntervalMs());
-            }
-            if (policy.getExtractionScanBatchSize() != null) {
-                scanBatchSize = sanitizeScanBatchSize(policy.getExtractionScanBatchSize());
-            }
+    private Policy copyPolicy(Policy source) {
+        Policy copy = new Policy();
+        if (source == null) {
+            fillDescriptions(copy);
+            return copy;
         }
 
-        boolean oldEnabled = current.getExtractionEnabled() != null
-                ? current.getExtractionEnabled()
-                : DEFAULT_EXTRACTION_ENABLED;
-        long oldIntervalMs = current.getExtractionScanIntervalMs() != null
-                ? sanitizeScanInterval(current.getExtractionScanIntervalMs())
-                : DEFAULT_SCAN_INTERVAL_MS;
-        long newIntervalMs = sanitizeScanInterval(scanIntervalMs);
-
-        iginxDao.updatePolicy(extractionEnabled, newIntervalMs, scanBatchSize);
-
-        metadataTransformJobInitializer.onPolicyUpdated(
-                oldEnabled,
-                oldIntervalMs,
-                extractionEnabled,
-                newIntervalMs);
-
-        return getPolicy();
+        copy.setExtractionEnabled(source.getExtractionEnabled());
+        copy.setExtractionScanIntervalMs(source.getExtractionScanIntervalMs());
+        copy.setExtractionEnabledSource(source.getExtractionEnabledSource());
+        copy.setExtractionScanIntervalMsSource(source.getExtractionScanIntervalMsSource());
+        copy.setExtractionEnabledDesc(source.getExtractionEnabledDesc());
+        copy.setExtractionScanIntervalMsDesc(source.getExtractionScanIntervalMsDesc());
+        return copy;
     }
 
     private Policy parsePolicy(SessionExecuteSqlResult result) {
@@ -111,7 +133,6 @@ public class PolicyService {
 
         int extractionEnabledIdx = -1;
         int scanIntervalMsIdx = -1;
-        int scanBatchSizeIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -119,8 +140,6 @@ public class PolicyService {
                 extractionEnabledIdx = i;
             } else if (path.endsWith("extractionScanIntervalMs")) {
                 scanIntervalMsIdx = i;
-            } else if (path.endsWith("extractionScanBatchSize")) {
-                scanBatchSizeIdx = i;
             }
         }
 
@@ -144,14 +163,6 @@ public class PolicyService {
             Long v = getValueAsLong(row.get(scanIntervalMsIdx));
             if (v != null) {
                 policy.setExtractionScanIntervalMs(v);
-                hasAny = true;
-            }
-        }
-
-        if (scanBatchSizeIdx != -1) {
-            Integer v = getValueAsInt(row.get(scanBatchSizeIdx));
-            if (v != null) {
-                policy.setExtractionScanBatchSize(v);
                 hasAny = true;
             }
         }
@@ -180,22 +191,12 @@ public class PolicyService {
             policy.setExtractionScanIntervalMsSource("BACKEND_DEFAULT");
         }
 
-        Integer startupBatch = parseIntProperty("metadata.extraction.scan-batch-size");
-        if (startupBatch != null) {
-            policy.setExtractionScanBatchSize(sanitizeScanBatchSize(startupBatch));
-            policy.setExtractionScanBatchSizeSource("CONFIG_FILE");
-        } else {
-            policy.setExtractionScanBatchSize(DEFAULT_SCAN_BATCH_SIZE);
-            policy.setExtractionScanBatchSizeSource("BACKEND_DEFAULT");
-        }
-
         return policy;
     }
 
     private void fillDescriptions(Policy policy) {
         policy.setExtractionEnabledDesc("元数据抽取总开关");
         policy.setExtractionScanIntervalMsDesc("定时抽取间隔（毫秒）");
-        policy.setExtractionScanBatchSizeDesc("每轮最多抽取的数量");
     }
 
     private Boolean parseBooleanProperty(String key) {
@@ -228,43 +229,9 @@ public class PolicyService {
         }
     }
 
-    private Integer parseIntProperty(String key) {
-        if (!environment.containsProperty(key)) {
-            return null;
-        }
-        String value = environment.getProperty(key);
-        if (value == null || value.trim().isEmpty()) {
-            return null;
-        }
-        try {
-            return Integer.parseInt(value.trim());
-        } catch (NumberFormatException e) {
-            return null;
-        }
-    }
-
     private long sanitizeScanInterval(Long value) {
         long v = value == null ? DEFAULT_SCAN_INTERVAL_MS : value;
         return Math.max(1000L, v);
-    }
-
-    private int sanitizeScanBatchSize(Integer value) {
-        int v = value == null ? DEFAULT_SCAN_BATCH_SIZE : value;
-        return Math.max(1, Math.min(v, 2000));
-    }
-
-    private Integer getValueAsInt(Object obj) {
-        if (obj == null) return null;
-        if (obj instanceof Integer) return (Integer)obj;
-        if (obj instanceof Long) return ((Long)obj).intValue();
-        if (obj instanceof byte[]) {
-             try {
-                return Integer.parseInt(new String((byte[])obj));
-             } catch (NumberFormatException e) {
-                return null;
-             }
-        }
-        return null;
     }
 
     private Long getValueAsLong(Object obj) {

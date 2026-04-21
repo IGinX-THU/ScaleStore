@@ -14,7 +14,7 @@ taskList:
     timeout: 10000000
     sqlList:
       - INSERT INTO storage.meta(key, knowledgeExtractStatus) VALUES (SELECT k AS key, 'PROCESSING' FROM metaInfo);
-      - SELECT * FROM (SELECT VALUE2META(SELECT cp FROM metaInfo) FROM data LIMIT 1) CROSS JOIN (SELECT k AS metaInfo_key, lp AS metaInfo_logicalPath, fn AS metaInfo_fileName, dt AS metaInfo_dataType, ff AS metaInfo_fileFormat, fs AS metaInfo_fileSize, ct AS metaInfo_createTime, cp AS metaInfo_contentPath FROM metaInfo);
+      - SELECT * FROM (SELECT VALUE2META(SELECT cp FROM metaInfo) FROM data LIMIT 1) FULL OUTER JOIN (SELECT k AS metaInfo_key, lp AS metaInfo_logicalPath, fn AS metaInfo_fileName, dt AS metaInfo_dataType, ff AS metaInfo_fileFormat, fs AS metaInfo_fileSize, ct AS metaInfo_createTime, cp AS metaInfo_contentPath FROM metaInfo);
   - taskType: "python"
     dataFlowType: "stream"
     timeout: 10000000

@@ -120,7 +120,7 @@ class BaseMetadataExtractor(object):
 
     def llm_extract_with_retry(self, model, primary_messages, retry_messages=None, max_retry=1):
         """
-        Align with legacy webserver strict extraction behavior:
+        Strict extraction behavior:
         - run once with primary prompt
         - if triples are empty, retry with retry prompt (at most max_retry times)
         """
