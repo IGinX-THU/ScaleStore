@@ -1,6 +1,5 @@
 # Each line represents a UDF or Transform function.
 # Format: <udf type>,<udf name in sql>,<class name>,<module name>.py
 
-UDSF,metadata_extract,UDFMetadataExtract,metadata.MetadataExtract.py
 TRANSFORM,MetadataExtractInfoTransformer,MetadataExtractInfoTransformer,metadata.transformers.MetadataExtractInfoTransformer.py
 TRANSFORM,MetadataExtractExeTransformer,MetadataExtractExeTransformer,metadata.transformers.MetadataExtractExeTransformer.py

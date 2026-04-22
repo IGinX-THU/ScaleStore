@@ -49,7 +49,7 @@ public class NodeDeployService {
     @Value("${resource.base-path:classpath:/}")
     private String resourceBasePath;
 
-    @Value("${deploy.iginx.default-package-path:/home/ubuntu/IGinX-FastDeploy-0.8.0.tar.gz}")
+    @Value("${deploy.iginx.default-package-path:/home/ubuntu/IGinX-0.9.0-SNAPSHOT.tar.gz}")
     private String defaultPackagePath;
 
     @Value("${deploy.iginx.default-zk-connection:127.0.0.1:2181}")
