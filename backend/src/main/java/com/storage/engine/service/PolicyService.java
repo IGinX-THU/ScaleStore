@@ -16,6 +16,9 @@ public class PolicyService {
 
     private static final boolean DEFAULT_EXTRACTION_ENABLED = true;
     private static final long DEFAULT_SCAN_INTERVAL_MS = 60000L;
+    private static final int DEFAULT_METADATA_GRAPH_MAX_TRIPLES = 200;
+    private static final int MIN_METADATA_GRAPH_MAX_TRIPLES = 20;
+    private static final int MAX_METADATA_GRAPH_MAX_TRIPLES = 500;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -25,6 +28,9 @@ public class PolicyService {
 
     @Autowired
     private MetadataTransformJobInitializer metadataTransformJobInitializer;
+
+    @org.springframework.beans.factory.annotation.Value("${metadata.graph-max-triples:200}")
+    private long configuredMetadataGraphMaxTriples;
 
     private volatile Policy cachedPolicy;
 
@@ -49,6 +55,9 @@ public class PolicyService {
         long scanIntervalMs = current.getExtractionScanIntervalMs() != null
                 ? current.getExtractionScanIntervalMs()
                 : DEFAULT_SCAN_INTERVAL_MS;
+        int metadataGraphMaxTriples = current.getMetadataGraphMaxTriples() != null
+                ? current.getMetadataGraphMaxTriples()
+                : DEFAULT_METADATA_GRAPH_MAX_TRIPLES;
 
         if (policy != null) {
             if (policy.getExtractionEnabled() != null) {
@@ -56,6 +65,9 @@ public class PolicyService {
             }
             if (policy.getExtractionScanIntervalMs() != null) {
                 scanIntervalMs = sanitizeScanInterval(policy.getExtractionScanIntervalMs());
+            }
+            if (policy.getMetadataGraphMaxTriples() != null) {
+                metadataGraphMaxTriples = sanitizeMetadataGraphMaxTriples(policy.getMetadataGraphMaxTriples());
             }
         }
 
@@ -66,8 +78,9 @@ public class PolicyService {
                 ? sanitizeScanInterval(current.getExtractionScanIntervalMs())
                 : DEFAULT_SCAN_INTERVAL_MS;
         long newIntervalMs = sanitizeScanInterval(scanIntervalMs);
+        int newMetadataGraphMaxTriples = sanitizeMetadataGraphMaxTriples(metadataGraphMaxTriples);
 
-        iginxDao.updatePolicy(extractionEnabled, newIntervalMs);
+        iginxDao.updatePolicy(extractionEnabled, newIntervalMs, newMetadataGraphMaxTriples);
 
         metadataTransformJobInitializer.onPolicyUpdated(
                 oldEnabled,
@@ -94,6 +107,10 @@ public class PolicyService {
                     policy.setExtractionScanIntervalMs(sanitizeScanInterval(userOverride.getExtractionScanIntervalMs()));
                     policy.setExtractionScanIntervalMsSource("USER_OVERRIDE");
                 }
+                if (userOverride.getMetadataGraphMaxTriples() != null) {
+                    policy.setMetadataGraphMaxTriples(sanitizeMetadataGraphMaxTriples(userOverride.getMetadataGraphMaxTriples()));
+                    policy.setMetadataGraphMaxTriplesSource("USER_OVERRIDE");
+                }
             }
         } catch (Exception e) {
             e.printStackTrace();
@@ -112,10 +129,13 @@ public class PolicyService {
 
         copy.setExtractionEnabled(source.getExtractionEnabled());
         copy.setExtractionScanIntervalMs(source.getExtractionScanIntervalMs());
+        copy.setMetadataGraphMaxTriples(source.getMetadataGraphMaxTriples());
         copy.setExtractionEnabledSource(source.getExtractionEnabledSource());
         copy.setExtractionScanIntervalMsSource(source.getExtractionScanIntervalMsSource());
+        copy.setMetadataGraphMaxTriplesSource(source.getMetadataGraphMaxTriplesSource());
         copy.setExtractionEnabledDesc(source.getExtractionEnabledDesc());
         copy.setExtractionScanIntervalMsDesc(source.getExtractionScanIntervalMsDesc());
+        copy.setMetadataGraphMaxTriplesDesc(source.getMetadataGraphMaxTriplesDesc());
         return copy;
     }
 
@@ -133,6 +153,7 @@ public class PolicyService {
 
         int extractionEnabledIdx = -1;
         int scanIntervalMsIdx = -1;
+        int metadataGraphMaxTriplesIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -140,6 +161,8 @@ public class PolicyService {
                 extractionEnabledIdx = i;
             } else if (path.endsWith("extractionScanIntervalMs")) {
                 scanIntervalMsIdx = i;
+            } else if (path.endsWith("metadataGraphMaxTriples")) {
+                metadataGraphMaxTriplesIdx = i;
             }
         }
 
@@ -163,6 +186,14 @@ public class PolicyService {
             Long v = getValueAsLong(row.get(scanIntervalMsIdx));
             if (v != null) {
                 policy.setExtractionScanIntervalMs(v);
+                hasAny = true;
+            }
+        }
+
+        if (metadataGraphMaxTriplesIdx != -1) {
+            Integer v = getValueAsInteger(row.get(metadataGraphMaxTriplesIdx));
+            if (v != null) {
+                policy.setMetadataGraphMaxTriples(sanitizeMetadataGraphMaxTriples(v));
                 hasAny = true;
             }
         }
@@ -191,12 +222,17 @@ public class PolicyService {
             policy.setExtractionScanIntervalMsSource("BACKEND_DEFAULT");
         }
 
+        int startupGraphMaxTriples = sanitizeMetadataGraphMaxTriples((int) configuredMetadataGraphMaxTriples);
+        policy.setMetadataGraphMaxTriples(startupGraphMaxTriples);
+        policy.setMetadataGraphMaxTriplesSource("CONFIG_FILE");
+
         return policy;
     }
 
     private void fillDescriptions(Policy policy) {
         policy.setExtractionEnabledDesc("元数据抽取总开关");
         policy.setExtractionScanIntervalMsDesc("定时抽取间隔（毫秒）");
+        policy.setMetadataGraphMaxTriplesDesc("知识图谱展示的最大三元组数量（20-500）");
     }
 
     private Boolean parseBooleanProperty(String key) {
@@ -234,6 +270,17 @@ public class PolicyService {
         return Math.max(1000L, v);
     }
 
+    private int sanitizeMetadataGraphMaxTriples(Integer value) {
+        int v = value == null ? DEFAULT_METADATA_GRAPH_MAX_TRIPLES : value;
+        if (v < MIN_METADATA_GRAPH_MAX_TRIPLES) {
+            return MIN_METADATA_GRAPH_MAX_TRIPLES;
+        }
+        if (v > MAX_METADATA_GRAPH_MAX_TRIPLES) {
+            return MAX_METADATA_GRAPH_MAX_TRIPLES;
+        }
+        return v;
+    }
+
     private Long getValueAsLong(Object obj) {
         if (obj == null) return null;
         if (obj instanceof Long) return (Long)obj;
@@ -244,6 +291,20 @@ public class PolicyService {
              } catch (NumberFormatException e) {
                 return null;
              }
+        }
+        return null;
+    }
+
+    private Integer getValueAsInteger(Object obj) {
+        if (obj == null) return null;
+        if (obj instanceof Integer) return (Integer)obj;
+        if (obj instanceof Long) return ((Long)obj).intValue();
+        if (obj instanceof byte[]) {
+            try {
+                return Integer.parseInt(new String((byte[])obj));
+            } catch (NumberFormatException e) {
+                return null;
+            }
         }
         return null;
     }

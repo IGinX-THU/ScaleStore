@@ -161,13 +161,14 @@ public class IGinxDao {
 
   // Policy operations
 
-    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs) {
+    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int metadataGraphMaxTriples) {
       String sql = String.format(
               Locale.ROOT,
-                            "insert into %s(key, extractionEnabled, extractionScanIntervalMs) values (0, %b, %d);",
+                                                        "insert into %s(key, extractionEnabled, extractionScanIntervalMs, metadataGraphMaxTriples) values (0, %b, %d, %d);",
               IGinxConstants.POLICY_PATH,
               extractionEnabled,
-                            extractionScanIntervalMs);
+                                                        extractionScanIntervalMs,
+                                                        metadataGraphMaxTriples);
       executeSql(sql);
   }
 

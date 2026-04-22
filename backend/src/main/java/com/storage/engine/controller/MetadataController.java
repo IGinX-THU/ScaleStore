@@ -22,13 +22,13 @@ public class MetadataController {
 
     /**
      * Build/query metadata graph from Neo4j.
-     * GET /metadata/graph?logicalPath=/test&limit=300
+     * GET /metadata/graph?logicalPath=/test&limit=200
      */
     @GetMapping("/metadata/graph")
     public Response<Map<String, Object>> getGraph(
             @RequestParam(value = "logicalPath", required = false) String logicalPath,
-            @RequestParam(value = "limit", required = false, defaultValue = "300") int limit) {
-        Map<String, Object> graph = metadataKnowledgeService.getGraph(logicalPath, limit);
+            @RequestParam(value = "limit", required = false) Integer limit) {
+        Map<String, Object> graph = metadataKnowledgeService.getGraph(logicalPath, limit == null ? 0 : limit);
         return Response.success(graph);
     }
 

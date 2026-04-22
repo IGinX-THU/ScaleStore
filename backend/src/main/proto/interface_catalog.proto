@@ -112,6 +112,7 @@ message UserLoginRequest {
 message PolicyUpdateRequest {
   optional bool extraction_enabled = 1;
   optional int64 extraction_scan_interval_ms = 2;
+  optional int32 metadata_graph_max_triples = 3;
 }
 
 message MetadataGraphRequest {

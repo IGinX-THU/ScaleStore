@@ -1,10 +1,7 @@
 package com.storage.engine.service;
 
 import com.storage.engine.dao.Neo4jDao;
-import com.storage.engine.model.DataItem;
-import com.storage.engine.model.MetadataExtractResult;
-import com.storage.engine.service.adapter.StorageAdapter;
-import com.storage.engine.service.adapter.StorageAdapterFactory;
+import com.storage.engine.model.Policy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,18 +34,34 @@ public class MetadataKnowledgeService {
     private Neo4jDao neo4jDao;
 
     @Autowired
-    private LlmService llmService;
+    private PolicyService policyService;
 
     @Autowired
-    private StorageAdapterFactory storageAdapterFactory;
+    private LlmService llmService;
 
     public Map<String, Object> getGraph(String logicalPath, int limit) {
         if (!neo4jDao.isEnabled()) {
             return neo4jDao.emptyGraph("Neo4j disabled");
         }
-        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, limit);
+        int effectiveLimit = resolveGraphLimit(limit);
+        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, effectiveLimit);
         graph.put("cypher", "MATCH (n)-[r]->(m) ...");
         return graph;
+    }
+
+    private int resolveGraphLimit(int requestedLimit) {
+        int policyLimit = 200;
+        try {
+            Policy policy = policyService.getPolicy();
+            if (policy != null && policy.getMetadataGraphMaxTriples() != null) {
+                policyLimit = policy.getMetadataGraphMaxTriples();
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to load metadata graph policy limit, fallback to default 200: {}", e.getMessage());
+        }
+
+        int normalizedRequestedLimit = requestedLimit > 0 ? requestedLimit : policyLimit;
+        return Math.max(20, Math.min(normalizedRequestedLimit, policyLimit));
     }
 
     public Map<String, Object> queryBySystemFilters(String logicalPath,
