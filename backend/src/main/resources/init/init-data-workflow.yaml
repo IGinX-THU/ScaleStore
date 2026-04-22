@@ -2,30 +2,150 @@ taskList:
   - taskType: "sql"
     timeout: 10000000
     sqlList:
-      - insert into sys.user(key, username, password, type, email, phone, isValid) values (1, 'admin', '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8', 1, '', '', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (1, '查询集群所有节点', '/config/nodes', 'GET', '查询集群节点列表。', '无', 'code=200; data=[Node]', 'curl -X GET "http://localhost:8080/config/nodes"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (2, '新增节点(异步)', '/config/nodes', 'POST', '创建节点部署任务并返回任务状态。', '{"name":"IGinX-2","ip":"10.0.0.2","port":"6888","sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; data={taskId,status,currentStep,completed}', 'curl -X POST "http://localhost:8080/config/nodes" -H "Content-Type: application/json" -d "{\"name\":\"IGinX-2\",\"ip\":\"10.0.0.2\",\"port\":\"6888\",\"sshUsername\":\"ubuntu\",\"sshPassword\":\"***\"}"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (4, '查询节点详情', '/config/nodes/{id}', 'GET', '查询指定节点详情。', 'id=1', 'code=200; data=Node', 'curl -X GET "http://localhost:8080/config/nodes/1"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (5, '更新节点信息', '/config/nodes/{id}', 'PUT', '更新节点名称和描述。', 'id=1; body={"name":"IGinX-1","description":"updated"}', 'code=200; data=Node', 'curl -X PUT "http://localhost:8080/config/nodes/1" -H "Content-Type: application/json" -d "{\"name\":\"IGinX-1\",\"description\":\"updated\"}"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (6, '移除节点(异步)', '/config/nodes/{id}/stop', 'POST', '移除指定节点并返回异步任务状态。', 'id=1; body={"sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; data={taskId,status,currentStep,completed}', 'curl -X POST "http://localhost:8080/config/nodes/1/stop" -H "Content-Type: application/json" -d "{\"sshUsername\":\"ubuntu\",\"sshPassword\":\"***\",\"deployDirectory\":\"~\"}"', true);
+      - |-
+        insert into sys.user(key, username, password, type, email, phone, isValid) values (1, 'admin', '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8', 1, '', '', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (1, '查询集群所有节点', '/config/nodes', 'GET', '查询集群节点列表。', '无', 'code=200; data=[Node]', 'curl -X GET "http://localhost:8080/config/nodes"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (2, '新增节点(异步)', '/config/nodes', 'POST', '创建节点部署任务并返回任务状态。', '{"name":"IGinX-2","ip":"10.0.0.2","port":"6888","sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; data={taskId,status,currentStep,completed}', 'curl -X POST "http://localhost:8080/config/nodes" -H "Content-Type: application/json" -d "{\"name\":\"IGinX-2\",\"ip\":\"10.0.0.2\",\"port\":\"6888\",\"sshUsername\":\"ubuntu\",\"sshPassword\":\"***\"}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (3, '查询节点详情', '/config/nodes/{id}', 'GET', '查询指定节点详情。', 'id=1', 'code=200; data=Node', 'curl -X GET "http://localhost:8080/config/nodes/1"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (4, '更新节点信息', '/config/nodes/{id}', 'PUT', '更新节点名称和描述。', 'id=1; body={"name":"IGinX-1","description":"updated"}', 'code=200; data=Node', 'curl -X PUT "http://localhost:8080/config/nodes/1" -H "Content-Type: application/json" -d "{\"name\":\"IGinX-1\",\"description\":\"updated\"}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (5, '移除节点(异步)', '/config/nodes/{id}/stop', 'POST', '移除指定节点并返回异步任务状态。', 'id=1; body={"sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; data={taskId,status,currentStep,completed}', 'curl -X POST "http://localhost:8080/config/nodes/1/stop" -H "Content-Type: application/json" -d "{\"sshUsername\":\"ubuntu\",\"sshPassword\":\"***\",\"deployDirectory\":\"~\"}"', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (9, '查询用户列表', '/config/users', 'GET', '查询系统所有用户。', '无', 'code=200; data=[User]', 'curl -X GET "http://localhost:8080/config/users"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (10, '创建用户', '/config/users', 'POST', '创建用户。', 'body={"username":"u1","password":"123456","type":0,"email":"u1@test.com","phone":"13800000001"}', 'code=200; data=User', 'curl -X POST "http://localhost:8080/config/users" -H "Content-Type: application/json" -d "{\"username\":\"u1\",\"password\":\"123456\",\"type\":0,\"email\":\"u1@test.com\",\"phone\":\"13800000001\"}"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (11, '查询用户详情', '/config/users/{id}', 'GET', '按ID查询用户详情。', 'id=1', 'code=200; data=User', 'curl -X GET "http://localhost:8080/config/users/1"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '更新用户', '/config/users/{id}', 'PUT', '按ID更新用户信息。', 'id=1; body={"email":"new@test.com","phone":"13800000002"}', 'code=200; data=User', 'curl -X PUT "http://localhost:8080/config/users/1" -H "Content-Type: application/json" -d "{\"email\":\"new@test.com\",\"phone\":\"13800000002\"}"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '删除用户', '/config/users/{id}', 'DELETE', '按ID删除用户。', 'id=1', 'code=200; data=null', 'curl -X DELETE "http://localhost:8080/config/users/1"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '用户登录', '/config/login', 'POST', '用户名密码登录并返回用户信息。', 'body={"username":"admin","password":"password"}', 'code=200; data=User', 'curl -X POST "http://localhost:8080/config/login" -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"password\"}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (6, '查询用户列表', '/config/users', 'GET', '查询系统所有用户。', '无', 'code=200; data=[User]', 'curl -X GET "http://localhost:8080/config/users"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (7, '创建用户', '/config/users', 'POST', '创建用户。', 'body={"username":"u1","password":"123456","type":0,"email":"u1@test.com","phone":"13800000001"}', 'code=200; data=User', 'curl -X POST "http://localhost:8080/config/users" -H "Content-Type: application/json" -d "{\"username\":\"u1\",\"password\":\"123456\",\"type\":0,\"email\":\"u1@test.com\",\"phone\":\"13800000001\"}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (8, '查询用户详情', '/config/users/{id}', 'GET', '按ID查询用户详情。', 'id=1', 'code=200; data=User', 'curl -X GET "http://localhost:8080/config/users/1"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (9, '更新用户', '/config/users/{id}', 'PUT', '按ID更新用户信息。', 'id=1; body={"email":"new@test.com","phone":"13800000002"}', 'code=200; data=User', 'curl -X PUT "http://localhost:8080/config/users/1" -H "Content-Type: application/json" -d "{\"email\":\"new@test.com\",\"phone\":\"13800000002\"}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (10, '删除用户', '/config/users/{id}', 'DELETE', '按ID删除用户。', 'id=1', 'code=200; data=null', 'curl -X DELETE "http://localhost:8080/config/users/1"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (11, '用户登录', '/config/login', 'POST', '用户名密码登录并返回用户信息。', 'body={"username":"admin","password":"password"}', 'code=200; data=User', 'curl -X POST "http://localhost:8080/config/login" -H "Content-Type: application/json" -d "{\"username\":\"admin\",\"password\":\"password\"}"', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (15, '查询策略配置', '/config/policies', 'GET', '查询元数据抽取策略配置。', '无', 'code=200; data=Policy', 'curl -X GET "http://localhost:8080/config/policies"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (16, '更新策略配置', '/config/policies', 'PUT', '更新元数据抽取策略配置。', 'body={"extractionEnabled":true,"extractionScanIntervalMs":60000,"extractionScanBatchSize":20}', 'code=200; data=Policy', 'curl -X PUT "http://localhost:8080/config/policies" -H "Content-Type: application/json" -d "{\"extractionEnabled\":true,\"extractionScanIntervalMs\":60000,\"extractionScanBatchSize\":20}"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/config/policies', 'GET', '查询元数据抽取策略配置。', '无', 'code=200; data=Policy', 'curl -X GET "http://localhost:8080/config/policies"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/config/policies', 'PUT', '更新元数据抽取策略配置。', 'body={"extractionEnabled":true,"extractionScanIntervalMs":60000,"metadataGraphMaxTriples":200}', 'code=200; data=Policy', 'curl -X PUT "http://localhost:8080/config/policies" -H "Content-Type: application/json" -d "{\"extractionEnabled\":true,\"extractionScanIntervalMs\":60000,\"metadataGraphMaxTriples\":200}"', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (17, '查询元数据图谱', '/metadata/graph', 'GET', '按逻辑路径查询知识图谱。', 'logicalPath=/demo; limit=300', 'code=200; data={nodes,links,categories}', 'curl -X GET "http://localhost:8080/metadata/graph?logicalPath=/demo&limit=300"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (18, '元数据查询', '/metadata/query', 'GET', '支持结构化或自然语言查询元数据图谱。', 'mode=system|llm; q=合同相关; logicalPath=/demo; dataType=document; keyword=contract', 'code=200; data={nodes,links,categories}', 'curl -X GET "http://localhost:8080/metadata/query?mode=system&logicalPath=/demo&dataType=document&keyword=contract"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/metadata/graph', 'GET', '按逻辑路径查询知识图谱。', 'logicalPath=/demo; limit=300', 'code=200; data={nodes,links,categories}', 'curl -X GET "http://localhost:8080/metadata/graph?logicalPath=/demo&limit=300"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (15, '元数据查询', '/metadata/query', 'GET', '支持结构化或自然语言查询元数据图谱。', 'mode=system|llm; q=合同相关; logicalPath=/demo; dataType=document; keyword=contract', 'code=200; data={nodes,links,categories}', 'curl -X GET "http://localhost:8080/metadata/query?mode=system&logicalPath=/demo&dataType=document&keyword=contract"', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (20, '上传并存储数据', '/storage', 'POST', '上传文件并按逻辑路径和数据类型存储。', 'file=<multipart>; logicalPath=/demo/path; dataType=relational', 'code=201; data=DataItem', 'curl -X POST "http://localhost:8080/storage" -F "file=@demo.csv" -F "logicalPath=/demo/path" -F "dataType=relational"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (16, '上传并存储数据', '/storage', 'POST', '上传文件并按逻辑路径和数据类型存储。', 'file=<multipart>; logicalPath=/demo/path; dataType=relational', 'code=201; data=DataItem', 'curl -X POST "http://localhost:8080/storage" -F "file=@demo.csv" -F "logicalPath=/demo/path" -F "dataType=relational"', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (21, '访问数据预览', '/access/data', 'GET', '按逻辑路径访问数据预览。', 'logicalPath=/demo/path', 'code=200; data=DataItem', 'curl -X GET "http://localhost:8080/access/data?logicalPath=/demo/path"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (22, '下载数据文件', '/access/download', 'GET', '按逻辑路径下载原始文件。', 'logicalPath=/demo/path', 'binary stream', 'curl -X GET "http://localhost:8080/access/download?logicalPath=/demo/path" --output demo.out', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (17, '访问数据预览', '/access/data', 'GET', '按逻辑路径访问数据预览。', 'logicalPath=/demo/path', 'code=200; data=DataItem', 'curl -X GET "http://localhost:8080/access/data?logicalPath=/demo/path"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (18, '下载数据文件', '/access/download', 'GET', '按逻辑路径下载原始文件。', 'logicalPath=/demo/path', 'binary stream', 'curl -X GET "http://localhost:8080/access/download?logicalPath=/demo/path" --output demo.out', true);
 
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (24, '查询RESTful接口列表', '/config/interfaces/restful', 'GET', '查询系统内置RESTful接口元数据列表。', '无', 'code=200; data=[RestfulApiItem]', 'curl -X GET "http://localhost:8080/config/interfaces/restful"', true);
-      - insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (25, '查询RESTful接口详情', '/config/interfaces/restful/{id}', 'GET', '按ID查询RESTful接口元数据。', 'id=1', 'code=200; data=RestfulApiItem', 'curl -X GET "http://localhost:8080/config/interfaces/restful/1"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (19, '查询RESTful接口列表', '/config/interfaces/restful', 'GET', '查询系统内置RESTful接口元数据列表。', '无', 'code=200; data=[RestfulApiItem]', 'curl -X GET "http://localhost:8080/config/interfaces/restful"', true);
+      - |-
+        insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (20, '查询RESTful接口详情', '/config/interfaces/restful/{id}', 'GET', '按ID查询RESTful接口元数据。', 'id=1', 'code=200; data=RestfulApiItem', 'curl -X GET "http://localhost:8080/config/interfaces/restful/1"', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (1, '查询集群所有节点', '/scalestore.grpc.ScaleStoreGrpcService/ListNodes', 'UNARY', '查询集群节点列表。', '{}', 'code=200; jsonData=[Node]', 'stub.listNodes(EmptyRequest.newBuilder().build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (2, '新增节点(异步)', '/scalestore.grpc.ScaleStoreGrpcService/CreateNode', 'UNARY', '创建节点部署任务并返回任务状态。', '{"name":"IGinX-2","ip":"10.0.0.2","port":"6888","sshUsername":"ubuntu","sshPassword":"***"}', 'code=200; jsonData=NodeDeployTaskStatus', 'stub.createNode(NodeCreateRequest.newBuilder().setName("IGinX-2").setIp("10.0.0.2").setPort("6888").setSshUsername("ubuntu").setSshPassword("***").build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (3, '查询节点详情', '/scalestore.grpc.ScaleStoreGrpcService/GetNode', 'UNARY', '查询指定节点详情。', '{"id":1}', 'code=200; jsonData=Node', 'stub.getNode(IdRequest.newBuilder().setId(1).build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (4, '更新节点信息', '/scalestore.grpc.ScaleStoreGrpcService/UpdateNode', 'UNARY', '更新节点名称和描述。', '{"id":1,"name":"IGinX-1","description":"updated"}', 'code=200; jsonData=Node', 'stub.updateNode(NodeUpdateRequest.newBuilder().setId(1).setName("IGinX-1").setDescription("updated").build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (5, '移除节点(异步)', '/scalestore.grpc.ScaleStoreGrpcService/RemoveNode', 'UNARY', '移除指定节点并返回异步任务状态。', '{"id":1,"sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; jsonData=NodeDeployTaskStatus', 'stub.removeNode(NodeStopRequest.newBuilder().setId(1).setSshUsername("ubuntu").setSshPassword("***").setDeployDirectory("~").build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (6, '查询用户列表', '/scalestore.grpc.ScaleStoreGrpcService/ListUsers', 'UNARY', '查询系统所有用户。', '{}', 'code=200; jsonData=[User]', 'stub.listUsers(EmptyRequest.newBuilder().build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (7, '创建用户', '/scalestore.grpc.ScaleStoreGrpcService/CreateUser', 'UNARY', '创建用户。', '{"username":"u1","password":"123456","type":0,"email":"u1@test.com","phone":"13800000001"}', 'code=200; jsonData=User', 'stub.createUser(CreateUserRequest.newBuilder().setUsername("u1").setPassword("123456").setType(0).setEmail("u1@test.com").setPhone("13800000001").build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (8, '查询用户详情', '/scalestore.grpc.ScaleStoreGrpcService/GetUser', 'UNARY', '按ID查询用户详情。', '{"id":1}', 'code=200; jsonData=User', 'stub.getUser(IdRequest.newBuilder().setId(1).build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (9, '更新用户', '/scalestore.grpc.ScaleStoreGrpcService/UpdateUser', 'UNARY', '按ID更新用户信息。', '{"id":1,"email":"new@test.com","phone":"13800000002"}', 'code=200; jsonData=User', 'stub.updateUser(UpdateUserRequest.newBuilder().setId(1).setEmail("new@test.com").setPhone("13800000002").build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (10, '删除用户', '/scalestore.grpc.ScaleStoreGrpcService/DeleteUser', 'UNARY', '按ID删除用户。', '{"id":1}', 'code=200; jsonData=null', 'stub.deleteUser(IdRequest.newBuilder().setId(1).build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (11, '用户登录', '/scalestore.grpc.ScaleStoreGrpcService/Login', 'UNARY', '用户名密码登录并返回用户信息。', '{"username":"admin","password":"password"}', 'code=200; jsonData=User', 'stub.login(UserLoginRequest.newBuilder().setUsername("admin").setPassword("password").build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/scalestore.grpc.ScaleStoreGrpcService/GetPolicies', 'UNARY', '查询元数据抽取策略配置。', '{}', 'code=200; jsonData=Policy', 'stub.getPolicies(EmptyRequest.newBuilder().build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000,"metadataGraphMaxTriples":200}', 'code=200; jsonData=Policy', 'stub.updatePolicies(PolicyUpdateRequest.newBuilder().setExtractionEnabled(true).setExtractionScanIntervalMs(60000).setMetadataGraphMaxTriples(200).build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/scalestore.grpc.ScaleStoreGrpcService/GetMetadataGraph', 'UNARY', '按逻辑路径查询知识图谱。', '{"logicalPath":"/demo","limit":300}', 'code=200; jsonData={nodes,links,categories}', 'stub.getMetadataGraph(MetadataGraphRequest.newBuilder().setLogicalPath("/demo").setLimit(300).build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (15, '元数据查询', '/scalestore.grpc.ScaleStoreGrpcService/QueryMetadata', 'UNARY', '支持结构化或自然语言查询元数据图谱。', '{"mode":"system","logicalPath":"/demo","dataType":"document","keyword":"contract"}', 'code=200; jsonData={nodes,links,categories}', 'stub.queryMetadata(MetadataQueryRequest.newBuilder().setMode("system").setLogicalPath("/demo").setDataType("document").setKeyword("contract").build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (16, '上传并存储数据', '/scalestore.grpc.ScaleStoreGrpcService/UploadData', 'UNARY', '上传文件并按逻辑路径和数据类型存储。', '{"fileName":"demo.csv","fileContent":"<bytes>","logicalPath":"/demo/path","dataType":"relational"}', 'code=200; jsonData=DataItem', 'stub.uploadData(StorageUploadRequest.newBuilder().setFileName("demo.csv").setFileContent(ByteString.copyFrom(dataBytes)).setLogicalPath("/demo/path").setDataType("relational").build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (17, '访问数据预览', '/scalestore.grpc.ScaleStoreGrpcService/AccessData', 'UNARY', '按逻辑路径访问数据预览。', '{"logicalPath":"/demo/path"}', 'code=200; jsonData=DataItem', 'stub.accessData(LogicalPathRequest.newBuilder().setLogicalPath("/demo/path").build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (18, '下载数据文件', '/scalestore.grpc.ScaleStoreGrpcService/DownloadData', 'UNARY', '按逻辑路径下载原始文件。', '{"logicalPath":"/demo/path"}', 'code=200; fileContent=<bytes>', 'stub.downloadData(LogicalPathRequest.newBuilder().setLogicalPath("/demo/path").build());', true);
+
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (19, '查询RESTful接口列表', '/scalestore.grpc.ScaleStoreGrpcService/ListRestfulInterfaces', 'UNARY', '查询系统内置RESTful接口元数据列表。', '{}', 'code=200; jsonData=[RestfulApiItem]', 'stub.listRestfulInterfaces(EmptyRequest.newBuilder().build());', true);
+      - |-
+        insert into interface.java_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (20, '查询RESTful接口详情', '/scalestore.grpc.ScaleStoreGrpcService/GetRestfulInterface', 'UNARY', '按ID查询RESTful接口元数据。', '{"id":1}', 'code=200; jsonData=RestfulApiItem', 'stub.getRestfulInterface(IdRequest.newBuilder().setId(1).build());', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (1, '查询集群所有节点', '/scalestore.grpc.ScaleStoreGrpcService/ListNodes', 'UNARY', '查询集群节点列表。', '{}', 'code=200; jsonData=[Node]', 'stub.ListNodes(pb2.EmptyRequest())', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (2, '新增节点(异步)', '/scalestore.grpc.ScaleStoreGrpcService/CreateNode', 'UNARY', '创建节点部署任务并返回任务状态。', '{"name":"IGinX-2","ip":"10.0.0.2","port":"6888","sshUsername":"ubuntu","sshPassword":"***"}', 'code=200; jsonData=NodeDeployTaskStatus', 'stub.CreateNode(pb2.NodeCreateRequest(name="IGinX-2", ip="10.0.0.2", port="6888", ssh_username="ubuntu", ssh_password="***"))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (3, '查询节点详情', '/scalestore.grpc.ScaleStoreGrpcService/GetNode', 'UNARY', '查询指定节点详情。', '{"id":1}', 'code=200; jsonData=Node', 'stub.GetNode(pb2.IdRequest(id=1))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (4, '更新节点信息', '/scalestore.grpc.ScaleStoreGrpcService/UpdateNode', 'UNARY', '更新节点名称和描述。', '{"id":1,"name":"IGinX-1","description":"updated"}', 'code=200; jsonData=Node', 'stub.UpdateNode(pb2.NodeUpdateRequest(id=1, name="IGinX-1", description="updated"))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (5, '移除节点(异步)', '/scalestore.grpc.ScaleStoreGrpcService/RemoveNode', 'UNARY', '移除指定节点并返回异步任务状态。', '{"id":1,"sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; jsonData=NodeDeployTaskStatus', 'stub.RemoveNode(pb2.NodeStopRequest(id=1, ssh_username="ubuntu", ssh_password="***", deploy_directory="~"))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (6, '查询用户列表', '/scalestore.grpc.ScaleStoreGrpcService/ListUsers', 'UNARY', '查询系统所有用户。', '{}', 'code=200; jsonData=[User]', 'stub.ListUsers(pb2.EmptyRequest())', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (7, '创建用户', '/scalestore.grpc.ScaleStoreGrpcService/CreateUser', 'UNARY', '创建用户。', '{"username":"u1","password":"123456","type":0,"email":"u1@test.com","phone":"13800000001"}', 'code=200; jsonData=User', 'stub.CreateUser(pb2.CreateUserRequest(username="u1", password="123456", type=0, email="u1@test.com", phone="13800000001"))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (8, '查询用户详情', '/scalestore.grpc.ScaleStoreGrpcService/GetUser', 'UNARY', '按ID查询用户详情。', '{"id":1}', 'code=200; jsonData=User', 'stub.GetUser(pb2.IdRequest(id=1))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (9, '更新用户', '/scalestore.grpc.ScaleStoreGrpcService/UpdateUser', 'UNARY', '按ID更新用户信息。', '{"id":1,"email":"new@test.com","phone":"13800000002"}', 'code=200; jsonData=User', 'stub.UpdateUser(pb2.UpdateUserRequest(id=1, email="new@test.com", phone="13800000002"))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (10, '删除用户', '/scalestore.grpc.ScaleStoreGrpcService/DeleteUser', 'UNARY', '按ID删除用户。', '{"id":1}', 'code=200; jsonData=null', 'stub.DeleteUser(pb2.IdRequest(id=1))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (11, '用户登录', '/scalestore.grpc.ScaleStoreGrpcService/Login', 'UNARY', '用户名密码登录并返回用户信息。', '{"username":"admin","password":"password"}', 'code=200; jsonData=User', 'stub.Login(pb2.UserLoginRequest(username="admin", password="password"))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (12, '查询策略配置', '/scalestore.grpc.ScaleStoreGrpcService/GetPolicies', 'UNARY', '查询元数据抽取策略配置。', '{}', 'code=200; jsonData=Policy', 'stub.GetPolicies(pb2.EmptyRequest())', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (13, '更新策略配置', '/scalestore.grpc.ScaleStoreGrpcService/UpdatePolicies', 'UNARY', '更新元数据抽取策略配置。', '{"extractionEnabled":true,"extractionScanIntervalMs":60000,"metadataGraphMaxTriples":200}', 'code=200; jsonData=Policy', 'stub.UpdatePolicies(pb2.PolicyUpdateRequest(extraction_enabled=True, extraction_scan_interval_ms=60000, metadata_graph_max_triples=200))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (14, '查询元数据图谱', '/scalestore.grpc.ScaleStoreGrpcService/GetMetadataGraph', 'UNARY', '按逻辑路径查询知识图谱。', '{"logicalPath":"/demo","limit":300}', 'code=200; jsonData={nodes,links,categories}', 'stub.GetMetadataGraph(pb2.MetadataGraphRequest(logical_path="/demo", limit=300))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (15, '元数据查询', '/scalestore.grpc.ScaleStoreGrpcService/QueryMetadata', 'UNARY', '支持结构化或自然语言查询元数据图谱。', '{"mode":"system","logicalPath":"/demo","dataType":"document","keyword":"contract"}', 'code=200; jsonData={nodes,links,categories}', 'stub.QueryMetadata(pb2.MetadataQueryRequest(mode="system", logical_path="/demo", data_type="document", keyword="contract"))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (16, '上传并存储数据', '/scalestore.grpc.ScaleStoreGrpcService/UploadData', 'UNARY', '上传文件并按逻辑路径和数据类型存储。', '{"fileName":"demo.csv","fileContent":"<bytes>","logicalPath":"/demo/path","dataType":"relational"}', 'code=200; jsonData=DataItem', 'stub.UploadData(pb2.StorageUploadRequest(file_name="demo.csv", file_content=data_bytes, logical_path="/demo/path", data_type="relational"))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (17, '访问数据预览', '/scalestore.grpc.ScaleStoreGrpcService/AccessData', 'UNARY', '按逻辑路径访问数据预览。', '{"logicalPath":"/demo/path"}', 'code=200; jsonData=DataItem', 'stub.AccessData(pb2.LogicalPathRequest(logical_path="/demo/path"))', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (18, '下载数据文件', '/scalestore.grpc.ScaleStoreGrpcService/DownloadData', 'UNARY', '按逻辑路径下载原始文件。', '{"logicalPath":"/demo/path"}', 'code=200; fileContent=<bytes>', 'stub.DownloadData(pb2.LogicalPathRequest(logical_path="/demo/path"))', true);
+
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (19, '查询RESTful接口列表', '/scalestore.grpc.ScaleStoreGrpcService/ListRestfulInterfaces', 'UNARY', '查询系统内置RESTful接口元数据列表。', '{}', 'code=200; jsonData=[RestfulApiItem]', 'stub.ListRestfulInterfaces(pb2.EmptyRequest())', true);
+      - |-
+        insert into interface.python_grpc(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (20, '查询RESTful接口详情', '/scalestore.grpc.ScaleStoreGrpcService/GetRestfulInterface', 'UNARY', '按ID查询RESTful接口元数据。', '{"id":1}', 'code=200; jsonData=RestfulApiItem', 'stub.GetRestfulInterface(pb2.IdRequest(id=1))', true);
+      - |-
+        select key from sys.user where key = 1;
+
+exportType: "none"
+stopOnFailure: false

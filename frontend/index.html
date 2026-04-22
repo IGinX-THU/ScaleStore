@@ -203,6 +203,9 @@
       <div class="panel-corner-br"></div>
       <div class="panel-header">
         <div class="panel-title"><span>存储服务</span></div>
+        <div class="panel-actions">
+          <button id="storage-source-add-btn" class="btn btn-info btn-sm">增加数据源</button>
+        </div>
       </div>
       <div class="panel-body flex-col gap-8">
         <div class="form-group">
@@ -250,6 +253,7 @@
             </div>
             <div class="access-actions">
               <button id="access-visit-btn" class="btn btn-primary">访问</button>
+              <button id="access-back-btn" class="btn btn-secondary">返回</button>
               <button id="access-download-btn" class="btn btn-info">点击下载数据</button>
             </div>
             <div class="data-info gap-6">
@@ -495,6 +499,69 @@
       </div>
       <div class="modal-footer">
         <button id="profile-modal-close" class="btn btn-secondary">关闭</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modal-storage-source" class="modal-overlay hidden">
+    <div class="modal-card">
+      <div class="modal-header">
+        <span class="modal-title">增加外部数据源</span>
+        <button class="modal-close" id="storage-source-modal-close-x">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label class="form-label">数据源类型</label>
+          <select id="storage-source-type-input" class="input">
+            <option value="filesystem">filesystem</option>
+            <option value="mysql">mysql</option>
+            <option value="postgres">postgres</option>
+            <option value="iotdb">iotdb</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">IP</label>
+          <input type="text" id="storage-source-ip-input" class="input" placeholder="127.0.0.1">
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">端口</label>
+          <input type="number" id="storage-source-port-input" class="input" placeholder="请输入端口">
+        </div>
+
+        <div id="storage-source-filesystem-fields" class="hidden">
+          <div class="form-group">
+            <label class="form-label">dummy_dir</label>
+            <input type="text" id="storage-source-dummy-dir-input" class="input" placeholder="/home/user/path/to/data">
+          </div>
+          <div class="form-group">
+            <label class="form-label">iginx_port</label>
+            <input type="number" id="storage-source-iginx-port-input" class="input" placeholder="6888">
+          </div>
+        </div>
+
+        <div id="storage-source-auth-fields">
+          <div class="form-group">
+            <label class="form-label">username</label>
+            <input type="text" id="storage-source-username-input" class="input" placeholder="root">
+          </div>
+          <div class="form-group">
+            <label class="form-label">password</label>
+            <input type="password" id="storage-source-password-input" class="input" placeholder="请输入密码">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">说明</label>
+          <div class="code-block" style="white-space:normal;line-height:1.5;">
+            添加成功后，数据源中的数据会统一映射到逻辑路径 /extern 下。
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="storage-source-modal-cancel" class="btn btn-secondary">取消</button>
+        <button id="storage-source-modal-save" class="btn btn-primary">确认添加</button>
       </div>
     </div>
   </div>

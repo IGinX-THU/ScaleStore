@@ -4,3 +4,4 @@ dist/
 .vscode/
 target/
 packages/
+backend/src/main/resources/static/

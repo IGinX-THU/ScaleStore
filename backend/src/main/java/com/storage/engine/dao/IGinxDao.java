@@ -7,12 +7,33 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.constant.IGinxConstants;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 
 import java.util.*;
 
 @Repository
 public class IGinxDao {
+    private static final Logger logger = LoggerFactory.getLogger(IGinxDao.class);
+    private static final String[] EVICTABLE_ERROR_MARKERS = new String[] {
+            "connection refused",
+            "connect timed out",
+            "connection timed out",
+            "connection reset",
+            "broken pipe",
+            "no route to host",
+            "network is unreachable",
+            "socketexception",
+            "ioexception",
+            "transport",
+            "session is closed",
+            "session closed",
+            "not open",
+            "end of file",
+            "channel inactive"
+    };
+
   private final IGinxConnectionPool connectionPool;
 
   private interface SessionAction<T> {
@@ -140,19 +161,31 @@ public class IGinxDao {
 
   // Policy operations
 
-  public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int extractionScanBatchSize) {
+    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int metadataGraphMaxTriples) {
       String sql = String.format(
               Locale.ROOT,
-              "insert into %s(key, extractionEnabled, extractionScanIntervalMs, extractionScanBatchSize) values (0, %b, %d, %d);",
+                                                        "insert into %s(key, extractionEnabled, extractionScanIntervalMs, metadataGraphMaxTriples) values (0, %b, %d, %d);",
               IGinxConstants.POLICY_PATH,
               extractionEnabled,
-              extractionScanIntervalMs,
-              extractionScanBatchSize);
+                                                        extractionScanIntervalMs,
+                                                        metadataGraphMaxTriples);
       executeSql(sql);
   }
 
   public SessionExecuteSqlResult getPolicy() {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
+  }
+
+  public SessionExecuteSqlResult getTransformMetaExtractRows(int limit) {
+      int safeLimit = Math.max(1, limit);
+      try {
+          String latestSql = "select * from transform order by key desc limit " + safeLimit + ";";
+          return executeSql(latestSql);
+      } catch (RuntimeException e) {
+          // Fallback for engines that do not support ORDER BY on this path.
+          String fallbackSql = "select * from transform limit " + safeLimit + ";";
+          return executeSql(fallbackSql);
+      }
   }
 
   // RESTful interface operations
@@ -223,16 +256,174 @@ public class IGinxDao {
       return -1;
   }
 
+  // Java gRPC interface operations
+
+  public void insertJavaGrpcApi(long key,
+                                String name,
+                                String url,
+                                String method,
+                                String description,
+                                String paramsExample,
+                                String responseExample,
+                                String invokeExample,
+                                boolean isValid) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', %b);",
+              IGinxConstants.INTERFACE_JAVA_GRPC_PATH,
+              key,
+              escapeSql(name),
+              escapeSql(url),
+              escapeSql(method),
+              escapeSql(description),
+              escapeSql(paramsExample),
+              escapeSql(responseExample),
+              escapeSql(invokeExample),
+              isValid);
+      executeSql(sql);
+  }
+
+  public void updateJavaGrpcApi(long key,
+                                String name,
+                                String url,
+                                String method,
+                                String description,
+                                String paramsExample,
+                                String responseExample,
+                                String invokeExample,
+                                boolean isValid) {
+      insertJavaGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
+  }
+
+  public void deleteJavaGrpcApi(long key) {
+      String sql = String.format(Locale.ROOT,
+              "insert into %s(key, isValid) values (%d, false);",
+              IGinxConstants.INTERFACE_JAVA_GRPC_PATH,
+              key);
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllJavaGrpcApis() {
+      try {
+          return executeSql("select * from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public SessionExecuteSqlResult getJavaGrpcApiById(long key) {
+      try {
+          return executeSql("select * from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + " where key = " + key + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public long getMaxJavaGrpcApiId() {
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // interface.java_grpc path may not exist on fresh deployments
+      }
+      return -1;
+  }
+
+  // Python gRPC interface operations
+
+  public void insertPythonGrpcApi(long key,
+                                  String name,
+                                  String url,
+                                  String method,
+                                  String description,
+                                  String paramsExample,
+                                  String responseExample,
+                                  String invokeExample,
+                                  boolean isValid) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', '%s', '%s', %b);",
+              IGinxConstants.INTERFACE_PYTHON_GRPC_PATH,
+              key,
+              escapeSql(name),
+              escapeSql(url),
+              escapeSql(method),
+              escapeSql(description),
+              escapeSql(paramsExample),
+              escapeSql(responseExample),
+              escapeSql(invokeExample),
+              isValid);
+      executeSql(sql);
+  }
+
+  public void updatePythonGrpcApi(long key,
+                                  String name,
+                                  String url,
+                                  String method,
+                                  String description,
+                                  String paramsExample,
+                                  String responseExample,
+                                  String invokeExample,
+                                  boolean isValid) {
+      insertPythonGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
+  }
+
+  public void deletePythonGrpcApi(long key) {
+      String sql = String.format(Locale.ROOT,
+              "insert into %s(key, isValid) values (%d, false);",
+              IGinxConstants.INTERFACE_PYTHON_GRPC_PATH,
+              key);
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllPythonGrpcApis() {
+      try {
+          return executeSql("select * from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public SessionExecuteSqlResult getPythonGrpcApiById(long key) {
+      try {
+          return executeSql("select * from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + " where key = " + key + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public long getMaxPythonGrpcApiId() {
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // interface.python_grpc path may not exist on fresh deployments
+      }
+      return -1;
+  }
+
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-                         long fileSize, String fileFormat, String createTime) {
-      String sql = String.format(Locale.ROOT,
-          "insert into %s(key, logicalPath, dataType, fileName, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) " +
-              "values (%d, '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
+             String contentPath, long fileSize, String fileFormat, String createTime) {
+      String sql = String.format(
+              Locale.ROOT,
+          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
               IGinxConstants.STORAGE_META_PATH,
-              key, escapeSql(logicalPath), escapeSql(dataType), escapeSql(fileName),
-              fileSize, escapeSql(fileFormat), escapeSql(createTime));
+              key,
+              escapeSql(logicalPath),
+              escapeSql(dataType),
+              escapeSql(fileName),
+          escapeSqlKeepBackslash(contentPath),
+              fileSize,
+              escapeSql(fileFormat),
+              escapeSql(createTime));
       executeSql(sql);
   }
 
@@ -279,15 +470,26 @@ public class IGinxDao {
   // ==================== Data Query Operations ====================
 
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
-      return executeSql("select * from " + pathPrefix + ";");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      return executeSql("select * from " + queryPath + ";");
   }
 
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
-      return executeSql("select * from " + pathPrefix + " limit " + limit + ";");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      return executeSql("select * from " + queryPath + " limit " + limit + ";");
   }
 
   public void deleteDataByPath(String pathPrefix) {
-      executeSql("delete from " + pathPrefix + ".*;");
+      String queryPath = normalizePathForQuery(pathPrefix);
+      executeSql("delete from " + queryPath + ".*;");
+  }
+
+  private String normalizePathForQuery(String pathPrefix) {
+      String path = pathPrefix == null ? "" : pathPrefix.trim();
+      while (path.contains("\\\\")) {
+          path = path.replace("\\\\", "\\");
+      }
+      return path;
   }
 
   // ==================== Cluster Info Operations ====================
@@ -303,16 +505,56 @@ public class IGinxDao {
 
   private String escapeSql(String value) {
       if (value == null) return "";
-      return value.replace("'", "\\'");
+      return value.replace("\\", "\\\\").replace("'", "''");
+  }
+
+  private String escapeSqlKeepBackslash(String value) {
+      if (value == null) return "";
+      return value.replace("'", "''");
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {
+      logger.info("[IGinX-SQL] {}", sql);
       return withRetry("executeSql", new SessionAction<SessionExecuteSqlResult>() {
           @Override
           public SessionExecuteSqlResult run(Session session) throws SessionException {
               return session.executeSql(sql);
           }
       });
+  }
+
+  private boolean shouldEvictSession(SessionException e) {
+      String details = flattenExceptionMessage(e).toLowerCase(Locale.ROOT);
+      if (details.isEmpty()) {
+          return true;
+      }
+      for (String marker : EVICTABLE_ERROR_MARKERS) {
+          if (details.contains(marker)) {
+              return true;
+          }
+      }
+      // Default to keeping the session for SQL/business errors so one failed request
+      // cannot collapse the whole pool.
+      return false;
+  }
+
+  private String flattenExceptionMessage(Throwable throwable) {
+      StringBuilder sb = new StringBuilder();
+      Throwable current = throwable;
+      while (current != null) {
+          String message = current.getMessage();
+          if (message != null) {
+              String trimmed = message.trim();
+              if (!trimmed.isEmpty()) {
+                  if (sb.length() > 0) {
+                      sb.append(" | ");
+                  }
+                  sb.append(trimmed);
+              }
+          }
+          current = current.getCause();
+      }
+      return sb.toString();
   }
 
   private <T> T withRetry(String opName, SessionAction<T> action) {
@@ -324,8 +566,12 @@ public class IGinxDao {
               try {
                   return action.run(s);
               } catch (SessionException e) {
-                  connectionPool.evictSession(s, opName + " failed: " + e.getMessage());
-                  last = new RuntimeException("Failed to " + opName, e);
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(s, opName + " failed: " + e.getMessage());
+                      last = new RuntimeException("Failed to " + opName, e);
+                  } else {
+                      throw new RuntimeException("Failed to " + opName + ": " + e.getMessage(), e);
+                  }
               }
           }
       }
@@ -342,7 +588,11 @@ public class IGinxDao {
               try {
                   return action.run(seed);
               } catch (SessionException e) {
-                  connectionPool.evictSession(seed, opName + " failed on seed: " + e.getMessage());
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(seed, opName + " failed on seed: " + e.getMessage());
+                  } else {
+                      throw new RuntimeException("Failed to " + opName + ": " + e.getMessage(), e);
+                  }
               }
           }
       }

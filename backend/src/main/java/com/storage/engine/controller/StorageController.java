@@ -1,5 +1,6 @@
 package com.storage.engine.controller;
 
+import com.storage.engine.model.AddStorageEngineRequest;
 import com.storage.engine.model.DataItem;
 import com.storage.engine.model.Response;
 import com.storage.engine.service.StorageService;
@@ -9,11 +10,27 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.util.Map;
+
 @RestController
 public class StorageController {
 
     @Autowired
     private StorageService storageService;
+
+    @PostMapping("/storage/sources")
+    public ResponseEntity<Response<Map<String, Object>>> addStorageSource(@RequestBody AddStorageEngineRequest request) {
+        try {
+            Map<String, Object> result = storageService.addExternalStorageEngine(request);
+            return ResponseEntity.ok(Response.success(result));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Response.error(400, e.getMessage()));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Response.error(500, "Add storage source failed: " + e.getMessage()));
+        }
+    }
 
     /**
      * Upload and store a file.

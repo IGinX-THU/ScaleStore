@@ -10,6 +10,7 @@ public class DataItem {
     private String createTime;
     private Boolean isValid;
     private String knowledgeExtractStatus;
+    private String contentPath;
 
     // For preview / access response
     private Object previewData;
@@ -40,6 +41,9 @@ public class DataItem {
 
     public String getKnowledgeExtractStatus() { return knowledgeExtractStatus; }
     public void setKnowledgeExtractStatus(String knowledgeExtractStatus) { this.knowledgeExtractStatus = knowledgeExtractStatus; }
+
+    public String getContentPath() { return contentPath; }
+    public void setContentPath(String contentPath) { this.contentPath = contentPath; }
 
     public Object getPreviewData() { return previewData; }
     public void setPreviewData(Object previewData) { this.previewData = previewData; }

@@ -1,19 +1,10 @@
 import json
-
-try:
-    from metadata.extractors.document_extractor import DocumentMetadataExtractor
-    from metadata.extractors.image_extractor import ImageMetadataExtractor
-    from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
-    from metadata.extractors.relational_extractor import RelationalMetadataExtractor
-    from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
-    from metadata.neo4j_writer import Neo4jGraphWriter
-except Exception:
-    from extractors.document_extractor import DocumentMetadataExtractor
-    from extractors.image_extractor import ImageMetadataExtractor
-    from extractors.keyvalue_extractor import KeyValueMetadataExtractor
-    from extractors.relational_extractor import RelationalMetadataExtractor
-    from extractors.timeseries_extractor import TimeSeriesMetadataExtractor
-    from neo4j_writer import Neo4jGraphWriter
+from metadata.extractors.document_extractor import DocumentMetadataExtractor
+from metadata.extractors.image_extractor import ImageMetadataExtractor
+from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
+from metadata.extractors.relational_extractor import RelationalMetadataExtractor
+from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
+from metadata.neo4j_writer import Neo4jGraphWriter
 
 
 class UDFMetadataExtract:
@@ -35,6 +26,20 @@ class UDFMetadataExtract:
             field_kind = self._safe(extracted.get("fieldKind", "field")) or "field"
             if not fields and field_kind in ("column", "key"):
                 field_kind = "field"
+
+            if data_type in ("relational", "timeseries", "keyvalue"):
+                entities = []
+                triples = []
+                if data_type == "keyvalue":
+                    if field_kind not in ("key", "column"):
+                        field_kind = "key"
+                else:
+                    if field_kind not in ("column", "key"):
+                        field_kind = "column"
+            elif data_type in ("document", "image"):
+                fields = []
+                if field_kind in ("column", "key"):
+                    field_kind = "field"
 
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(

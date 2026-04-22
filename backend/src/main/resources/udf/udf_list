@@ -1,13 +1,5 @@
-# Each line represents a UDF function.
-# Format:
-#   <udf type>,<udf name in sql>,<class name>,<module name>.py
-#
-#   <udf type> can be one of the following:
-#   - UDTF: User Defined Row Transform Function
-#   - UDAF: User Defined Row Aggregate Function
-#   - UDSF: User Defined Row Set Transform Function
-#   <udf name in sql> is the function name used in SQL queries
-#   <class name> is the name of the class that implements the UDF
-#   <module name> is the name of the module that contains the UDF implementation
+# Each line represents a UDF or Transform function.
+# Format: <udf type>,<udf name in sql>,<class name>,<module name>.py
 
-UDSF,metadata_extract,UDFMetadataExtract,metadata.MetadataExtract.py
+TRANSFORM,MetadataExtractInfoTransformer,MetadataExtractInfoTransformer,metadata.transformers.MetadataExtractInfoTransformer.py
+TRANSFORM,MetadataExtractExeTransformer,MetadataExtractExeTransformer,metadata.transformers.MetadataExtractExeTransformer.py

@@ -3,15 +3,15 @@ package com.storage.engine.model;
 public class Policy {
     private Boolean extractionEnabled;
     private Long extractionScanIntervalMs;
-    private Integer extractionScanBatchSize;
+    private Integer metadataGraphMaxTriples;
 
     private String extractionEnabledSource;
     private String extractionScanIntervalMsSource;
-    private String extractionScanBatchSizeSource;
+    private String metadataGraphMaxTriplesSource;
 
     private String extractionEnabledDesc;
     private String extractionScanIntervalMsDesc;
-    private String extractionScanBatchSizeDesc;
+    private String metadataGraphMaxTriplesDesc;
 
     public Boolean getExtractionEnabled() {
         return extractionEnabled;
@@ -29,12 +29,12 @@ public class Policy {
         this.extractionScanIntervalMs = extractionScanIntervalMs;
     }
 
-    public Integer getExtractionScanBatchSize() {
-        return extractionScanBatchSize;
+    public Integer getMetadataGraphMaxTriples() {
+        return metadataGraphMaxTriples;
     }
 
-    public void setExtractionScanBatchSize(Integer extractionScanBatchSize) {
-        this.extractionScanBatchSize = extractionScanBatchSize;
+    public void setMetadataGraphMaxTriples(Integer metadataGraphMaxTriples) {
+        this.metadataGraphMaxTriples = metadataGraphMaxTriples;
     }
 
     public String getExtractionEnabledSource() {
@@ -53,12 +53,12 @@ public class Policy {
         this.extractionScanIntervalMsSource = extractionScanIntervalMsSource;
     }
 
-    public String getExtractionScanBatchSizeSource() {
-        return extractionScanBatchSizeSource;
+    public String getMetadataGraphMaxTriplesSource() {
+        return metadataGraphMaxTriplesSource;
     }
 
-    public void setExtractionScanBatchSizeSource(String extractionScanBatchSizeSource) {
-        this.extractionScanBatchSizeSource = extractionScanBatchSizeSource;
+    public void setMetadataGraphMaxTriplesSource(String metadataGraphMaxTriplesSource) {
+        this.metadataGraphMaxTriplesSource = metadataGraphMaxTriplesSource;
     }
 
     public String getExtractionEnabledDesc() {
@@ -77,11 +77,11 @@ public class Policy {
         this.extractionScanIntervalMsDesc = extractionScanIntervalMsDesc;
     }
 
-    public String getExtractionScanBatchSizeDesc() {
-        return extractionScanBatchSizeDesc;
+    public String getMetadataGraphMaxTriplesDesc() {
+        return metadataGraphMaxTriplesDesc;
     }
 
-    public void setExtractionScanBatchSizeDesc(String extractionScanBatchSizeDesc) {
-        this.extractionScanBatchSizeDesc = extractionScanBatchSizeDesc;
+    public void setMetadataGraphMaxTriplesDesc(String metadataGraphMaxTriplesDesc) {
+        this.metadataGraphMaxTriplesDesc = metadataGraphMaxTriplesDesc;
     }
 }

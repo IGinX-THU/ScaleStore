@@ -1,10 +1,7 @@
 package com.storage.engine.service;
 
 import com.storage.engine.dao.Neo4jDao;
-import com.storage.engine.model.DataItem;
-import com.storage.engine.model.MetadataExtractResult;
-import com.storage.engine.service.adapter.StorageAdapter;
-import com.storage.engine.service.adapter.StorageAdapterFactory;
+import com.storage.engine.model.Policy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -37,78 +34,34 @@ public class MetadataKnowledgeService {
     private Neo4jDao neo4jDao;
 
     @Autowired
-    private LlmService llmService;
+    private PolicyService policyService;
 
     @Autowired
-    private StorageAdapterFactory storageAdapterFactory;
-
-    public boolean indexExtractResult(DataItem item, MetadataExtractResult result) {
-        if (item == null || !neo4jDao.isEnabled()) {
-            return false;
-        }
-        try {
-            MetadataExtractResult safeResult = result == null ? new MetadataExtractResult() : result;
-            logExtractResult(item, safeResult);
-            neo4jDao.upsertKnowledgeGraph(item, safeResult);
-            return true;
-        } catch (Exception e) {
-            logger.error("元数据入图失败, logicalPath={}, dataType={}, error={}",
-                    safe(item.getLogicalPath()), safe(item.getDataType()), e.getMessage(), e);
-            return false;
-        }
-    }
-
-    public boolean indexStoredData(byte[] fileBytes, DataItem item) {
-        if (item == null || !neo4jDao.isEnabled()) {
-            return false;
-        }
-        try {
-            String dataType = safe(item.getDataType());
-            String fileFormat = safe(item.getFileFormat());
-
-            StorageAdapter adapter = storageAdapterFactory.getAdapter(dataType);
-            MetadataExtractResult result = adapter.extractMetadata(fileBytes, fileFormat);
-            return indexExtractResult(item, result);
-        } catch (Exception e) {
-            logger.error("元数据抽取失败, logicalPath={}, dataType={}, error={}",
-                    safe(item.getLogicalPath()), safe(item.getDataType()), e.getMessage(), e);
-            return false;
-        }
-    }
-
-    private void logExtractResult(DataItem item, MetadataExtractResult result) {
-        if (result == null) {
-            logger.info("元数据抽取完成: logicalPath={}, dataType={}, result=empty",
-                    safe(item.getLogicalPath()), safe(item.getDataType()));
-            return;
-        }
-
-        logger.info("元数据抽取完成: logicalPath={}, dataType={}, fields={}, entities={}, triples={}",
-                safe(item.getLogicalPath()),
-                safe(item.getDataType()),
-                result.getFields(),
-                result.getEntities(),
-                result.getTriples());
-
-        if (result.isLlmUsed()) {
-            logger.info("LLM原始回答: logicalPath={}, raw={}",
-                    safe(item.getLogicalPath()),
-                    safe(result.getLlmResponse()));
-        }
-        if (result.getLlmError() != null && !result.getLlmError().trim().isEmpty()) {
-            logger.warn("LLM抽取告警: logicalPath={}, error={}",
-                    safe(item.getLogicalPath()),
-                    result.getLlmError());
-        }
-    }
+    private LlmService llmService;
 
     public Map<String, Object> getGraph(String logicalPath, int limit) {
         if (!neo4jDao.isEnabled()) {
             return neo4jDao.emptyGraph("Neo4j disabled");
         }
-        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, limit);
+        int effectiveLimit = resolveGraphLimit(limit);
+        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, effectiveLimit);
         graph.put("cypher", "MATCH (n)-[r]->(m) ...");
         return graph;
+    }
+
+    private int resolveGraphLimit(int requestedLimit) {
+        int policyLimit = 200;
+        try {
+            Policy policy = policyService.getPolicy();
+            if (policy != null && policy.getMetadataGraphMaxTriples() != null) {
+                policyLimit = policy.getMetadataGraphMaxTriples();
+            }
+        } catch (Exception e) {
+            logger.warn("Failed to load metadata graph policy limit, fallback to default 200: {}", e.getMessage());
+        }
+
+        int normalizedRequestedLimit = requestedLimit > 0 ? requestedLimit : policyLimit;
+        return Math.max(20, Math.min(normalizedRequestedLimit, policyLimit));
     }
 
     public Map<String, Object> queryBySystemFilters(String logicalPath,

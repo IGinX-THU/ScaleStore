@@ -49,13 +49,4 @@ public interface StorageAdapter {
      * @return byte array suitable for HTTP download
      */
     byte[] getDownloadBytes(String iginxPath) throws Exception;
-
-    /**
-     * Extract metadata semantics from raw file bytes.
-     *
-     * @param fileBytes  raw file bytes
-     * @param fileFormat extension format (csv/json/xml/...)
-     * @return extracted metadata result for graph persistence
-     */
-    MetadataExtractResult extractMetadata(byte[] fileBytes, String fileFormat) throws Exception;
 }

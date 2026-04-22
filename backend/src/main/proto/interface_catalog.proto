@@ -1,0 +1,179 @@
+syntax = "proto3";
+
+option java_multiple_files = true;
+option java_package = "com.storage.engine.grpc";
+option java_outer_classname = "InterfaceCatalogProto";
+
+package scalestore.grpc;
+
+message InterfaceListRequest {
+  bool include_invalid = 1;
+}
+
+message InterfaceGetRequest {
+  int32 id = 1;
+}
+
+message InterfaceItem {
+  int32 id = 1;
+  string name = 2;
+  string url = 3;
+  string method = 4;
+  string description = 5;
+  string params_example = 6;
+  string response_example = 7;
+  string invoke_example = 8;
+}
+
+message InterfaceListResponse {
+  int32 code = 1;
+  string message = 2;
+  repeated InterfaceItem data = 3;
+}
+
+message InterfaceResponse {
+  int32 code = 1;
+  string message = 2;
+  InterfaceItem data = 3;
+}
+
+service InterfaceCatalogService {
+  rpc ListJavaGrpcInterfaces(InterfaceListRequest) returns (InterfaceListResponse);
+  rpc GetJavaGrpcInterface(InterfaceGetRequest) returns (InterfaceResponse);
+  rpc ListPythonGrpcInterfaces(InterfaceListRequest) returns (InterfaceListResponse);
+  rpc GetPythonGrpcInterface(InterfaceGetRequest) returns (InterfaceResponse);
+}
+
+message EmptyRequest {}
+
+message IdRequest {
+  int32 id = 1;
+}
+
+message LogicalPathRequest {
+  string logical_path = 1;
+}
+
+message JsonResponse {
+  int32 code = 1;
+  string message = 2;
+  string json_data = 3;
+}
+
+message NodeCreateRequest {
+  int32 id = 1;
+  string name = 2;
+  string ip = 3;
+  string port = 4;
+  string description = 5;
+  string ssh_username = 6;
+  string ssh_password = 7;
+  string deploy_directory = 8;
+  string package_path = 9;
+  string zookeeper_connection_string = 10;
+  string python_cmd = 11;
+}
+
+message NodeUpdateRequest {
+  int32 id = 1;
+  string name = 2;
+  string description = 3;
+}
+
+message NodeStopRequest {
+  int32 id = 1;
+  string ssh_username = 2;
+  string ssh_password = 3;
+  string deploy_directory = 4;
+}
+
+message CreateUserRequest {
+  string username = 1;
+  string password = 2;
+  int32 type = 3;
+  string email = 4;
+  string phone = 5;
+}
+
+message UpdateUserRequest {
+  int32 id = 1;
+  optional string username = 2;
+  optional string password = 3;
+  optional int32 type = 4;
+  optional string email = 5;
+  optional string phone = 6;
+}
+
+message UserLoginRequest {
+  string username = 1;
+  string password = 2;
+}
+
+message PolicyUpdateRequest {
+  optional bool extraction_enabled = 1;
+  optional int64 extraction_scan_interval_ms = 2;
+  optional int32 metadata_graph_max_triples = 3;
+}
+
+message MetadataGraphRequest {
+  string logical_path = 1;
+  int32 limit = 2;
+}
+
+message MetadataQueryRequest {
+  string mode = 1;
+  string q = 2;
+  string logical_path = 3;
+  string data_type = 4;
+  string keyword = 5;
+}
+
+message StorageUploadRequest {
+  string file_name = 1;
+  bytes file_content = 2;
+  string logical_path = 3;
+  string data_type = 4;
+}
+
+message DownloadDataResponse {
+  int32 code = 1;
+  string message = 2;
+  string file_name = 3;
+  string data_type = 4;
+  string file_format = 5;
+  int64 file_size = 6;
+  bytes file_content = 7;
+}
+
+service ScaleStoreGrpcService {
+  rpc ListNodes(EmptyRequest) returns (JsonResponse);
+  rpc CreateNode(NodeCreateRequest) returns (JsonResponse);
+  rpc GetNode(IdRequest) returns (JsonResponse);
+  rpc UpdateNode(NodeUpdateRequest) returns (JsonResponse);
+  rpc RemoveNode(NodeStopRequest) returns (JsonResponse);
+
+  rpc ListUsers(EmptyRequest) returns (JsonResponse);
+  rpc CreateUser(CreateUserRequest) returns (JsonResponse);
+  rpc GetUser(IdRequest) returns (JsonResponse);
+  rpc UpdateUser(UpdateUserRequest) returns (JsonResponse);
+  rpc DeleteUser(IdRequest) returns (JsonResponse);
+  rpc Login(UserLoginRequest) returns (JsonResponse);
+
+  rpc GetPolicies(EmptyRequest) returns (JsonResponse);
+  rpc UpdatePolicies(PolicyUpdateRequest) returns (JsonResponse);
+
+  rpc GetMetadataGraph(MetadataGraphRequest) returns (JsonResponse);
+  rpc QueryMetadata(MetadataQueryRequest) returns (JsonResponse);
+
+  rpc UploadData(StorageUploadRequest) returns (JsonResponse);
+  rpc AccessData(LogicalPathRequest) returns (JsonResponse);
+  rpc DownloadData(LogicalPathRequest) returns (DownloadDataResponse);
+
+  rpc ListRestfulInterfaces(EmptyRequest) returns (JsonResponse);
+  rpc GetRestfulInterface(IdRequest) returns (JsonResponse);
+
+  rpc ListJavaGrpcInterfacesCatalog(EmptyRequest) returns (JsonResponse);
+  rpc GetJavaGrpcInterfaceCatalog(IdRequest) returns (JsonResponse);
+  rpc ListPythonGrpcInterfacesCatalog(EmptyRequest) returns (JsonResponse);
+  rpc GetPythonGrpcInterfaceCatalog(IdRequest) returns (JsonResponse);
+}

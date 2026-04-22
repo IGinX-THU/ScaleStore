@@ -25,9 +25,11 @@ public class AccessController {
      * GET /access/data?logicalPath=/project/sensor/data
      */
     @GetMapping("/access/data")
-    public ResponseEntity<Response<DataItem>> accessData(@RequestParam("logicalPath") String logicalPath) {
+    public ResponseEntity<Response<DataItem>> accessData(
+            @RequestParam("logicalPath") String logicalPath,
+            @RequestParam(value = "fileName", required = false) String fileName) {
         try {
-            DataItem item = accessService.accessData(logicalPath);
+            DataItem item = accessService.accessData(logicalPath, fileName);
             if (item != null) {
                 return ResponseEntity.ok(Response.success(item));
             } else {
@@ -46,28 +48,30 @@ public class AccessController {
      * GET /access/download?logicalPath=/project/sensor/data
      */
     @GetMapping("/access/download")
-    public ResponseEntity<byte[]> downloadData(@RequestParam("logicalPath") String logicalPath) {
+    public ResponseEntity<byte[]> downloadData(
+            @RequestParam("logicalPath") String logicalPath,
+            @RequestParam(value = "fileName", required = false) String fileName) {
         try {
-            DataItem meta = accessService.getMetaByPath(logicalPath);
+            DataItem meta = accessService.getMetaByAccessPath(logicalPath, fileName);
             if (meta == null) {
                 return ResponseEntity.notFound().build();
             }
 
-            byte[] data = accessService.downloadData(logicalPath);
+            byte[] data = accessService.downloadData(logicalPath, fileName);
             if (data == null || data.length == 0) {
                 return ResponseEntity.noContent().build();
             }
 
-            String fileName = meta.getFileName();
-            if (fileName == null || fileName.isEmpty()) {
-                fileName = "download." + (meta.getFileFormat() != null ? meta.getFileFormat() : "dat");
+            String downloadName = meta.getFileName();
+            if (downloadName == null || downloadName.isEmpty()) {
+                downloadName = "download." + (meta.getFileFormat() != null ? meta.getFileFormat() : "dat");
             }
 
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(getMediaType(meta.getFileFormat(), meta.getDataType()));
             headers.setContentLength(data.length);
             headers.set(HttpHeaders.CONTENT_DISPOSITION,
-                    "attachment; filename=\"" + URLEncoder.encode(fileName, StandardCharsets.UTF_8.name()) + "\"");
+                    "attachment; filename=\"" + URLEncoder.encode(downloadName, StandardCharsets.UTF_8.name()) + "\"");
             // Allow CORS to expose these headers
             headers.set(HttpHeaders.ACCESS_CONTROL_EXPOSE_HEADERS,
                     "Content-Disposition, Content-Length, Content-Type");

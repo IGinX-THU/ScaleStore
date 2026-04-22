@@ -51,7 +51,8 @@ public class Neo4jDao {
 			Session session = getDriver().session();
 			try {
 				session.run("CREATE CONSTRAINT logical_path_unique IF NOT EXISTS FOR (p:LogicalPath) REQUIRE p.path IS UNIQUE");
-				session.run("CREATE CONSTRAINT data_asset_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.logicalPath IS UNIQUE");
+				session.run("DROP CONSTRAINT data_asset_unique IF EXISTS");
+				session.run("CREATE CONSTRAINT data_asset_ukey_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.ukey IS UNIQUE");
 				session.run("CREATE CONSTRAINT field_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.ukey IS UNIQUE");
 				session.run("CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE");
 				constraintsReady = true;
@@ -467,29 +468,67 @@ public class Neo4jDao {
 
 	private String getNodeName(Node node) {
 		if (node.hasLabel("LogicalPath")) {
-			org.neo4j.driver.Value pathValue = node.get("path");
-			if (pathValue != null && !pathValue.isNull()) {
-				String path = String.valueOf(pathValue.asObject());
-				if ("/".equals(path)) {
-					return "/";
-				}
-				if (!path.trim().isEmpty()) {
-					return path;
-				}
+			String name = valueAsNonEmptyString(node, "name");
+			if (!name.isEmpty()) {
+				return name;
+			}
+
+			String path = valueAsNonEmptyString(node, "path");
+			if ("/".equals(path)) {
+				return "/";
+			}
+			if (!path.isEmpty()) {
+				return leafFromPath(path);
 			}
 		}
 
-		String[] keys = new String[]{"name", "path", "logicalPath", "fileName", "norm"};
+		if (node.hasLabel("DataAsset")) {
+			String name = valueAsNonEmptyString(node, "name");
+			if (!name.isEmpty()) {
+				return name;
+			}
+			String fileName = valueAsNonEmptyString(node, "fileName");
+			if (!fileName.isEmpty()) {
+				return fileName;
+			}
+			String logicalPath = valueAsNonEmptyString(node, "logicalPath");
+			if (!logicalPath.isEmpty()) {
+				return logicalPath;
+			}
+		}
+
+		String[] keys = new String[]{"name", "fileName", "path", "logicalPath", "norm"};
 		for (String key : keys) {
-			org.neo4j.driver.Value value = node.get(key);
-			if (value != null && !value.isNull()) {
-				String v = String.valueOf(value.asObject());
-				if (!v.trim().isEmpty()) {
-					return v;
-				}
+			String v = valueAsNonEmptyString(node, key);
+			if (!v.isEmpty()) {
+				return v;
 			}
 		}
 		return "(unknown)";
+	}
+
+	private String valueAsNonEmptyString(Node node, String key) {
+		org.neo4j.driver.Value value = node.get(key);
+		if (value == null || value.isNull()) {
+			return "";
+		}
+		String text = String.valueOf(value.asObject()).trim();
+		return text;
+	}
+
+	private String leafFromPath(String path) {
+		String p = path == null ? "" : path.trim();
+		if (p.isEmpty() || "/".equals(p)) {
+			return "/";
+		}
+		while (p.length() > 1 && p.endsWith("/")) {
+			p = p.substring(0, p.length() - 1);
+		}
+		int idx = p.lastIndexOf('/');
+		if (idx >= 0 && idx < p.length() - 1) {
+			return p.substring(idx + 1);
+		}
+		return p;
 	}
 
 	private int calcSizeByLabel(String label) {
@@ -521,9 +560,7 @@ public class Neo4jDao {
 		}
 		String[] parts = logicalPath.substring(1).split("/");
 		String current = "";
-		int dirCount = Math.max(0, parts.length - 1);
-		for (int i = 0; i < dirCount; i++) {
-			String part = parts[i];
+		for (String part : parts) {
 			if (part == null || part.trim().isEmpty()) {
 				continue;
 			}
@@ -534,14 +571,10 @@ public class Neo4jDao {
 	}
 
 	private String parentPathOfData(String logicalPath) {
-		if (logicalPath == null || logicalPath.trim().isEmpty() || "/".equals(logicalPath)) {
+		if (logicalPath == null || logicalPath.trim().isEmpty()) {
 			return "/";
 		}
-		int idx = logicalPath.lastIndexOf('/');
-		if (idx <= 0) {
-			return "/";
-		}
-		return logicalPath.substring(0, idx);
+		return normalizePath(logicalPath);
 	}
 
 	private String getLeafName(String path) {
