@@ -33,6 +33,10 @@ let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
 
+const DEFAULT_GRAPH_MAX_TRIPLES = 200;
+const MIN_GRAPH_MAX_TRIPLES = 20;
+const MAX_GRAPH_MAX_TRIPLES = 500;
+
 const AGENT_MAX_MESSAGES = 80;
 
 const PAGE_SIZE = 5;
@@ -202,7 +206,45 @@ function mapPolicyFromBackend(policy) {
       desc: policy.extractionScanIntervalMsDesc || '扫描间隔（毫秒）',
       inputType: 'number',
     },
+    {
+      id: 'metadata-graph-max-triples',
+      key: 'metadataGraphMaxTriples',
+      name: 'metadata.graph-max-triples',
+      value: String(policy.metadataGraphMaxTriples ?? DEFAULT_GRAPH_MAX_TRIPLES),
+      desc: policy.metadataGraphMaxTriplesDesc || '知识图谱展示的最大三元组数量（20-500）',
+      inputType: 'number',
+      min: MIN_GRAPH_MAX_TRIPLES,
+      max: MAX_GRAPH_MAX_TRIPLES,
+      step: 1,
+    },
   ];
+}
+
+function parsePolicyInteger(value, fallback, min, max) {
+  const parsed = Number(String(value ?? '').trim());
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  const normalized = Math.trunc(parsed);
+  return Math.min(max, Math.max(min, normalized));
+}
+
+function getPolicyValue(key, fallback) {
+  const row = policyData.find(item => String(item.key) === String(key));
+  if (!row) {
+    return fallback;
+  }
+  return row.value;
+}
+
+function getGraphMaxTriplesLimit() {
+  return parsePolicyInteger(
+    getPolicyValue('metadataGraphMaxTriples', DEFAULT_GRAPH_MAX_TRIPLES),
+    DEFAULT_GRAPH_MAX_TRIPLES,
+    MIN_GRAPH_MAX_TRIPLES,
+    MAX_GRAPH_MAX_TRIPLES
+  );
 }
 
 function buildPolicyPayloadFromRows(rows) {
@@ -213,7 +255,8 @@ function buildPolicyPayloadFromRows(rows) {
 
   return {
     extractionEnabled: String(rowByKey.extractionEnabled?.value || 'false').toLowerCase() === 'true',
-    extractionScanIntervalMs: Number(rowByKey.extractionScanIntervalMs?.value || 60000),
+    extractionScanIntervalMs: parsePolicyInteger(rowByKey.extractionScanIntervalMs?.value, 60000, 1000, Number.MAX_SAFE_INTEGER),
+    metadataGraphMaxTriples: parsePolicyInteger(rowByKey.metadataGraphMaxTriples?.value, DEFAULT_GRAPH_MAX_TRIPLES, MIN_GRAPH_MAX_TRIPLES, MAX_GRAPH_MAX_TRIPLES),
   };
 }
 
@@ -1316,7 +1359,7 @@ function renderPolicyTable() {
         ${p.options.map(o => `<option value="${o}" ${o === p.value ? 'selected' : ''}>${o}</option>`).join('')}
       </select>`;
     } else {
-      inputHtml = `<input type="number" class="input policy-edit-field" data-id="${p.id}" value="${p.value}" style="width:100px;padding:3px 6px;font-size:12px;">`;
+      inputHtml = `<input type="number" class="input policy-edit-field" data-id="${p.id}" value="${p.value}"${p.min != null ? ` min="${p.min}"` : ''}${p.max != null ? ` max="${p.max}"` : ''}${p.step != null ? ` step="${p.step}"` : ''} style="width:100px;padding:3px 6px;font-size:12px;">`;
     }
     return `<tr>
       <td>${p.name}</td>
@@ -1389,7 +1432,7 @@ async function initMetadataGraph(logicalPath = '') {
 async function fetchMetadataGraph(logicalPath = '') {
   const params = new URLSearchParams();
   if (logicalPath) params.set('logicalPath', logicalPath);
-  params.set('limit', '300');
+  params.set('limit', String(getGraphMaxTriplesLimit()));
   const url = `${API_BASE}/metadata/graph?${params.toString()}`;
 
   const response = await fetch(url);
