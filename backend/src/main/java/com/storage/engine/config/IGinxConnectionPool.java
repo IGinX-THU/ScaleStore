@@ -181,6 +181,32 @@ public class IGinxConnectionPool {
         return sessions.size();
     }
 
+    /**
+     * Return a stable snapshot of sessions where endpoint-equivalent matches are ordered first.
+     */
+    public synchronized List<Session> getSessionsPrioritized(String preferredIp, String preferredPort) {
+        List<Session> preferred = new ArrayList<Session>();
+        List<Session> others = new ArrayList<Session>();
+
+        boolean hasPreferred = preferredIp != null
+                && !preferredIp.trim().isEmpty()
+                && preferredPort != null
+                && !preferredPort.trim().isEmpty();
+
+        for (NodeSession ns : sessions) {
+            if (hasPreferred && isSameEndpoint(ns.ip, ns.port, preferredIp, preferredPort)) {
+                preferred.add(ns.session);
+            } else {
+                others.add(ns.session);
+            }
+        }
+
+        List<Session> ordered = new ArrayList<Session>(preferred.size() + others.size());
+        ordered.addAll(preferred);
+        ordered.addAll(others);
+        return ordered;
+    }
+
     public boolean isBootstrapNode(String ip, String port) {
         if (ip == null || port == null) {
             return false;

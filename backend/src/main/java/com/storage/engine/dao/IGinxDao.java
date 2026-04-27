@@ -523,6 +523,42 @@ public class IGinxDao {
       });
   }
 
+  /**
+   * Execute SQL by preferring a target IGinX endpoint first, then fallback to other nodes.
+   * This is used for endpoint-sensitive operations (for example filesystem external source registration).
+   */
+  public SessionExecuteSqlResult executeSqlPreferEndpoint(String sql, String preferredIp, Integer preferredPort) {
+      logger.info("[IGinX-SQL][PreferEndpoint {}:{}] {}",
+              preferredIp,
+              preferredPort,
+              sql);
+
+      String preferredPortText = preferredPort == null ? null : String.valueOf(preferredPort.intValue());
+      List<Session> orderedSessions = connectionPool.getSessionsPrioritized(preferredIp, preferredPortText);
+      if (orderedSessions.isEmpty()) {
+          throw new RuntimeException("Failed to executeSql: no available IGinX session");
+      }
+
+      RuntimeException last = null;
+      for (Session session : orderedSessions) {
+          synchronized (session) {
+              try {
+                  return session.executeSql(sql);
+              } catch (SessionException e) {
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(session, "executeSqlPreferEndpoint failed: " + e.getMessage());
+                  }
+                  last = new RuntimeException("Failed to executeSql on one IGinX endpoint: " + e.getMessage(), e);
+              }
+          }
+      }
+
+      if (last != null) {
+          throw last;
+      }
+      throw new RuntimeException("Failed to executeSql: no available IGinX session");
+  }
+
   private boolean shouldEvictSession(SessionException e) {
       String details = flattenExceptionMessage(e).toLowerCase(Locale.ROOT);
       if (details.isEmpty()) {

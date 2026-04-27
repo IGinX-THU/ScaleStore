@@ -48,7 +48,7 @@ public class StorageService {
 
         logger.info("[ExternalSource] ADD STORAGEENGINE SQL: {}", sql);
 
-        iginxDao.executeSql(sql);
+        executeAddStorageEngineSql(context, sql);
 
         ExternalMetaSyncResult syncResult = syncExternalMetadata(context);
         logger.info(
@@ -647,6 +647,14 @@ public class StorageService {
                 escapeOption(context.username),
                 escapeOption(context.password),
                 schemaPrefix);
+    }
+
+    private void executeAddStorageEngineSql(AddSourceContext context, String sql) {
+        if (context != null && "filesystem".equals(context.sourceType)) {
+            iginxDao.executeSqlPreferEndpoint(sql, context.ip, Integer.valueOf(context.iginxPort));
+            return;
+        }
+        iginxDao.executeSql(sql);
     }
 
     private String escapeOption(String value) {
