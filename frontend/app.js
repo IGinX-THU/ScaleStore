@@ -32,6 +32,12 @@ let metadataQueryMode = 'system';
 let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
+let metadataGraphSignature = '';
+let metadataGraphNodeIds = new Set();
+let metadataCurrentLogicalPath = '';
+let metadataActiveSearchKeyword = '';
+let metadataAutoRefreshInFlight = false;
+let metadataAutoRefreshPending = false;
 
 const DEFAULT_GRAPH_MAX_TRIPLES = 200;
 const MIN_GRAPH_MAX_TRIPLES = 20;
@@ -651,6 +657,7 @@ async function pollAgentEvents() {
   const payload = result.data;
   const events = Array.isArray(payload.events) ? payload.events.slice() : [];
   events.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+  const refreshHints = [];
 
   for (const evt of events) {
     const rawLevel = String(evt.level || '').toLowerCase();
@@ -662,11 +669,21 @@ async function pollAgentEvents() {
       agentName: evt.agentName || '',
       timestamp: evt.timestamp,
     });
+
+    if (isMetadataExtractionDoneEvent(evt)) {
+      refreshHints.push({
+        logicalPath: extractPathFromAgentEventText(evt.text || ''),
+      });
+    }
   }
 
   const latestSeq = Number(payload.latestSeq || 0);
   if (Number.isFinite(latestSeq) && latestSeq > agentEventCursor) {
     agentEventCursor = latestSeq;
+  }
+
+  if (refreshHints.length > 0) {
+    queueMetadataAutoRefresh(refreshHints);
   }
 }
 
@@ -1424,9 +1441,182 @@ function exitPolicyEdit() {
 }
 
 // ==================== 元数据服务 ====================
+function getGraphNodeIds(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  return nodes.map(n => String(n?.id ?? ''))
+    .filter(Boolean)
+    .sort();
+}
+
+function buildGraphSignature(graphData) {
+  const nodePart = getGraphNodeIds(graphData).join(',');
+  const links = Array.isArray(graphData?.links) ? graphData.links : [];
+  const linkPart = links
+    .map(l => `${String(l?.source ?? '')}->${String(l?.target ?? '')}:${String(l?.type ?? '')}:${String(l?.label ?? '')}`)
+    .sort()
+    .join(',');
+  return `${nodePart}||${linkPart}`;
+}
+
+function calculateGraphDelta(nextGraph) {
+  const nextSignature = buildGraphSignature(nextGraph);
+  const nextNodeIds = new Set(getGraphNodeIds(nextGraph));
+  const addedNodeIds = [];
+  nextNodeIds.forEach(id => {
+    if (!metadataGraphNodeIds.has(id)) {
+      addedNodeIds.push(id);
+    }
+  });
+  return {
+    changed: nextSignature !== metadataGraphSignature,
+    addedNodeIds,
+    nextNodeIds,
+    nextSignature,
+  };
+}
+
+function pickFocusKeywordFromAdded(graphData, addedNodeIds, fallbackKeyword = '') {
+  if (!Array.isArray(addedNodeIds) || addedNodeIds.length === 0) {
+    return (fallbackKeyword || '').trim();
+  }
+
+  const rank = {
+    DataAsset: 1,
+    LogicalPath: 2,
+    Entity: 3,
+    Field: 4
+  };
+
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const candidates = nodes
+    .filter(n => addedNodeIds.includes(String(n?.id ?? '')))
+    .map(n => ({
+      name: String(n?.name || '').trim(),
+      categoryName: String(n?.categoryName || ''),
+      rank: rank[String(n?.categoryName || '')] || 9,
+    }))
+    .filter(n => n.name && n.name !== '(unknown)')
+    .sort((a, b) => a.rank - b.rank);
+
+  if (candidates.length > 0) {
+    return candidates[0].name;
+  }
+  return (fallbackKeyword || '').trim();
+}
+
+function updateMetadataGraphTracking(graphData, logicalPath, searchKeyword) {
+  metadataGraphSignature = buildGraphSignature(graphData);
+  metadataGraphNodeIds = new Set(getGraphNodeIds(graphData));
+  if (logicalPath !== undefined) {
+    metadataCurrentLogicalPath = String(logicalPath || '').trim();
+  }
+  if (searchKeyword !== undefined) {
+    metadataActiveSearchKeyword = String(searchKeyword || '').trim();
+  }
+}
+
+function renderAndTrackMetadataGraph(graphData, options = {}) {
+  const {
+    focusKeyword = '',
+    focusMode = 'search',
+    logicalPath = metadataCurrentLogicalPath,
+    searchKeyword = metadataActiveSearchKeyword,
+  } = options;
+  renderMetadataGraph(graphData, focusKeyword, focusMode);
+  updateMetadataGraphTracking(graphData, logicalPath, searchKeyword);
+}
+
+function extractPathFromAgentEventText(text) {
+  const source = String(text || '');
+  const match = source.match(/path\s*=\s*([^,\s]+)/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+function isMetadataExtractionDoneEvent(evt) {
+  const status = String(evt?.status || '').toUpperCase();
+  const level = String(evt?.level || '').toLowerCase();
+  const text = String(evt?.text || '');
+  return status === 'DONE'
+    || level === 'success'
+    || /Transform extraction completed/i.test(text);
+}
+
+function queueMetadataAutoRefresh(hints = []) {
+  if (metadataAutoRefreshInFlight) {
+    // Collapse multiple incoming events into one catch-up refresh.
+    metadataAutoRefreshPending = true;
+    return;
+  }
+  metadataAutoRefreshPending = false;
+  performMetadataAutoRefresh(hints).catch(e => {
+    console.error('Metadata auto refresh failed:', e);
+  });
+}
+
+async function performMetadataAutoRefresh(hints = []) {
+  metadataAutoRefreshInFlight = true;
+  try {
+    if (metadataFullscreen || !metadataChart) {
+      return;
+    }
+
+    const activeSearchKeyword = String(metadataActiveSearchKeyword || '').trim();
+    if (activeSearchKeyword) {
+      const nextGraph = await queryMetadataBySystem({ keyword: activeSearchKeyword });
+      const delta = calculateGraphDelta(nextGraph);
+      if (!delta.changed) {
+        return;
+      }
+      const hasAdded = Array.isArray(delta.addedNodeIds) && delta.addedNodeIds.length > 0;
+      const focusKeyword = pickFocusKeywordFromAdded(nextGraph, delta.addedNodeIds, activeSearchKeyword);
+      renderAndTrackMetadataGraph(nextGraph, {
+        focusKeyword,
+        focusMode: hasAdded ? 'new' : 'search',
+        logicalPath: metadataCurrentLogicalPath,
+        searchKeyword: activeSearchKeyword,
+      });
+      return;
+    }
+
+    const nextGraph = await fetchMetadataGraph(metadataCurrentLogicalPath);
+    const delta = calculateGraphDelta(nextGraph);
+    if (!delta.changed) {
+      return;
+    }
+
+    const hintedPath = Array.isArray(hints)
+      ? (hints.find(h => String(h?.logicalPath || '').trim())?.logicalPath || '')
+      : '';
+    let fallbackKeyword = '';
+    if (hintedPath) {
+      const segments = String(hintedPath).split('/').filter(Boolean);
+      fallbackKeyword = segments.length > 0 ? segments[segments.length - 1] : '/';
+    }
+
+    const focusKeyword = pickFocusKeywordFromAdded(nextGraph, delta.addedNodeIds, fallbackKeyword);
+    renderAndTrackMetadataGraph(nextGraph, {
+      focusKeyword,
+      focusMode: 'new',
+      logicalPath: metadataCurrentLogicalPath,
+      searchKeyword: '',
+    });
+  } finally {
+    metadataAutoRefreshInFlight = false;
+    if (metadataAutoRefreshPending) {
+      metadataAutoRefreshPending = false;
+      performMetadataAutoRefresh([]).catch(e => {
+        console.error('Metadata catch-up refresh failed:', e);
+      });
+    }
+  }
+}
+
 async function initMetadataGraph(logicalPath = '') {
   const graphData = await fetchMetadataGraph(logicalPath);
-  renderMetadataGraph(graphData);
+  renderAndTrackMetadataGraph(graphData, {
+    logicalPath,
+    searchKeyword: '',
+  });
 }
 
 async function fetchMetadataGraph(logicalPath = '') {
@@ -1472,7 +1662,7 @@ async function queryMetadataByLLM(question) {
   return result.data;
 }
 
-function renderMetadataGraph(graphData, focusKeyword = '') {
+function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search') {
   const container = $('metadata-graph');
   if (!container) return;
   if (!metadataChart) {
@@ -1547,12 +1737,22 @@ function renderMetadataGraph(graphData, focusKeyword = '') {
     const matched = !!focus && displayName.toLowerCase().includes(focus);
     const symbolSize = isRootPath ? Math.max(56, Number(n.symbolSize || 42)) : Number(n.symbolSize || 26);
 
+    const matchStyle = focusMode === 'new'
+      ? {
+          color: baseColor,
+          shadowBlur: isRootPath ? 20 : 16,
+          shadowColor: baseColor + 'cc',
+          borderColor: 'rgba(255, 255, 255, 0.95)',
+          borderWidth: isRootPath ? 2.8 : 2.2,
+        }
+      : { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' };
+
     return {
       ...n,
       name: displayName,
       symbolSize,
       itemStyle: matched
-        ? { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' }
+        ? matchStyle
         : {
             color: baseColor,
             shadowBlur: isRootPath ? 16 : 8,
@@ -1587,7 +1787,14 @@ function renderMetadataGraph(graphData, focusKeyword = '') {
       ...l,
       relationText,
       lineStyle: matched
-        ? { color: '#ff4466', width: 3 }
+        ? (focusMode === 'new'
+          ? {
+              color: baseEdgeColor,
+              width: semanticEdge ? 3 : 2.6,
+              opacity: 1,
+              type: 'solid',
+            }
+          : { color: '#ff4466', width: 3 })
         : {
             color: baseEdgeColor,
             curveness: semanticEdge ? 0.2 : 0.1,
@@ -1713,7 +1920,7 @@ function extractRelationText(value) {
 }
 
 function searchMetadataNode(keyword) {
-  if (!metadataChart) { alert('请先构建网络'); return; }
+  if (!metadataChart) { alert('请先刷新图谱'); return; }
   const option = metadataChart.getOption();
   const series = option.series[0];
   const categoryPalette = {
@@ -1794,8 +2001,8 @@ $('metadata-build-btn').addEventListener('click', async () => {
   try {
     await initMetadataGraph(logicalPath);
   } catch (e) {
-    alert('构建图谱失败: ' + e.message);
-    console.error('Build metadata graph error:', e);
+    alert('刷新图谱失败: ' + e.message);
+    console.error('Refresh metadata graph error:', e);
   }
 });
 
@@ -1845,7 +2052,12 @@ $('metadata-search-btn').addEventListener('click', async () => {
       }
     }
 
-    renderMetadataGraph(graph, focusKeyword);
+    renderAndTrackMetadataGraph(graph, {
+      focusKeyword,
+      focusMode: 'search',
+      logicalPath: metadataCurrentLogicalPath,
+      searchKeyword: metadataFullscreen ? '' : quickKeyword,
+    });
     if (graph.cypher) {
       console.log('Metadata query cypher:', graph.cypher);
     }
@@ -2279,9 +2491,14 @@ function renderAccessItem(item) {
     document: '文档数据', keyvalue: '键值数据', directory: '目录'
   };
 
+  const rawSize = Number(item?.fileSize || 0);
+  const sizeText = dataType === 'directory'
+    ? '-'
+    : (rawSize > 0 ? formatFileSize(rawSize) : '-');
+
   setAccessInfo(
     typeLabels[dataType] || dataType || '-',
-    dataType === 'directory' ? '-' : formatFileSize(item?.fileSize),
+    sizeText,
     dataType === 'directory' ? '-' : (item?.createTime || '-')
   );
 

@@ -111,18 +111,29 @@ public class Neo4jDao {
 
 		String path = logicalPath == null ? "" : logicalPath.trim();
 		int safeLimit = Math.max(20, Math.min(limit, 500));
+		int assetWindow = Math.max(10, Math.min(200, safeLimit));
 
-		String cypher = "MATCH (n)-[r]->(m) "
-				+ "WHERE ($path = '' OR coalesce(n.path,n.logicalPath,'') STARTS WITH $path "
-				+ "OR coalesce(m.path,m.logicalPath,'') STARTS WITH $path) "
-				+ "RETURN n,r,m LIMIT $limit";
+		String cypher = "MATCH (d:DataAsset) "
+				+ "WHERE ($path='' OR coalesce(d.logicalPath,'') STARTS WITH $path) "
+				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC, id(d) DESC LIMIT $assetWindow "
+				+ "WITH collect(d) AS assets "
+				+ "UNWIND range(0, size(assets) - 1) AS assetRank "
+				+ "WITH assets[assetRank] AS d, assetRank "
+				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
+				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
+				+ "OPTIONAL MATCH (d)-[hf:HAS_FILED]->(f:Field) "
+				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
+				+ "OPTIONAL MATCH (e)-[sr:SEMANTIC_RELATION]->(t:Entity) "
+				+ "WITH pathChain,p,hd,d,hf,f,m,e,sr,t, assetRank, coalesce(sr.updatedAt,m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
+				+ "ORDER BY assetRank ASC, ord DESC "
+				+ "RETURN pathChain,p,hd,d,hf,f,m,e,sr,t LIMIT $limit";
 
 		Session session = getDriver().session();
 		try {
 			List<Record> records = session.readTransaction(new TransactionWork<List<Record>>() {
 				@Override
 				public List<Record> execute(Transaction tx) {
-					Result result = tx.run(cypher, Values.parameters("path", path, "limit", safeLimit));
+					Result result = tx.run(cypher, Values.parameters("path", path, "limit", safeLimit, "assetWindow", assetWindow));
 					return result.list();
 				}
 			});
@@ -164,19 +175,24 @@ public class Neo4jDao {
 	 * 关键词回退查询：按 name/path/logicalPath 模糊匹配节点。
 	 */
 	public Map<String, Object> queryByKeyword(String keyword) {
+		return queryByKeyword(keyword, 80);
+	}
+
+	public Map<String, Object> queryByKeyword(String keyword, int limit) {
 		if (!neo4jEnabled) {
 			return emptyGraph("Neo4j disabled");
 		}
+		int safeLimit = Math.max(20, Math.min(limit, 500));
 
 		String cypher = "MATCH (n) "
 				+ "WHERE toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(n.path,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(n.logicalPath,'')) CONTAINS toLower($kw) "
-				+ "RETURN n LIMIT 80";
+				+ "RETURN n LIMIT $limit";
 
 		Session session = getDriver().session();
 		try {
-			List<Record> records = session.run(cypher, Values.parameters("kw", keyword)).list();
+			List<Record> records = session.run(cypher, Values.parameters("kw", keyword, "limit", safeLimit)).list();
 			return buildGraph(records);
 		} finally {
 			session.close();
@@ -209,14 +225,15 @@ public class Neo4jDao {
 		for (int i = 0; i < pathChain.size(); i++) {
 			String path = pathChain.get(i);
 			tx.run("MERGE (p:LogicalPath {path:$path}) "
-							+ "ON CREATE SET p.name=$name, p.depth=$depth "
-							+ "ON MATCH SET p.name=$name, p.depth=$depth",
+							+ "ON CREATE SET p.name=$name, p.depth=$depth, p.updatedAt=timestamp() "
+							+ "ON MATCH SET p.name=$name, p.depth=$depth, p.updatedAt=timestamp()",
 					Values.parameters("path", path, "name", getLeafName(path), "depth", depth(path)));
 
 			if (i > 0) {
 				String parent = pathChain.get(i - 1);
 				tx.run("MATCH (a:LogicalPath {path:$parent}), (b:LogicalPath {path:$child}) "
-								+ "MERGE (a)-[:CONTAINS]->(b)",
+								+ "MERGE (a)-[r:CONTAINS]->(b) "
+								+ "SET r.updatedAt=timestamp()",
 						Values.parameters("parent", parent, "child", path));
 			}
 		}
@@ -225,8 +242,8 @@ public class Neo4jDao {
 	private void mergeAsset(Transaction tx, String logicalPath, String dataType,
 							String fileName, String fileFormat, long fileSize, String createTime) {
 		tx.run("MERGE (d:DataAsset {logicalPath:$logicalPath}) "
-						+ "ON CREATE SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime "
-						+ "ON MATCH SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime",
+						+ "ON CREATE SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime, d.updatedAt=timestamp() "
+						+ "ON MATCH SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime, d.updatedAt=timestamp()",
 				Values.parameters(
 						"logicalPath", logicalPath,
 						"dataType", dataType,
@@ -238,7 +255,9 @@ public class Neo4jDao {
 
 	private void linkAssetToPath(Transaction tx, String logicalPath) {
 		String parentPath = parentPathOfData(logicalPath);
-		tx.run("MATCH (p:LogicalPath {path:$parentPath}), (d:DataAsset {logicalPath:$logicalPath}) MERGE (p)-[:HAS_DATA]->(d)",
+		tx.run("MATCH (p:LogicalPath {path:$parentPath}), (d:DataAsset {logicalPath:$logicalPath}) "
+						+ "MERGE (p)-[r:HAS_DATA]->(d) "
+						+ "SET r.updatedAt=timestamp()",
 				Values.parameters("parentPath", parentPath, "logicalPath", logicalPath));
 	}
 
@@ -257,9 +276,10 @@ public class Neo4jDao {
 			String ukey = fieldKind + "::" + norm;
 			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
 							+ "MERGE (f:Field {ukey:$ukey}) "
-							+ "ON CREATE SET f.norm=$norm, f.kind=$kind, f.name=$name "
-							+ "ON MATCH SET f.norm=coalesce(f.norm,$norm), f.kind=coalesce(f.kind,$kind), f.name=coalesce(f.name,$name) "
-							+ "MERGE (d)-[:HAS_FILED]->(f)",
+							+ "ON CREATE SET f.norm=$norm, f.kind=$kind, f.name=$name, f.updatedAt=timestamp() "
+							+ "ON MATCH SET f.norm=coalesce(f.norm,$norm), f.kind=coalesce(f.kind,$kind), f.name=coalesce(f.name,$name), f.updatedAt=timestamp() "
+							+ "MERGE (d)-[r:HAS_FILED]->(f) "
+							+ "SET r.updatedAt=timestamp()",
 					Values.parameters("path", logicalPath, "ukey", ukey, "norm", norm, "kind", fieldKind, "name", name));
 		}
 	}
@@ -282,8 +302,11 @@ public class Neo4jDao {
 			}
 
 			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
-							+ "MERGE (e:Entity {norm:$norm}) ON CREATE SET e.name=$name "
-							+ "MERGE (d)-[:MENTIONS]->(e)",
+							+ "MERGE (e:Entity {norm:$norm}) "
+							+ "ON CREATE SET e.name=$name, e.updatedAt=timestamp() "
+							+ "ON MATCH SET e.updatedAt=timestamp() "
+							+ "MERGE (d)-[r:MENTIONS]->(e) "
+							+ "SET r.updatedAt=timestamp()",
 					Values.parameters("path", logicalPath, "norm", norm, "name", canonical));
 		}
 	}
@@ -314,10 +337,16 @@ public class Neo4jDao {
 			}
 
 			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
-							+ "MERGE (s:Entity {norm:$subjectNorm}) ON CREATE SET s.name=$subjectName "
-							+ "MERGE (o:Entity {norm:$objectNorm}) ON CREATE SET o.name=$objectName "
-							+ "MERGE (d)-[:MENTIONS]->(s) "
-							+ "MERGE (d)-[:MENTIONS]->(o) "
+							+ "MERGE (s:Entity {norm:$subjectNorm}) "
+							+ "ON CREATE SET s.name=$subjectName, s.updatedAt=timestamp() "
+							+ "ON MATCH SET s.updatedAt=timestamp() "
+							+ "MERGE (o:Entity {norm:$objectNorm}) "
+							+ "ON CREATE SET o.name=$objectName, o.updatedAt=timestamp() "
+							+ "ON MATCH SET o.updatedAt=timestamp() "
+							+ "MERGE (d)-[dm1:MENTIONS]->(s) "
+							+ "SET dm1.updatedAt=timestamp() "
+							+ "MERGE (d)-[dm2:MENTIONS]->(o) "
+							+ "SET dm2.updatedAt=timestamp() "
 							+ "MERGE (s)-[r:SEMANTIC_RELATION {relation:$relation, sourcePath:$path}]->(o) "
 							+ "SET r.updatedAt=timestamp()",
 					Values.parameters(
@@ -412,6 +441,9 @@ public class Neo4jDao {
 
 		Map<String, Object> props = new LinkedHashMap<String, Object>();
 		for (String key : node.keys()) {
+			if ("updatedAt".equals(key)) {
+				continue;
+			}
 			org.neo4j.driver.Value v = node.get(key);
 			props.put(key, v == null || v.isNull() ? null : v.asObject());
 		}
