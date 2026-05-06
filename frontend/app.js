@@ -25,6 +25,8 @@ let currentUser = null;
 let dashboardBootstrapped = false;
 let metadataChart = null;
 let topologyChart = null;
+let clusterViewMode = 'list';
+let dataSourceSummary = { totalDataSize: 0, dataSources: [] };
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
@@ -106,6 +108,19 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
       onPageChange();
     });
   });
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx++;
+  }
+  return `${size >= 100 || idx === 0 ? size.toFixed(0) : size.toFixed(2)} ${units[idx]}`;
 }
 
 async function requestJson(url, options = {}) {
@@ -462,21 +477,13 @@ function performLogout() {
 }
 
 function bindAuthEvents() {
-  $('login-submit-btn').addEventListener('click', () => {
-    performLogin();
-  });
-
-  $('login-username-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
+  const loginForm = $('login-form');
+  if (loginForm) {
+    loginForm.addEventListener('submit', e => {
+      e.preventDefault();
       performLogin();
-    }
-  });
-
-  $('login-password-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      performLogin();
-    }
-  });
+    });
+  }
 
   $('header-user-btn').addEventListener('click', e => {
     e.stopPropagation();
@@ -504,6 +511,50 @@ function bindAuthEvents() {
   $('profile-modal-close-x').addEventListener('click', closeProfileModal);
 }
 
+
+
+function setClusterViewMode(mode) {
+  clusterViewMode = mode === 'graph' ? 'graph' : 'list';
+  const listBtn = $('cluster-list-mode-btn');
+  const graphBtn = $('cluster-graph-mode-btn');
+  const listView = $('cluster-list-view');
+  const graphView = $('cluster-graph-view');
+  if (listBtn) listBtn.classList.toggle('active', clusterViewMode === 'list');
+  if (graphBtn) graphBtn.classList.toggle('active', clusterViewMode === 'graph');
+  if (listView) listView.classList.toggle('hidden', clusterViewMode !== 'list');
+  if (graphView) graphView.classList.toggle('hidden', clusterViewMode !== 'graph');
+  if (clusterViewMode === 'graph') {
+    requestAnimationFrame(() => initClusterTopology());
+  }
+}
+
+function renderDataSourceTable() {
+  const tbody = $('datasource-table-body');
+  if (!tbody) return;
+  const items = Array.isArray(dataSourceSummary.dataSources) ? dataSourceSummary.dataSources : [];
+  const countEl = $('datasource-count');
+  const totalEl = $('datasource-total-size');
+  if (countEl) countEl.textContent = String(items.length);
+  if (totalEl) totalEl.textContent = formatBytes(dataSourceSummary.totalDataSize || 0);
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center">暂无数据源</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(item => `
+    <tr>
+      <td>${escapeHtml(item.isDefault ? 'filesystem' : (item.type || '-'))}</td>
+      <td>${escapeHtml(item.isDefault ? '系统内置' : `${item.ip || '-'}:${item.port || '-'}`)}</td>
+      <td>${escapeHtml(formatBytes(item.dataSize || 0))}</td>
+      <td><span class="node-status ${(item.connected === false) ? 'status-offline' : 'status-online'}">${item.connected === false ? '离线' : '在线'}</span></td>
+    </tr>
+  `).join('');
+}
+
+async function loadDataSourceSummary() {
+  dataSourceSummary = await requestJson(`${API_BASE}/storage/datasources`);
+  renderDataSourceTable();
+}
+
 async function refreshDashboardData() {
   await Promise.all([
     loadClusterNodes(),
@@ -512,6 +563,7 @@ async function refreshDashboardData() {
     loadRestfulInterfaces(),
     loadJavaGrpcInterfaces(),
     loadPythonGrpcInterfaces(),
+    loadDataSourceSummary(),
   ]);
 
   renderClusterTable();
@@ -533,16 +585,26 @@ async function bootstrapDashboard() {
   bootstrapAccessRootVisit();
 
   if (dashboardBootstrapped) {
-    initClusterTopology();
+    if (clusterViewMode === 'graph') {
+      initClusterTopology();
+    }
     syncAgentPoolNodeState(true);
     return;
   }
 
   dashboardBootstrapped = true;
   initAgentPanel();
+  setClusterViewMode('list');
+
+  const clusterListModeBtn = $('cluster-list-mode-btn');
+  const clusterGraphModeBtn = $('cluster-graph-mode-btn');
+  if (clusterListModeBtn) clusterListModeBtn.addEventListener('click', () => setClusterViewMode('list'));
+  if (clusterGraphModeBtn) clusterGraphModeBtn.addEventListener('click', () => setClusterViewMode('graph'));
 
   requestAnimationFrame(() => {
-    initClusterTopology();
+    if (clusterViewMode === 'graph') {
+      initClusterTopology();
+    }
     initMetadataGraph().catch(e => {
       console.error('Init metadata graph failed:', e);
     });
@@ -1040,6 +1102,7 @@ async function refreshClusterView(silent) {
     syncAgentPoolNodeState();
     renderClusterTable();
     initClusterTopology();
+    await loadDataSourceSummary();
   } catch (e) {
     if (!silent) {
       throw e;
@@ -1189,6 +1252,7 @@ function renderStopTaskProgress(task) {
 
 // ==================== 拓扑图 ====================
 function initClusterTopology() {
+  if (clusterViewMode !== 'graph') return;
   const container = $('cluster-topology');
   if (!container) return;
   if (!topologyChart) {
@@ -3009,3 +3073,14 @@ document.querySelectorAll('.password-toggle').forEach(btn => {
 
 init();
 console.log('可扩展存储引擎可视化大屏初始化完成');
+
+
+$('cluster-list-mode-btn')?.addEventListener('click', () => setClusterViewMode('list'));
+$('cluster-graph-mode-btn')?.addEventListener('click', () => setClusterViewMode('graph'));
+setClusterViewMode('list');
+
+const clusterListModeBtn = $('cluster-list-mode-btn');
+const clusterGraphModeBtn = $('cluster-graph-mode-btn');
+if (clusterListModeBtn) clusterListModeBtn.addEventListener('click', () => setClusterViewMode('list'));
+if (clusterGraphModeBtn) clusterGraphModeBtn.addEventListener('click', () => setClusterViewMode('graph'));
+setClusterViewMode('list');

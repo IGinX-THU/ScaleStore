@@ -5,6 +5,8 @@ taskList:
       - |-
         insert into sys.user(key, username, password, type, email, phone, isValid) values (1, 'admin', '5e884898da28047151d0e56f8dc6292773603d0d6aabbdd62a11ef721d1542d8', 1, '', '', true);
       - |-
+        insert into sys.datasource(key, name, ip, port, type, schemaPrefix, dataPrefix, connected, isDefault, dataSize, sourceGroup, isValid) values (0, '默认数据源', 'system', 'default', 'filesystem', '', '', true, true, 0, 'default', true);
+      - |-
         insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (1, '查询集群所有节点', '/config/nodes', 'GET', '查询集群节点列表。', '无', 'code=200; data=[Node]', 'curl -X GET "http://localhost:8080/config/nodes"', true);
       - |-
         insert into interface.restful(key, name, url, method, description, paramsExample, responseExample, curlExample, isValid) values (2, '新增节点(异步)', '/config/nodes', 'POST', '创建节点部署任务并返回任务状态。', '{"name":"IGinX-2","ip":"10.0.0.2","port":"6888","sshUsername":"ubuntu","sshPassword":"***","deployDirectory":"~"}', 'code=200; data={taskId,status,currentStep,completed}', 'curl -X POST "http://localhost:8080/config/nodes" -H "Content-Type: application/json" -d "{\"name\":\"IGinX-2\",\"ip\":\"10.0.0.2\",\"port\":\"6888\",\"sshUsername\":\"ubuntu\",\"sshPassword\":\"***\"}"', true);

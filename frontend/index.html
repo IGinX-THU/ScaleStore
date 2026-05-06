@@ -42,6 +42,7 @@
   <div id="login-overlay" class="login-overlay">
     <div class="login-background-glow"></div>
     <div class="login-card">
+      <form id="login-form">
       <div class="login-card-title-wrap">
         <div class="login-title-deco"></div>
         <h2>ScaleStore 控制入口</h2>
@@ -62,7 +63,8 @@
         </div>
       </div>
       <p id="login-error" class="login-error hidden">登录失败</p>
-      <button id="login-submit-btn" class="btn btn-primary w-full">进入平台</button>
+      <button id="login-submit-btn" type="submit" class="btn btn-primary w-full">进入平台</button>
+      </form>
     </div>
   </div>
 
@@ -76,35 +78,59 @@
       <div class="panel-header">
         <div class="panel-title"><span>集群管理</span></div>
         <div class="panel-actions">
+          <div class="view-mode-switch">
+            <button id="cluster-list-mode-btn" class="btn btn-secondary btn-sm active">列表</button>
+            <button id="cluster-graph-mode-btn" class="btn btn-secondary btn-sm">图形</button>
+          </div>
           <button id="cluster-add-btn" class="btn btn-primary btn-sm">添加节点</button>
         </div>
       </div>
       <div class="panel-body flex-col gap-4">
-        <div class="table-wrapper flex-1">
-          <table>
-            <thead>
-              <tr><th>节点名</th><th>节点IP</th><th>端口</th><th>状态</th><th>操作</th></tr>
-            </thead>
-            <tbody id="cluster-table-body"></tbody>
-          </table>
+        <div id="cluster-list-view" class="cluster-view-panel flex-col gap-4">
+          <div class="table-wrapper flex-1">
+            <table>
+              <thead>
+                <tr><th>节点名</th><th>节点IP</th><th>端口</th><th>状态</th><th>操作</th></tr>
+              </thead>
+              <tbody id="cluster-table-body"></tbody>
+            </table>
+          </div>
+          <div class="pagination" id="cluster-pagination"></div>
         </div>
-        <div class="pagination" id="cluster-pagination"></div>
+        <div id="cluster-graph-view" class="cluster-view-panel hidden" style="padding: 4px; flex:1; min-height: 0;">
+          <div id="cluster-topology" class="chart-container"></div>
+        </div>
       </div>
     </section>
 
-    <!-- ====== 1.1 节点拓扑图 ====== -->
     <section class="panel panel-topology">
       <div class="panel-corner-bl"></div>
       <div class="panel-corner-br"></div>
       <div class="panel-header">
-        <div class="panel-title"><span>节点拓扑图</span></div>
+        <div class="panel-title"><span>数据源信息</span></div>
       </div>
-      <div class="panel-body" style="padding: 4px;">
-        <div id="cluster-topology" class="chart-container"></div>
+      <div class="panel-body flex-col gap-4">
+        <div class="datasource-summary">
+          <div class="datasource-stat-card">
+            <span class="datasource-stat-label">数据源数量</span>
+            <strong id="datasource-count">0</strong>
+          </div>
+          <div class="datasource-stat-card">
+            <span class="datasource-stat-label">系统总数据量</span>
+            <strong id="datasource-total-size">0 B</strong>
+          </div>
+        </div>
+        <div class="table-wrapper flex-1">
+          <table>
+            <thead>
+              <tr><th>类型</th><th>地址</th><th>数据量</th><th>状态</th></tr>
+            </thead>
+            <tbody id="datasource-table-body"></tbody>
+          </table>
+        </div>
       </div>
     </section>
 
-    <!-- ====== 1.2 用户管理 ====== -->
     <section class="panel panel-user">
       <div class="panel-corner-bl"></div>
       <div class="panel-corner-br"></div>

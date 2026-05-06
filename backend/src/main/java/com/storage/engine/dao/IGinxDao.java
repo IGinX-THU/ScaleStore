@@ -408,6 +408,51 @@ public class IGinxDao {
       return -1;
   }
 
+  // ==================== Data Source Operations ====================
+
+  public void insertDataSource(long key, String name, String ip, String port, String type,
+                               String schemaPrefix, String dataPrefix, boolean connected,
+                               boolean isDefault, long dataSize, String sourceGroup, boolean isValid) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, name, ip, port, type, schemaPrefix, dataPrefix, connected, isDefault, dataSize, sourceGroup, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', '%s', %b, %b, %d, '%s', %b);",
+              IGinxConstants.DATASOURCE_PATH,
+              key,
+              escapeSql(name),
+              escapeSql(ip),
+              escapeSql(port),
+              escapeSql(type),
+              escapeSqlKeepBackslash(schemaPrefix),
+              escapeSqlKeepBackslash(dataPrefix),
+              connected,
+              isDefault,
+              dataSize,
+              escapeSql(sourceGroup),
+              isValid);
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllDataSources() {
+      try {
+          return executeSql("select * from " + IGinxConstants.DATASOURCE_PATH + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public long getMaxDataSourceId() {
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.DATASOURCE_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // sys.datasource path may not exist yet
+      }
+      return -1;
+  }
+
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,

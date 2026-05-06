@@ -40,6 +40,9 @@ public class StorageService {
     @Autowired
     private AccessService accessService;
 
+    @Autowired
+    private DataSourceService dataSourceService;
+
     public synchronized Map<String, Object> addExternalStorageEngine(AddStorageEngineRequest request) {
         AddSourceContext context = validateAndBuildContext(request);
         String sql = buildAddStorageEngineSql(context);
@@ -67,6 +70,7 @@ public class StorageService {
         payload.put("skippedMetaCount", syncResult.skippedCount);
         payload.put("replacedMetaCount", syncResult.replacedCount);
         payload.put("importedLogicalPaths", syncResult.importedLogicalPaths);
+        dataSourceService.registerExternalDataSource(context.ip, context.port, context.sourceType, context.schemaPrefix, "", syncResult.totalEstimatedSize);
         return payload;
     }
 
@@ -128,6 +132,7 @@ public class StorageService {
         item.setKnowledgeExtractStatus("PENDING");
         item.setContentPath(contentPath);
 
+        dataSourceService.increaseDefaultDataSourceSize(fileSize);
         return item;
     }
 
@@ -212,6 +217,7 @@ public class StorageService {
                     createTime);
 
             result.importedCount++;
+            result.totalEstimatedSize += Math.max(0L, estimatedFileSize);
             result.importedLogicalPaths.add(normalizePath(logicalPath + "/" + fileName));
 
             DataItem added = new DataItem();
@@ -1110,6 +1116,7 @@ public class StorageService {
         private int importedCount;
         private int skippedCount;
         private int replacedCount;
+        private long totalEstimatedSize;
         private final List<String> importedLogicalPaths = new ArrayList<String>();
     }
 
