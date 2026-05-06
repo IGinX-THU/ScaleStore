@@ -153,7 +153,7 @@ public class AccessService {
 
         try {
             StorageAdapter adapter = adapterFactory.getAdapter(dataType);
-            Object previewData = adapter.getPreviewData(iginxPath, 100);
+            Object previewData = adapter.getPreviewData(iginxPath, 50);
             meta.setPreviewData(previewData);
         } catch (Exception e) {
             throw new RuntimeException("预览失败: " + e.getMessage(), e);

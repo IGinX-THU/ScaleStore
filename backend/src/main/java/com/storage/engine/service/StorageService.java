@@ -14,15 +14,10 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
-import java.util.ArrayList;
-import java.util.LinkedHashMap;
-import java.util.LinkedHashSet;
-import java.util.List;
-import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.*;
 
 @Service
 public class StorageService {
@@ -32,6 +27,9 @@ public class StorageService {
     private static final String DEFAULT_EXTERN_SCHEMA_PREFIX = "data.extern";
     private static final String EXTERN_LOGICAL_PREFIX = "/extern";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+    private static final int BINARY_COLUMN_SAMPLE_LIMIT = 100;
+    private static final int BINARY_VALUE_PREVIEW_LIMIT = 100;
+    private static final long DEFAULT_BINARY_BYTES = 16L;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -201,6 +199,7 @@ public class StorageService {
             String fileFormat = getFileExtension(fileName);
             String inferredDataType = inferExternalDataType(context, fileName, fileFormat);
             String contentPath = buildContentPath(assetPath, inferredDataType);
+            long estimatedFileSize = estimateExternalAssetSize(assetPath, context);
 
             iginxDao.insertMeta(
                     nextMetaId,
@@ -208,7 +207,7 @@ public class StorageService {
                     inferredDataType,
                     fileName,
                     contentPath,
-                    0L,
+                    estimatedFileSize,
                     fileFormat,
                     createTime);
 
@@ -221,6 +220,7 @@ public class StorageService {
             added.setFileName(fileName);
             added.setDataType(inferredDataType);
             added.setContentPath(contentPath);
+            added.setFileSize(estimatedFileSize);
             existingMeta.add(added);
 
             nextMetaId++;
@@ -230,21 +230,21 @@ public class StorageService {
     }
 
     private List<String> listExternalColumns(AddSourceContext context) {
-        SessionExecuteSqlResult result;
-        result = iginxDao.executeSql("show columns;");
+        SessionExecuteSqlResult result = iginxDao.executeSql(buildShowColumnsSql(context.schemaPrefix));
 
         LinkedHashSet<String> deduped = new LinkedHashSet<String>();
         String expectedPrefix = context.schemaPrefix + ".";
-        for (String path : parseShowColumnsResult(result)) {
-            if (path != null && path.startsWith(expectedPrefix)) {
+        for (ColumnSchema columnSchema : parseShowColumnsSchemas(result)) {
+            String path = columnSchema.path;
+            if (path.startsWith(expectedPrefix)) {
                 deduped.add(path.trim());
             }
         }
         return new ArrayList<String>(deduped);
     }
 
-    private List<String> parseShowColumnsResult(SessionExecuteSqlResult result) {
-        List<String> out = new ArrayList<String>();
+    private List<ColumnSchema> parseShowColumnsSchemas(SessionExecuteSqlResult result) {
+        List<ColumnSchema> out = new ArrayList<ColumnSchema>();
         if (result == null) {
             return out;
         }
@@ -253,12 +253,14 @@ public class StorageService {
         List<List<Object>> rows = result.getValues();
 
         int pathIdx = 0;
+        int typeIdx = 1;
         if (headers != null && !headers.isEmpty()) {
             for (int i = 0; i < headers.size(); i++) {
                 String header = safe(headers.get(i)).toLowerCase(Locale.ROOT);
                 if ("path".equals(header) || header.endsWith("path") || header.contains(".path")) {
                     pathIdx = i;
-                    break;
+                } else if ("type".equals(header) || header.endsWith("type") || header.contains(".type")) {
+                    typeIdx = i;
                 }
             }
         }
@@ -269,22 +271,268 @@ public class StorageService {
                     continue;
                 }
                 String path = valueAsString(row.get(pathIdx));
-                if (!path.isEmpty()) {
-                    out.add(path);
+                if (path.isEmpty()) {
+                    continue;
                 }
+                String type = row.size() > typeIdx ? valueAsString(row.get(typeIdx)) : "";
+                out.add(new ColumnSchema(path, type));
             }
         }
 
-        // Some IGinX versions may place the output directly in result paths.
         if (out.isEmpty() && headers != null) {
             for (String headerPath : headers) {
                 if (headerPath != null) {
-                    out.add(headerPath);
+                    out.add(new ColumnSchema(headerPath, ""));
                 }
             }
         }
 
         return out;
+    }
+
+    private List<ColumnSchema> listExternalColumnSchemas(String assetPath, AddSourceContext context) {
+        SessionExecuteSqlResult result = iginxDao.executeSql(buildShowColumnsSql(assetPath, isFilesystemExternalSource(context)));
+        List<ColumnSchema> schemas = parseShowColumnsSchemas(result);
+        if (schemas.isEmpty()) {
+            return schemas;
+        }
+
+        List<ColumnSchema> filtered = new ArrayList<ColumnSchema>();
+        for (ColumnSchema schema : schemas) {
+            if (schema == null) {
+                continue;
+            }
+            if (isColumnUnderAsset(schema.path, assetPath)) {
+                filtered.add(schema);
+            }
+        }
+
+        if (!filtered.isEmpty()) {
+            return filtered;
+        }
+
+        String schemaPrefix = context == null ? "" : safe(context.schemaPrefix);
+        if (!schemaPrefix.isEmpty()) {
+            String rootPrefix = schemaPrefix + ".";
+            for (ColumnSchema schema : schemas) {
+                if (schema == null) {
+                    continue;
+                }
+                if (schema.path.startsWith(rootPrefix) && isColumnUnderAsset(schema.path, assetPath)) {
+                    filtered.add(schema);
+                }
+            }
+        }
+        return filtered;
+    }
+
+    private String buildShowColumnsSql(String prefix) {
+        return buildShowColumnsSql(prefix, false);
+    }
+
+    private String buildShowColumnsSql(String prefix, boolean exactMatch) {
+        String normalizedPrefix = safe(prefix);
+        if (normalizedPrefix.isEmpty()) {
+            return "show columns;";
+        }
+        if (normalizedPrefix.endsWith(".*")) {
+            return "show columns " + normalizedPrefix + ";";
+        }
+        if (exactMatch) {
+            return "show columns " + normalizedPrefix + ";";
+        }
+        return "show columns " + normalizedPrefix + ".*;";
+    }
+
+    private long estimateExternalAssetSize(String assetPath, AddSourceContext context) {
+        if (assetPath == null || assetPath.isEmpty() || context == null) {
+            return 0L;
+        }
+
+        List<ColumnSchema> columns = listExternalColumnSchemas(assetPath, context);
+        if (columns.isEmpty()) {
+            return 0L;
+        }
+
+        long rowCount = isFilesystemExternalSource(context) ? 1L : resolveExternalRowCount(assetPath);
+        if (rowCount <= 0L) {
+            return 0L;
+        }
+
+        long bytesPerRow = estimateRowSizeInBytes(columns);
+        if (bytesPerRow <= 0L) {
+            return 0L;
+        }
+
+        if (bytesPerRow > Long.MAX_VALUE / rowCount) {
+            return Long.MAX_VALUE;
+        }
+        return bytesPerRow * rowCount;
+    }
+
+    private long resolveExternalRowCount(String assetPath) {
+        SessionExecuteSqlResult result = iginxDao.executeSql("select count(*) from " + assetPath + ";");
+        List<Long> counts = parseCountValues(result);
+        if (counts.isEmpty()) {
+            return 0L;
+        }
+        return Collections.max(counts);
+    }
+
+    private List<Long> parseCountValues(SessionExecuteSqlResult result) {
+        List<Long> counts = new ArrayList<Long>();
+        if (result == null || result.getValues() == null) {
+            return counts;
+        }
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                Long parsed = valueAsLong(value);
+                if (parsed != null && parsed >= 0L) {
+                    counts.add(parsed);
+                }
+            }
+        }
+        return counts;
+    }
+
+    private long estimateRowSizeInBytes(List<ColumnSchema> columns) {
+        long fixedBytes = 0L;
+        int binaryColumns = 0;
+        for (ColumnSchema column : columns) {
+            if (column == null) {
+                continue;
+            }
+            Long typeBytes = resolveFixedTypeBytes(column.type);
+            if (typeBytes != null) {
+                fixedBytes += typeBytes;
+            } else {
+                binaryColumns++;
+            }
+        }
+
+        if (binaryColumns == 0) {
+            return fixedBytes;
+        }
+
+        long averageBinaryBytes = estimateAverageBinaryColumnBytes(columns, BINARY_COLUMN_SAMPLE_LIMIT);
+        if (averageBinaryBytes <= 0L) {
+            averageBinaryBytes = DEFAULT_BINARY_BYTES;
+        }
+        return fixedBytes + averageBinaryBytes * binaryColumns;
+    }
+
+    private Long resolveFixedTypeBytes(String rawType) {
+        String type = safe(rawType).toUpperCase(Locale.ROOT);
+        switch (type) {
+            case "BOOLEAN":
+            case "INTEGER":
+            case "FLOAT":
+                return 4L;
+            case "LONG":
+            case "DOUBLE":
+                return 8L;
+            case "BINARY":
+            default:
+                return null;
+        }
+    }
+
+    private long estimateAverageBinaryColumnBytes(List<ColumnSchema> columns, int sampleLimit) {
+        List<ColumnSchema> binaryColumns = new ArrayList<ColumnSchema>();
+        for (ColumnSchema column : columns) {
+            if (column == null) {
+                continue;
+            }
+            if (resolveFixedTypeBytes(column.type) == null) {
+                binaryColumns.add(column);
+            }
+        }
+        if (binaryColumns.isEmpty()) {
+            return 0L;
+        }
+
+        int effectiveLimit = Math.min(Math.max(sampleLimit, 1), binaryColumns.size());
+        long totalBytes = 0L;
+        int sampled = 0;
+        for (int i = 0; i < effectiveLimit; i++) {
+            long averageBytes = estimateBinaryColumnAverageBytes(binaryColumns.get(i));
+            if (averageBytes <= 0L) {
+                continue;
+            }
+            totalBytes += averageBytes;
+            sampled++;
+        }
+
+        if (sampled == 0) {
+            return 0L;
+        }
+        return Math.max(1L, totalBytes / sampled);
+    }
+
+    private long estimateBinaryColumnAverageBytes(ColumnSchema column) {
+        if (column == null || column.path.isEmpty()) {
+            return 0L;
+        }
+
+        SessionExecuteSqlResult result = queryBinaryColumnValues(column.path);
+        if (result == null || result.getValues() == null) {
+            return 0L;
+        }
+
+        long totalBytes = 0L;
+        long samples = 0L;
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                if (value == null) {
+                    continue;
+                }
+                long bytes = estimateValueBytes(value);
+                if (bytes <= 0L) {
+                    continue;
+                }
+                totalBytes += bytes;
+                samples++;
+            }
+        }
+
+        if (samples == 0L) {
+            return 0L;
+        }
+        return Math.max(1L, totalBytes / samples);
+    }
+
+    private SessionExecuteSqlResult queryBinaryColumnValues(String columnPath) {
+        String normalizedPath = StorageUtils.normalizeEscapedPath(columnPath);
+        String[] parentAndLeaf = StorageUtils.splitParentAndLeaf(normalizedPath);
+        String parentPath = parentAndLeaf[0];
+        String leafField = parentAndLeaf[1];
+        if (!parentPath.isEmpty() && !leafField.isEmpty()) {
+            String sql = "select " + leafField + " from " + parentPath + " limit " + BINARY_VALUE_PREVIEW_LIMIT + ";";
+            return iginxDao.executeSql(sql);
+        }
+        return iginxDao.queryDataByPathWithLimit(normalizedPath, BINARY_VALUE_PREVIEW_LIMIT);
+    }
+
+    private long estimateValueBytes(Object value) {
+        if (value == null) {
+            return 0L;
+        }
+        if (value instanceof byte[]) {
+            return ((byte[]) value).length;
+        }
+        return valueAsString(value).getBytes(StandardCharsets.UTF_8).length;
+    }
+
+    private boolean isColumnUnderAsset(String columnPath, String assetPath) {
+        String safeColumn = safe(columnPath);
+        String safeAsset = safe(assetPath);
+        return safeColumn.equals(safeAsset) || safeColumn.startsWith(safeAsset + ".");
     }
 
     private Set<String> deriveAssetPaths(List<String> columnPaths, AddSourceContext context) {
@@ -417,6 +665,10 @@ public class StorageService {
         }
         String t = safe(context.sourceType).toLowerCase(Locale.ROOT);
         return "mysql".equals(t) || "postgres".equals(t) || "iotdb".equals(t);
+    }
+
+    private boolean isFilesystemExternalSource(AddSourceContext context) {
+        return context != null && "filesystem".equals(safe(context.sourceType).toLowerCase(Locale.ROOT));
     }
 
     private DataItem findMetaByPathAndFile(List<DataItem> items, String logicalPath, String fileName) {
@@ -817,9 +1069,27 @@ public class StorageService {
             return "";
         }
         if (value instanceof byte[]) {
-            return new String((byte[]) value);
+            return new String((byte[]) value, StandardCharsets.UTF_8);
         }
         return String.valueOf(value);
+    }
+
+    private Long valueAsLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        String text = valueAsString(value);
+        if (text.isEmpty()) {
+            return null;
+        }
+        try {
+            return Long.parseLong(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     private static class AddSourceContext {
@@ -841,5 +1111,15 @@ public class StorageService {
         private int skippedCount;
         private int replacedCount;
         private final List<String> importedLogicalPaths = new ArrayList<String>();
+    }
+
+    private static class ColumnSchema {
+        private final String path;
+        private final String type;
+
+        private ColumnSchema(String path, String type) {
+            this.path = path == null ? "" : path.trim();
+            this.type = type == null ? "" : type.trim();
+        }
     }
 }

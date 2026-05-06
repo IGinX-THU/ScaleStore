@@ -2727,7 +2727,8 @@ function renderTablePreview(container, previewData, dataType) {
   }
   const cols = previewData.columns;
   const rows = previewData.rows;
-  const maxRows = Math.min(rows.length, 50);
+  const previewLimit = 50;
+  const maxRows = Math.min(rows.length, previewLimit);
 
   let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr>';
   cols.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
@@ -2742,8 +2743,8 @@ function renderTablePreview(container, previewData, dataType) {
     html += '</tr>';
   }
   html += '</tbody></table>';
-  if (rows.length > maxRows) {
-    html += `<p style="color:var(--text-dim);font-size:11px;padding:4px 8px;">显示前 ${maxRows} 行，共 ${previewData.totalRows} 行</p>`;
+  if (rows.length === previewLimit) {
+    html += `<p style="color:var(--text-dim);font-size:11px;padding:4px 8px;">显示前 ${maxRows} 行</p>`;
   }
   html += '</div>';
   container.innerHTML = html;
