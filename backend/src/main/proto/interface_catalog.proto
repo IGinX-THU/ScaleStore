@@ -85,6 +85,7 @@ message NodeStopRequest {
   string ssh_username = 2;
   string ssh_password = 3;
   string deploy_directory = 4;
+  string ssh_port = 5;
 }
 
 message CreateUserRequest {

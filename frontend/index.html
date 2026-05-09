@@ -382,6 +382,10 @@
             <input type="text" id="cluster-ssh-user-input" class="input" placeholder="ubuntu">
           </div>
           <div class="form-group">
+            <label class="form-label">SSH端口</label>
+            <input type="number" id="cluster-ssh-port-input" class="input" placeholder="22" value="22" min="1" max="65535">
+          </div>
+          <div class="form-group">
             <label class="form-label">SSH密码</label>
             <div class="password-wrapper">
               <input type="password" id="cluster-ssh-password-input" class="input" placeholder="请输入目标节点登录密码">
@@ -432,6 +436,10 @@
         <div class="form-group">
           <label class="form-label">SSH用户名</label>
           <input type="text" id="cluster-delete-ssh-user" class="input" placeholder="ubuntu">
+        </div>
+        <div class="form-group">
+          <label class="form-label">SSH端口</label>
+          <input type="number" id="cluster-delete-ssh-port" class="input" placeholder="22" value="22" min="1" max="65535">
         </div>
         <div class="form-group">
           <label class="form-label">SSH密码</label>

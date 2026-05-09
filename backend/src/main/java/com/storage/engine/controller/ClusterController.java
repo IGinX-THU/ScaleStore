@@ -84,7 +84,7 @@ public class ClusterController {
                 @RequestBody NodeDeployRequest request) {
         try {
             NodeDeployTaskStatus taskStatus = nodeService.deleteNodeAsync(id,
-                    request.getSshUsername(), request.getSshPassword(), request.getDeployDirectory());
+                    request.getSshUsername(), request.getSshPort(), request.getSshPassword(), request.getDeployDirectory());
             return ResponseEntity.status(HttpStatus.ACCEPTED).body(Response.success(taskStatus));
         } catch (RuntimeException e) {
             if (e.getMessage() != null && e.getMessage().contains("节点不存在")) {

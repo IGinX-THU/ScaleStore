@@ -878,6 +878,7 @@ function openClusterModal(title, data, mode) {
   if (isAdd) {
     $('cluster-ssh-user-input').value = '';
     $('cluster-ssh-password-input').value = '';
+    $('cluster-ssh-port-input').value = '22';
     $('cluster-deploy-dir-input').value = '~';
     $('cluster-python-cmd-input').value = 'python3';
     $('cluster-port-input').value = '6888';
@@ -943,6 +944,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
     const port = $('cluster-port-input').value.trim();
     const desc = $('cluster-desc-input').value.trim();
     const sshUsername = $('cluster-ssh-user-input').value.trim();
+    const sshPort = $('cluster-ssh-port-input').value.trim();
     const sshPassword = $('cluster-ssh-password-input').value;
     const deployDirectory = $('cluster-deploy-dir-input').value.trim();
     const pythonCmd = $('cluster-python-cmd-input').value.trim();
@@ -950,6 +952,13 @@ $('cluster-modal-save').addEventListener('click', async () => {
 
     if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
       alert('请填写完整信息（SSH密码为必填）');
+      return;
+    }
+
+    const normalizedSshPort = sshPort || '22';
+    const sshPortNum = Number(normalizedSshPort);
+    if (!Number.isInteger(sshPortNum) || sshPortNum < 1 || sshPortNum > 65535) {
+      alert('SSH端口必须是 1-65535 的整数');
       return;
     }
 
@@ -969,6 +978,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
         port: port || '6888',
         description: desc,
         sshUsername,
+        sshPort: String(sshPortNum),
         sshPassword,
         deployDirectory,
         pythonCmd: pythonCmd || 'python3',
@@ -1139,6 +1149,7 @@ function openDeleteModal(node) {
   $('cluster-delete-info').innerHTML = '确定要停止并删除节点 <strong>' + escapeHtml(node.name) + '</strong> (' + escapeHtml(node.ip) + ':' + escapeHtml(node.port) + ') 吗？此操作不可撤销。';
   $('cluster-delete-ssh-user').value = '';
   $('cluster-delete-ssh-password').value = '';
+  $('cluster-delete-ssh-port').value = '22';
   $('cluster-delete-deploy-dir').value = node.deployDirectory || '~';
   $('cluster-delete-progress-wrap').classList.add('hidden');
   $('cluster-delete-current-step').textContent = '等待开始...';
@@ -1155,11 +1166,19 @@ $('cluster-delete-modal-close-x').addEventListener('click', () => hideModal('mod
 $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   const nodeId = $('cluster-delete-modal-confirm').dataset.nodeId;
   const sshUsername = $('cluster-delete-ssh-user').value.trim();
+  const sshPort = $('cluster-delete-ssh-port').value.trim();
   const sshPassword = $('cluster-delete-ssh-password').value;
   const deployDirectory = $('cluster-delete-deploy-dir').value.trim();
 
   if (!sshUsername || !sshPassword) {
     alert('请填写SSH凭据');
+    return;
+  }
+
+  const normalizedSshPort = sshPort || '22';
+  const sshPortNum = Number(normalizedSshPort);
+  if (!Number.isInteger(sshPortNum) || sshPortNum < 1 || sshPortNum > 65535) {
+    alert('SSH端口必须是 1-65535 的整数');
     return;
   }
 
@@ -1170,7 +1189,7 @@ $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   $('cluster-delete-progress-wrap').classList.remove('hidden');
 
   try {
-    const task = await stopClusterNode(nodeId, { sshUsername, sshPassword, deployDirectory });
+    const task = await stopClusterNode(nodeId, { sshUsername, sshPort: String(sshPortNum), sshPassword, deployDirectory });
     await waitForStopTask(task.taskId);
     await refreshClusterView(true);
     hideModal('modal-cluster-delete');

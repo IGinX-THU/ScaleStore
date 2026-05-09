@@ -187,7 +187,7 @@ public class NodeService {
      * Delete (stop) a node asynchronously via SSH stop script.
      */
     public synchronized NodeDeployTaskStatus deleteNodeAsync(Integer clusterId,
-            String sshUsername, String sshPassword, String deployDirectory) {
+            String sshUsername, String sshPort, String sshPassword, String deployDirectory) {
         final Node node = getNodeById(clusterId);
         if (node == null) {
             throw new RuntimeException("节点不存在");
@@ -203,7 +203,7 @@ public class NodeService {
         final Integer metadataNodeKey = metadataNode != null ? metadataNode.getId() : null;
 
         return nodeDeployService.startStopTask(
-            sshTargetIp, nodePort, sshUsername, sshPassword, deployDirectory, clusterId,
+            sshTargetIp, nodePort, sshUsername, sshPort, sshPassword, deployDirectory, clusterId,
                 new Runnable() {
                     @Override
                     public void run() {

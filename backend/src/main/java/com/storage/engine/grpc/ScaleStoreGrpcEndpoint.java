@@ -145,6 +145,7 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
             NodeDeployTaskStatus status = nodeService.deleteNodeAsync(
                     request.getId(),
                     request.getSshUsername(),
+                    request.getSshPort(),
                     request.getSshPassword(),
                     request.getDeployDirectory());
             sendJson(responseObserver, 200, "Success", status);
