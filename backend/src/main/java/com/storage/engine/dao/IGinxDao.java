@@ -7,6 +7,7 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.constant.IGinxConstants;
+import com.storage.engine.service.adapter.StorageUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
@@ -515,26 +516,13 @@ public class IGinxDao {
   // ==================== Data Query Operations ====================
 
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
-      String queryPath = normalizePathForQuery(pathPrefix);
+      String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
       return executeSql("select * from " + queryPath + ";");
   }
 
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
-      String queryPath = normalizePathForQuery(pathPrefix);
+      String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
       return executeSql("select * from " + queryPath + " limit " + limit + ";");
-  }
-
-  public void deleteDataByPath(String pathPrefix) {
-      String queryPath = normalizePathForQuery(pathPrefix);
-      executeSql("delete from " + queryPath + ".*;");
-  }
-
-  private String normalizePathForQuery(String pathPrefix) {
-      String path = pathPrefix == null ? "" : pathPrefix.trim();
-      while (path.contains("\\\\")) {
-          path = path.replace("\\\\", "\\");
-      }
-      return path;
   }
 
   // ==================== Cluster Info Operations ====================
@@ -559,7 +547,7 @@ public class IGinxDao {
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {
-      logger.info("[IGinX-SQL] {}", sql);
+//      logger.info("[IGinX-SQL] {}", sql);
       return withRetry("executeSql", new SessionAction<SessionExecuteSqlResult>() {
           @Override
           public SessionExecuteSqlResult run(Session session) throws SessionException {

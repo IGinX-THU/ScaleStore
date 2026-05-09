@@ -61,6 +61,53 @@ public class DataSourceService {
         iginxDao.insertDataSource(key, sourceName, safe(ip), String.valueOf(port), sourceType, normalizedSchemaPrefix, safe(dataPrefix), true, false, Math.max(0L, dataSize), normalizedSchemaPrefix.isEmpty() ? sourceName : normalizedSchemaPrefix, true);
     }
 
+    public synchronized void increaseExternalDataSourceSize(String schemaPrefix, long delta) {
+        String normalizedSchemaPrefix = safe(schemaPrefix);
+        if (normalizedSchemaPrefix.isEmpty() || delta <= 0L) {
+            return;
+        }
+
+        ensureDefaultDataSourceInitialized();
+        List<DataSourceInfo> existing = getPersistedDataSources();
+        DataSourceInfo matched = null;
+        for (DataSourceInfo info : existing) {
+            if (info == null || Boolean.TRUE.equals(info.getIsDefault())) {
+                continue;
+            }
+            if (normalizedSchemaPrefix.equals(safe(info.getSchemaPrefix()))) {
+                matched = info;
+                break;
+            }
+        }
+
+        if (matched == null) {
+            return;
+        }
+
+        long current = matched.getDataSize() == null ? 0L : Math.max(0L, matched.getDataSize().longValue());
+        long target = current + Math.max(0L, delta);
+
+        long key = matched.getId() == null ? iginxDao.getMaxDataSourceId() + 1 : matched.getId().longValue();
+        String sourceType = safe(matched.getType()).isEmpty() ? "unknown" : safe(matched.getType()).toLowerCase(Locale.ROOT);
+        String sourceName = safe(matched.getName()).isEmpty()
+                ? buildExternalSourceName(sourceType, safe(matched.getIp()), parsePort(safe(matched.getPort())))
+                : safe(matched.getName());
+
+        iginxDao.insertDataSource(
+                key,
+                sourceName,
+                safe(matched.getIp()),
+                safe(matched.getPort()),
+                sourceType,
+                normalizedSchemaPrefix,
+                safe(matched.getDataPrefix()),
+                true,
+                false,
+                target,
+                safe(matched.getSourceGroup()).isEmpty() ? normalizedSchemaPrefix : safe(matched.getSourceGroup()),
+                true);
+    }
+
     public synchronized void increaseDefaultDataSourceSize(long delta) {
         ensureDefaultDataSourceInitialized();
         List<DataSourceInfo> existing = getPersistedDataSources();
@@ -220,6 +267,14 @@ public class DataSourceService {
 
     private String buildExternalSourceName(String type, String ip, int port) {
         return safe(type).toLowerCase(Locale.ROOT) + "-" + safe(ip) + ":" + port;
+    }
+
+    private int parsePort(String text) {
+        try {
+            return Integer.parseInt(safe(text));
+        } catch (Exception e) {
+            return 0;
+        }
     }
 
     private String safe(String value) {

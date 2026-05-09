@@ -172,8 +172,8 @@ public class IGinxConnectionPool {
         }
         int idx = (counter.getAndIncrement() & Integer.MAX_VALUE) % snapshot.size();
         NodeSession ns = snapshot.get(idx);
-        log.info("[LoadBalancer] --> IGinX node {}:{} (round-robin index={}, pool size={})",
-                ns.ip, ns.port, idx, snapshot.size());
+//        log.info("[LoadBalancer] --> IGinX node {}:{} (round-robin index={}, pool size={})",
+//                ns.ip, ns.port, idx, snapshot.size());
         return ns.session;
     }
 

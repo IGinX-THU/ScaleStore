@@ -2327,18 +2327,14 @@ $('storage-source-modal-save').addEventListener('click', async () => {
       body: JSON.stringify(payload),
     });
 
-    const discovered = Number(result?.discoveredAssetCount || 0);
-    const imported = Number(result?.importedMetaCount || 0);
-    const skipped = Number(result?.skippedMetaCount || 0);
-
     pushAgentMessage({
       level: 'success',
       status: '完成',
       agentName: storageAgentName,
-      text: `新增${sourceLabel}数据源成功，发现 ${discovered} 个资产，同步 ${imported} 条元数据（跳过 ${skipped} 条），已进入定时UDF抽取队列`,
+      text: `新增${sourceLabel}数据源成功，已进入定时UDF抽取队列`,
     });
 
-    alert(`新增数据源成功\n发现资产: ${discovered}\n同步元数据: ${imported}\n跳过: ${skipped}`);
+    alert(`新增数据源成功`);
     closeStorageSourceModal();
   } catch (e) {
     pushAgentMessage({

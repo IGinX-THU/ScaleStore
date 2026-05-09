@@ -77,6 +77,10 @@ public class MetadataExtractionSchedulerService {
         return eventSeq.get();
     }
 
+    public void publishExternalSourceEvent(String level, String status, String text, String agentName) {
+        publishEvent(level, status, text, agentName);
+    }
+
     private void pollTransformAgentEvents() {
         try {
             SessionExecuteSqlResult result = iginxDao.getTransformMetaExtractRows(TRANSFORM_FETCH_LIMIT);

@@ -18,6 +18,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 
 @Service
 public class StorageService {
@@ -27,9 +28,10 @@ public class StorageService {
     private static final String DEFAULT_EXTERN_SCHEMA_PREFIX = "data.extern";
     private static final String EXTERN_LOGICAL_PREFIX = "/extern";
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final int BINARY_COLUMN_SAMPLE_LIMIT = 100;
-    private static final int BINARY_VALUE_PREVIEW_LIMIT = 100;
-    private static final long DEFAULT_BINARY_BYTES = 16L;
+
+    private static final int EXTERNAL_SIZE_FLUSH_BATCH = 100;
+    private static final long EXTERNAL_SIZE_FLUSH_BYTES = 10L * 1024L * 1024L * 1024L;
+    private static final int STRUCTURED_SAMPLE_ROW_COUNT = 100;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -43,6 +45,9 @@ public class StorageService {
     @Autowired
     private DataSourceService dataSourceService;
 
+    @Autowired
+    private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
+
     public synchronized Map<String, Object> addExternalStorageEngine(AddStorageEngineRequest request) {
         AddSourceContext context = validateAndBuildContext(request);
         String sql = buildAddStorageEngineSql(context);
@@ -51,27 +56,86 @@ public class StorageService {
 
         executeAddStorageEngineSql(context, sql);
 
-        ExternalMetaSyncResult syncResult = syncExternalMetadata(context);
-        logger.info(
-            "[ExternalSource] Metadata sync finished. sourceType={}, discovered={}, imported={}, skipped={}, replaced={}",
-            context.sourceType,
-            syncResult.discoveredCount,
-            syncResult.importedCount,
-            syncResult.skippedCount,
-            syncResult.replacedCount);
+        triggerExternalMetadataSyncAsync(context);
 
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("sql", sql);
         payload.put("sourceType", context.sourceType);
         payload.put("schemaPrefix", context.schemaPrefix);
         payload.put("mappedDataType", context.mappedDataType);
-        payload.put("discoveredAssetCount", syncResult.discoveredCount);
-        payload.put("importedMetaCount", syncResult.importedCount);
-        payload.put("skippedMetaCount", syncResult.skippedCount);
-        payload.put("replacedMetaCount", syncResult.replacedCount);
-        payload.put("importedLogicalPaths", syncResult.importedLogicalPaths);
-        dataSourceService.registerExternalDataSource(context.ip, context.port, context.sourceType, context.schemaPrefix, "", syncResult.totalEstimatedSize);
+        payload.put("syncStatus", "PENDING");
+        payload.put("message", "添加数据源成功，后台将持续进行解析");
         return payload;
+    }
+
+    private void triggerExternalMetadataSyncAsync(AddSourceContext context) {
+        final AddSourceContext asyncContext = copyContext(context);
+        CompletableFuture.runAsync(() -> {
+            try {
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "running",
+                        "STARTED",
+                        "外部数据源解析任务已启动: schemaPrefix=" + safe(asyncContext.schemaPrefix),
+                        "External-Source");
+
+                dataSourceService.registerExternalDataSource(
+                        asyncContext.ip,
+                        asyncContext.port,
+                        asyncContext.sourceType,
+                        asyncContext.schemaPrefix,
+                        "",
+                        0L);
+
+                ExternalMetaSyncResult syncResult = syncExternalMetadata(asyncContext);
+                logger.info(
+                    "[ExternalSource] Async metadata sync finished. sourceType={}, schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
+                    asyncContext.sourceType,
+                    asyncContext.schemaPrefix,
+                    syncResult.discoveredCount,
+                    syncResult.importedCount,
+                    syncResult.skippedCount,
+                    syncResult.replacedCount);
+
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "success",
+                        "DONE",
+                        "外部数据源解析完成: schemaPrefix=" + safe(asyncContext.schemaPrefix)
+                                + ", imported=" + syncResult.importedCount
+                                + ", skipped=" + syncResult.skippedCount,
+                        "External-Source");
+            } catch (Exception ex) {
+                logger.error(
+                    "[ExternalSource] Async metadata sync failed. sourceType={}, schemaPrefix={}",
+                    asyncContext.sourceType,
+                    asyncContext.schemaPrefix,
+                    ex);
+
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "warn",
+                        "FAILED",
+                        "外部数据源解析失败: schemaPrefix=" + safe(asyncContext.schemaPrefix)
+                                + ", reason=" + safe(ex.getMessage()),
+                        "External-Source");
+            }
+        });
+    }
+
+    private AddSourceContext copyContext(AddSourceContext src) {
+        AddSourceContext copy = new AddSourceContext();
+        if (src == null) {
+            return copy;
+        }
+        copy.sourceType = src.sourceType;
+        copy.ip = src.ip;
+        copy.port = src.port;
+        copy.username = src.username;
+        copy.password = src.password;
+        copy.dummyDir = src.dummyDir;
+        copy.iginxPort = src.iginxPort;
+        copy.schemaPrefix = src.schemaPrefix;
+        copy.logicalSourceKey = src.logicalSourceKey;
+        copy.mappedDataType = src.mappedDataType;
+        return copy;
     }
 
     /**
@@ -185,12 +249,16 @@ public class StorageService {
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
         List<DataItem> existingMeta = accessService.getAllMeta();
 
+        long pendingSizeDelta = 0L;
+        int pendingFlushFiles = 0;
+
         for (String assetPath : assetPaths) {
             String logicalPath = toExternalLogicalPath(assetPath, context);
             String fileName = deriveExternalFileName(assetPath, context, logicalPath);
             DataItem existing = findMetaByPathAndFile(existingMeta, logicalPath, fileName);
             if (existing != null) {
                 result.skippedCount++;
+                publishExternalSyncEvent("info", "SKIPPED", logicalPath, fileName, 0L, "已存在同名元数据，跳过");
                 continue;
             }
 
@@ -229,7 +297,25 @@ public class StorageService {
             added.setFileSize(estimatedFileSize);
             existingMeta.add(added);
 
+            pendingSizeDelta += Math.max(0L, estimatedFileSize);
+            pendingFlushFiles++;
+            if (pendingFlushFiles >= EXTERNAL_SIZE_FLUSH_BATCH || pendingSizeDelta >= EXTERNAL_SIZE_FLUSH_BYTES) {
+                dataSourceService.increaseExternalDataSourceSize(context.schemaPrefix, pendingSizeDelta);
+                publishExternalSyncEvent("info", "SIZE_FLUSH", logicalPath, fileName, pendingSizeDelta,
+                        "已累计更新数据源大小，批次文件数=" + pendingFlushFiles + ", 批次字节数=" + pendingSizeDelta);
+                pendingSizeDelta = 0L;
+                pendingFlushFiles = 0;
+            }
+
+            publishExternalSyncEvent("running", "IMPORTED", logicalPath, fileName, estimatedFileSize, "已完成元数据导入");
+
             nextMetaId++;
+        }
+
+        if (pendingSizeDelta > 0L) {
+            dataSourceService.increaseExternalDataSourceSize(context.schemaPrefix, pendingSizeDelta);
+            publishExternalSyncEvent("info", "SIZE_FLUSH", "", "", pendingSizeDelta,
+                    "已提交尾批数据源大小更新，批次文件数=" + pendingFlushFiles);
         }
 
         return result;
@@ -341,13 +427,48 @@ public class StorageService {
         if (normalizedPrefix.isEmpty()) {
             return "show columns;";
         }
+
+        String identifier = quoteIdentifierPath(normalizedPrefix);
         if (normalizedPrefix.endsWith(".*")) {
-            return "show columns " + normalizedPrefix + ";";
+            return "show columns " + identifier + ";";
         }
         if (exactMatch) {
-            return "show columns " + normalizedPrefix + ";";
+            return "show columns " + identifier + ";";
         }
-        return "show columns " + normalizedPrefix + ".*;";
+        return "show columns " + identifier + ".*;";
+    }
+
+    private String quoteIdentifierPath(String rawPath) {
+        String normalized = safe(rawPath);
+        if (normalized.isEmpty()) {
+            return normalized;
+        }
+
+        boolean wildcard = normalized.endsWith(".*");
+        String base = wildcard ? normalized.substring(0, normalized.length() - 2) : normalized;
+
+        List<String> segments = splitUnescapedSegments(base);
+        if (segments.isEmpty()) {
+            return wildcard ? "*" : "";
+        }
+
+        StringBuilder quoted = new StringBuilder();
+        for (int i = 0; i < segments.size(); i++) {
+            if (i > 0) {
+                quoted.append('.');
+            }
+            quoted.append(quoteIdentifierSegment(segments.get(i)));
+        }
+
+        if (wildcard) {
+            quoted.append(".*");
+        }
+        return quoted.toString();
+    }
+
+    private String quoteIdentifierSegment(String rawSegment) {
+        String seg = safe(rawSegment).replace("`", "``");
+        return "`" + seg + "`";
     }
 
     private long estimateExternalAssetSize(String assetPath, AddSourceContext context) {
@@ -355,34 +476,157 @@ public class StorageService {
             return 0L;
         }
 
+        if (isFilesystemExternalSource(context)) {
+            return estimateFilesystemExternalAssetSize(assetPath);
+        }
+        return estimateStructuredExternalAssetSize(assetPath, context);
+    }
+
+    private long estimateStructuredExternalAssetSize(String assetPath, AddSourceContext context) {
         List<ColumnSchema> columns = listExternalColumnSchemas(assetPath, context);
         if (columns.isEmpty()) {
-            return 0L;
+            throw new IllegalStateException("No column schema found for structured asset: " + assetPath);
         }
 
-        long rowCount = isFilesystemExternalSource(context) ? 1L : resolveExternalRowCount(assetPath);
+        long rowCount = resolveExternalRowCount(assetPath);
         if (rowCount <= 0L) {
             return 0L;
         }
 
-        long bytesPerRow = estimateRowSizeInBytes(columns);
-        if (bytesPerRow <= 0L) {
+        if (rowCount < STRUCTURED_SAMPLE_ROW_COUNT) {
+            return queryStructuredRowsTotalBytes(assetPath, 0);
+        }
+
+        long sampleBytes = queryStructuredRowsTotalBytes(assetPath, STRUCTURED_SAMPLE_ROW_COUNT);
+        long avgPerRow = Math.max(1L, sampleBytes / STRUCTURED_SAMPLE_ROW_COUNT);
+        if (avgPerRow > Long.MAX_VALUE / rowCount) {
+            return Long.MAX_VALUE;
+        }
+        return avgPerRow * rowCount;
+    }
+
+    private long estimateFilesystemExternalAssetSize(String assetPath) {
+        String[] parentAndLeaf = splitParentAndLeafStrict(assetPath);
+        String parentPath = parentAndLeaf[0];
+        String leafField = parentAndLeaf[1];
+
+        long rowCount = resolveFilesystemRowCount(parentPath, leafField);
+        if (rowCount <= 0L) {
             return 0L;
         }
 
-        if (bytesPerRow > Long.MAX_VALUE / rowCount) {
+        long firstRowBytes = queryFilesystemRowBytes(parentPath, leafField, 0L);
+        if (rowCount == 1L) {
+            return firstRowBytes;
+        }
+
+        long lastRowBytes = queryFilesystemRowBytes(parentPath, leafField, rowCount - 1L);
+        long prefixRows = rowCount - 1L;
+
+        if (firstRowBytes > 0L && prefixRows > 0L && firstRowBytes > Long.MAX_VALUE / prefixRows) {
             return Long.MAX_VALUE;
         }
-        return bytesPerRow * rowCount;
+
+        long total = firstRowBytes * prefixRows;
+        if (Long.MAX_VALUE - total < lastRowBytes) {
+            return Long.MAX_VALUE;
+        }
+        return total + Math.max(0L, lastRowBytes);
+    }
+
+    private long resolveFilesystemRowCount(String parentPath, String leafField) {
+        String sql = "select count(" + quoteIdentifierSegment(leafField) + ") from " + quoteIdentifierPath(parentPath) + ";";
+        logger.info("[ExternalSource] Resolve filesystem row count SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+        List<Long> counts = parseCountValues(result);
+        if (counts.isEmpty()) {
+            logger.warn("[ExternalSource] Filesystem row count is empty, fallback size=0. parentPath={}, leafField={}", parentPath, leafField);
+            return 0L;
+        }
+        return counts.get(0).longValue();
+    }
+
+    private long queryFilesystemRowBytes(String parentPath, String leafField, long offset) {
+        String sql = "select " + quoteIdentifierSegment(leafField)
+                + " from " + quoteIdentifierPath(parentPath)
+                + " limit 1 offset " + Math.max(0L, offset) + ";";
+        logger.info("[ExternalSource] Fetch filesystem row SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+        return sumResultValueBytes(result);
+    }
+
+    private long queryStructuredRowsTotalBytes(String assetPath, int limit) {
+        String sql = "select * from " + quoteIdentifierPath(assetPath)
+                + (limit > 0 ? " limit " + limit : "") + ";";
+        logger.info("[ExternalSource] Fetch structured sample SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+        return sumResultValueBytes(result);
+    }
+
+    private String[] splitParentAndLeafStrict(String columnPath) {
+        String normalizedPath = StorageUtils.normalizeEscapedPath(columnPath);
+        String[] parentAndLeaf = StorageUtils.splitParentAndLeaf(normalizedPath);
+        String parentPath = parentAndLeaf[0];
+        String leafField = parentAndLeaf[1];
+        if (parentPath.isEmpty() || leafField.isEmpty()) {
+            throw new IllegalStateException("Invalid column path: " + columnPath);
+        }
+        return new String[]{parentPath, leafField};
+    }
+
+    private long sumResultValueBytes(SessionExecuteSqlResult result) {
+        if (result == null || result.getValues() == null) {
+            return 0L;
+        }
+        long totalBytes = 0L;
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                if (value == null) {
+                    continue;
+                }
+                long bytes = estimateValueBytes(value);
+                if (bytes <= 0L) {
+                    continue;
+                }
+                if (Long.MAX_VALUE - totalBytes < bytes) {
+                    return Long.MAX_VALUE;
+                }
+                totalBytes += bytes;
+            }
+        }
+        return totalBytes;
+    }
+
+    private void publishExternalSyncEvent(String level,
+                                          String status,
+                                          String logicalPath,
+                                          String fileName,
+                                          long estimatedSize,
+                                          String detail) {
+        String pathPart = safe(logicalPath).isEmpty() ? "(unknown)" : safe(logicalPath);
+        String filePart = safe(fileName).isEmpty() ? "(unknown)" : safe(fileName);
+        long safeSize = Math.max(0L, estimatedSize);
+        String text = "外部数据解析: path=" + pathPart
+                + ", file=" + filePart
+                + ", size=" + safeSize + " bytes"
+                + (safe(detail).isEmpty() ? "" : ", detail=" + safe(detail));
+        metadataExtractionSchedulerService.publishExternalSourceEvent(level, status, text, "External-Source");
     }
 
     private long resolveExternalRowCount(String assetPath) {
-        SessionExecuteSqlResult result = iginxDao.executeSql("select count(*) from " + assetPath + ";");
+        String quotedAssetPath = quoteIdentifierPath(assetPath);
+        String sql = "select count(*) from " + quotedAssetPath + ";";
+        logger.info("[ExternalSource] Resolve structured row count SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeSql(sql);
         List<Long> counts = parseCountValues(result);
         if (counts.isEmpty()) {
+            logger.warn("[ExternalSource] Structured row count is empty, fallback size=0. assetPath={}", assetPath);
             return 0L;
         }
-        return Collections.max(counts);
+        return counts.get(0).longValue();
     }
 
     private List<Long> parseCountValues(SessionExecuteSqlResult result) {
@@ -402,127 +646,6 @@ public class StorageService {
             }
         }
         return counts;
-    }
-
-    private long estimateRowSizeInBytes(List<ColumnSchema> columns) {
-        long fixedBytes = 0L;
-        int binaryColumns = 0;
-        for (ColumnSchema column : columns) {
-            if (column == null) {
-                continue;
-            }
-            Long typeBytes = resolveFixedTypeBytes(column.type);
-            if (typeBytes != null) {
-                fixedBytes += typeBytes;
-            } else {
-                binaryColumns++;
-            }
-        }
-
-        if (binaryColumns == 0) {
-            return fixedBytes;
-        }
-
-        long averageBinaryBytes = estimateAverageBinaryColumnBytes(columns, BINARY_COLUMN_SAMPLE_LIMIT);
-        if (averageBinaryBytes <= 0L) {
-            averageBinaryBytes = DEFAULT_BINARY_BYTES;
-        }
-        return fixedBytes + averageBinaryBytes * binaryColumns;
-    }
-
-    private Long resolveFixedTypeBytes(String rawType) {
-        String type = safe(rawType).toUpperCase(Locale.ROOT);
-        switch (type) {
-            case "BOOLEAN":
-            case "INTEGER":
-            case "FLOAT":
-                return 4L;
-            case "LONG":
-            case "DOUBLE":
-                return 8L;
-            case "BINARY":
-            default:
-                return null;
-        }
-    }
-
-    private long estimateAverageBinaryColumnBytes(List<ColumnSchema> columns, int sampleLimit) {
-        List<ColumnSchema> binaryColumns = new ArrayList<ColumnSchema>();
-        for (ColumnSchema column : columns) {
-            if (column == null) {
-                continue;
-            }
-            if (resolveFixedTypeBytes(column.type) == null) {
-                binaryColumns.add(column);
-            }
-        }
-        if (binaryColumns.isEmpty()) {
-            return 0L;
-        }
-
-        int effectiveLimit = Math.min(Math.max(sampleLimit, 1), binaryColumns.size());
-        long totalBytes = 0L;
-        int sampled = 0;
-        for (int i = 0; i < effectiveLimit; i++) {
-            long averageBytes = estimateBinaryColumnAverageBytes(binaryColumns.get(i));
-            if (averageBytes <= 0L) {
-                continue;
-            }
-            totalBytes += averageBytes;
-            sampled++;
-        }
-
-        if (sampled == 0) {
-            return 0L;
-        }
-        return Math.max(1L, totalBytes / sampled);
-    }
-
-    private long estimateBinaryColumnAverageBytes(ColumnSchema column) {
-        if (column == null || column.path.isEmpty()) {
-            return 0L;
-        }
-
-        SessionExecuteSqlResult result = queryBinaryColumnValues(column.path);
-        if (result == null || result.getValues() == null) {
-            return 0L;
-        }
-
-        long totalBytes = 0L;
-        long samples = 0L;
-        for (List<Object> row : result.getValues()) {
-            if (row == null) {
-                continue;
-            }
-            for (Object value : row) {
-                if (value == null) {
-                    continue;
-                }
-                long bytes = estimateValueBytes(value);
-                if (bytes <= 0L) {
-                    continue;
-                }
-                totalBytes += bytes;
-                samples++;
-            }
-        }
-
-        if (samples == 0L) {
-            return 0L;
-        }
-        return Math.max(1L, totalBytes / samples);
-    }
-
-    private SessionExecuteSqlResult queryBinaryColumnValues(String columnPath) {
-        String normalizedPath = StorageUtils.normalizeEscapedPath(columnPath);
-        String[] parentAndLeaf = StorageUtils.splitParentAndLeaf(normalizedPath);
-        String parentPath = parentAndLeaf[0];
-        String leafField = parentAndLeaf[1];
-        if (!parentPath.isEmpty() && !leafField.isEmpty()) {
-            String sql = "select " + leafField + " from " + parentPath + " limit " + BINARY_VALUE_PREVIEW_LIMIT + ";";
-            return iginxDao.executeSql(sql);
-        }
-        return iginxDao.queryDataByPathWithLimit(normalizedPath, BINARY_VALUE_PREVIEW_LIMIT);
     }
 
     private long estimateValueBytes(Object value) {
