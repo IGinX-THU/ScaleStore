@@ -447,7 +447,7 @@ public class StorageService {
         boolean wildcard = normalized.endsWith(".*");
         String base = wildcard ? normalized.substring(0, normalized.length() - 2) : normalized;
 
-        List<String> segments = splitUnescapedSegments(base);
+        List<String> segments = splitUnescapedSegmentsForSql(base);
         if (segments.isEmpty()) {
             return wildcard ? "*" : "";
         }
@@ -469,6 +469,40 @@ public class StorageService {
     private String quoteIdentifierSegment(String rawSegment) {
         String seg = safe(rawSegment).replace("`", "``");
         return "`" + seg + "`";
+    }
+
+    private List<String> splitUnescapedSegmentsForSql(String text) {
+        List<String> segments = new ArrayList<String>();
+        if (text == null || text.isEmpty()) {
+            return segments;
+        }
+
+        StringBuilder current = new StringBuilder();
+        boolean escaping = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (escaping) {
+                current.append(c);
+                escaping = false;
+                continue;
+            }
+            if (c == '\\') {
+                current.append('\\');
+                escaping = true;
+                continue;
+            }
+            if (c == '.') {
+                segments.add(current.toString());
+                current.setLength(0);
+                continue;
+            }
+            current.append(c);
+        }
+        if (escaping) {
+            current.append('\\');
+        }
+        segments.add(current.toString());
+        return segments;
     }
 
     private long estimateExternalAssetSize(String assetPath, AddSourceContext context) {
