@@ -75,8 +75,8 @@ class Neo4jGraphWriter(object):
             tx.run(
                 """
                 MERGE (p:LogicalPath {path: $path})
-                ON CREATE SET p.name = $name, p.depth = $depth
-                ON MATCH SET p.name = $name, p.depth = $depth
+                ON CREATE SET p.name = $name, p.depth = $depth, p.updatedAt = timestamp()
+                ON MATCH SET p.name = $name, p.depth = $depth, p.updatedAt = timestamp()
                 """,
                 path=path,
                 name=self._leaf_name(path),
@@ -88,7 +88,8 @@ class Neo4jGraphWriter(object):
                     """
                     MATCH (parent:LogicalPath {path: $parent_path})
                     MATCH (child:LogicalPath {path: $child_path})
-                    MERGE (parent)-[:CONTAINS]->(child)
+                    MERGE (parent)-[r:CONTAINS]->(child)
+                    SET r.updatedAt = timestamp()
                     """,
                     parent_path=path_chain[idx - 1],
                     child_path=path,
@@ -102,13 +103,15 @@ class Neo4jGraphWriter(object):
                           a.fileName = $file_name,
                           a.fileFormat = $file_format,
                           a.fileSize = $file_size,
-                          a.createTime = $create_time
+                          a.createTime = $create_time,
+                          a.updatedAt = timestamp()
             ON MATCH SET a.logicalPath = $logical_path,
                          a.dataType = $data_type,
                          a.fileName = $file_name,
                          a.fileFormat = $file_format,
                          a.fileSize = $file_size,
-                         a.createTime = $create_time
+                         a.createTime = $create_time,
+                         a.updatedAt = timestamp()
             """,
             asset_ukey=payload.get("asset_ukey", ""),
             logical_path=asset_path,
@@ -123,7 +126,8 @@ class Neo4jGraphWriter(object):
         tx.run(
             """
             MATCH (p:LogicalPath {path: $parent_path}), (a:DataAsset {ukey: $asset_ukey})
-            MERGE (p)-[:HAS_DATA]->(a)
+            MERGE (p)-[r:HAS_DATA]->(a)
+            SET r.updatedAt = timestamp()
             """,
             parent_path=parent_path,
             asset_ukey=payload.get("asset_ukey", ""),
@@ -156,11 +160,13 @@ class Neo4jGraphWriter(object):
                 """
                 MATCH (a:DataAsset {ukey: $asset_ukey})
                 MERGE (f:Field {ukey: $field_ukey})
-                ON CREATE SET f.norm = $norm, f.kind = $field_kind, f.name = $field_name
+                ON CREATE SET f.norm = $norm, f.kind = $field_kind, f.name = $field_name, f.updatedAt = timestamp()
                 ON MATCH SET f.norm = coalesce(f.norm, $norm),
                              f.kind = coalesce(f.kind, $field_kind),
-                             f.name = coalesce(f.name, $field_name)
-                MERGE (a)-[:HAS_FILED]->(f)
+                             f.name = coalesce(f.name, $field_name),
+                             f.updatedAt = timestamp()
+                MERGE (a)-[r:HAS_FILED]->(f)
+                SET r.updatedAt = timestamp()
                 """,
                 asset_ukey=payload.get("asset_ukey", ""),
                 field_ukey=field_ukey,
@@ -181,8 +187,10 @@ class Neo4jGraphWriter(object):
                 """
                 MATCH (a:DataAsset {ukey: $asset_ukey})
                 MERGE (e:Entity {norm: $entity_norm})
-                ON CREATE SET e.name = $entity_name
-                MERGE (a)-[:MENTIONS]->(e)
+                ON CREATE SET e.name = $entity_name, e.updatedAt = timestamp()
+                ON MATCH SET e.updatedAt = timestamp()
+                MERGE (a)-[r:MENTIONS]->(e)
+                SET r.updatedAt = timestamp()
                 """,
                 asset_ukey=payload.get("asset_ukey", ""),
                 entity_norm=entity_norm,
@@ -204,10 +212,16 @@ class Neo4jGraphWriter(object):
             tx.run(
                 """
                 MATCH (a:DataAsset {ukey: $asset_ukey})
-                MERGE (s:Entity {norm: $subject_norm}) ON CREATE SET s.name = $subject_name
-                MERGE (o:Entity {norm: $object_norm}) ON CREATE SET o.name = $object_name
-                MERGE (a)-[:MENTIONS]->(s)
-                MERGE (a)-[:MENTIONS]->(o)
+                MERGE (s:Entity {norm: $subject_norm})
+                ON CREATE SET s.name = $subject_name, s.updatedAt = timestamp()
+                ON MATCH SET s.updatedAt = timestamp()
+                MERGE (o:Entity {norm: $object_norm})
+                ON CREATE SET o.name = $object_name, o.updatedAt = timestamp()
+                ON MATCH SET o.updatedAt = timestamp()
+                MERGE (a)-[r1:MENTIONS]->(s)
+                SET r1.updatedAt = timestamp()
+                MERGE (a)-[r2:MENTIONS]->(o)
+                SET r2.updatedAt = timestamp()
                 MERGE (s)-[r:SEMANTIC_RELATION {relation: $relation, sourcePath: $logical_path}]->(o)
                 SET r.updatedAt = timestamp()
                 """,

@@ -6,6 +6,7 @@ public class IGinxConstants {
     public static final String NODES_PATH = "sys.node";
     public static final String POLICY_PATH = "sys.policy";
     public static final String BOOTSTRAP_PATH = "sys.bootstrap";
+    public static final String DATASOURCE_PATH = "sys.datasource";
 
     // Storage metadata path
     public static final String STORAGE_META_PATH = "storage.meta";

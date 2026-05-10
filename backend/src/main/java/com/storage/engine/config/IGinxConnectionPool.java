@@ -172,13 +172,39 @@ public class IGinxConnectionPool {
         }
         int idx = (counter.getAndIncrement() & Integer.MAX_VALUE) % snapshot.size();
         NodeSession ns = snapshot.get(idx);
-        log.info("[LoadBalancer] --> IGinX node {}:{} (round-robin index={}, pool size={})",
-                ns.ip, ns.port, idx, snapshot.size());
+//        log.info("[LoadBalancer] --> IGinX node {}:{} (round-robin index={}, pool size={})",
+//                ns.ip, ns.port, idx, snapshot.size());
         return ns.session;
     }
 
     public int getPoolSize() {
         return sessions.size();
+    }
+
+    /**
+     * Return a stable snapshot of sessions where endpoint-equivalent matches are ordered first.
+     */
+    public synchronized List<Session> getSessionsPrioritized(String preferredIp, String preferredPort) {
+        List<Session> preferred = new ArrayList<Session>();
+        List<Session> others = new ArrayList<Session>();
+
+        boolean hasPreferred = preferredIp != null
+                && !preferredIp.trim().isEmpty()
+                && preferredPort != null
+                && !preferredPort.trim().isEmpty();
+
+        for (NodeSession ns : sessions) {
+            if (hasPreferred && isSameEndpoint(ns.ip, ns.port, preferredIp, preferredPort)) {
+                preferred.add(ns.session);
+            } else {
+                others.add(ns.session);
+            }
+        }
+
+        List<Session> ordered = new ArrayList<Session>(preferred.size() + others.size());
+        ordered.addAll(preferred);
+        ordered.addAll(others);
+        return ordered;
     }
 
     public boolean isBootstrapNode(String ip, String port) {

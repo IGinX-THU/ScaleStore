@@ -25,6 +25,8 @@ let currentUser = null;
 let dashboardBootstrapped = false;
 let metadataChart = null;
 let topologyChart = null;
+let clusterViewMode = 'list';
+let dataSourceSummary = { totalDataSize: 0, dataSources: [] };
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
@@ -32,6 +34,12 @@ let metadataQueryMode = 'system';
 let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
+let metadataGraphSignature = '';
+let metadataGraphNodeIds = new Set();
+let metadataCurrentLogicalPath = '';
+let metadataActiveSearchKeyword = '';
+let metadataAutoRefreshInFlight = false;
+let metadataAutoRefreshPending = false;
 
 const DEFAULT_GRAPH_MAX_TRIPLES = 200;
 const MIN_GRAPH_MAX_TRIPLES = 20;
@@ -100,6 +108,19 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
       onPageChange();
     });
   });
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let size = value;
+  let idx = 0;
+  while (size >= 1024 && idx < units.length - 1) {
+    size /= 1024;
+    idx++;
+  }
+  return `${size >= 100 || idx === 0 ? size.toFixed(0) : size.toFixed(2)} ${units[idx]}`;
 }
 
 async function requestJson(url, options = {}) {
@@ -456,21 +477,13 @@ function performLogout() {
 }
 
 function bindAuthEvents() {
-  $('login-submit-btn').addEventListener('click', () => {
-    performLogin();
-  });
-
-  $('login-username-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
+  const loginForm = $('login-form');
+  if (loginForm) {
+    loginForm.addEventListener('submit', e => {
+      e.preventDefault();
       performLogin();
-    }
-  });
-
-  $('login-password-input').addEventListener('keydown', e => {
-    if (e.key === 'Enter') {
-      performLogin();
-    }
-  });
+    });
+  }
 
   $('header-user-btn').addEventListener('click', e => {
     e.stopPropagation();
@@ -498,6 +511,50 @@ function bindAuthEvents() {
   $('profile-modal-close-x').addEventListener('click', closeProfileModal);
 }
 
+
+
+function setClusterViewMode(mode) {
+  clusterViewMode = mode === 'graph' ? 'graph' : 'list';
+  const listBtn = $('cluster-list-mode-btn');
+  const graphBtn = $('cluster-graph-mode-btn');
+  const listView = $('cluster-list-view');
+  const graphView = $('cluster-graph-view');
+  if (listBtn) listBtn.classList.toggle('active', clusterViewMode === 'list');
+  if (graphBtn) graphBtn.classList.toggle('active', clusterViewMode === 'graph');
+  if (listView) listView.classList.toggle('hidden', clusterViewMode !== 'list');
+  if (graphView) graphView.classList.toggle('hidden', clusterViewMode !== 'graph');
+  if (clusterViewMode === 'graph') {
+    requestAnimationFrame(() => initClusterTopology());
+  }
+}
+
+function renderDataSourceTable() {
+  const tbody = $('datasource-table-body');
+  if (!tbody) return;
+  const items = Array.isArray(dataSourceSummary.dataSources) ? dataSourceSummary.dataSources : [];
+  const countEl = $('datasource-count');
+  const totalEl = $('datasource-total-size');
+  if (countEl) countEl.textContent = String(items.length);
+  if (totalEl) totalEl.textContent = formatBytes(dataSourceSummary.totalDataSize || 0);
+  if (!items.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="text-center">暂无数据源</td></tr>';
+    return;
+  }
+  tbody.innerHTML = items.map(item => `
+    <tr>
+      <td>${escapeHtml(item.isDefault ? 'filesystem' : (item.type || '-'))}</td>
+      <td>${escapeHtml(item.isDefault ? '系统内置' : `${item.ip || '-'}:${item.port || '-'}`)}</td>
+      <td>${escapeHtml(formatBytes(item.dataSize || 0))}</td>
+      <td><span class="node-status ${(item.connected === false) ? 'status-offline' : 'status-online'}">${item.connected === false ? '离线' : '在线'}</span></td>
+    </tr>
+  `).join('');
+}
+
+async function loadDataSourceSummary() {
+  dataSourceSummary = await requestJson(`${API_BASE}/storage/datasources`);
+  renderDataSourceTable();
+}
+
 async function refreshDashboardData() {
   await Promise.all([
     loadClusterNodes(),
@@ -506,6 +563,7 @@ async function refreshDashboardData() {
     loadRestfulInterfaces(),
     loadJavaGrpcInterfaces(),
     loadPythonGrpcInterfaces(),
+    loadDataSourceSummary(),
   ]);
 
   renderClusterTable();
@@ -527,16 +585,26 @@ async function bootstrapDashboard() {
   bootstrapAccessRootVisit();
 
   if (dashboardBootstrapped) {
-    initClusterTopology();
+    if (clusterViewMode === 'graph') {
+      initClusterTopology();
+    }
     syncAgentPoolNodeState(true);
     return;
   }
 
   dashboardBootstrapped = true;
   initAgentPanel();
+  setClusterViewMode('list');
+
+  const clusterListModeBtn = $('cluster-list-mode-btn');
+  const clusterGraphModeBtn = $('cluster-graph-mode-btn');
+  if (clusterListModeBtn) clusterListModeBtn.addEventListener('click', () => setClusterViewMode('list'));
+  if (clusterGraphModeBtn) clusterGraphModeBtn.addEventListener('click', () => setClusterViewMode('graph'));
 
   requestAnimationFrame(() => {
-    initClusterTopology();
+    if (clusterViewMode === 'graph') {
+      initClusterTopology();
+    }
     initMetadataGraph().catch(e => {
       console.error('Init metadata graph failed:', e);
     });
@@ -651,6 +719,7 @@ async function pollAgentEvents() {
   const payload = result.data;
   const events = Array.isArray(payload.events) ? payload.events.slice() : [];
   events.sort((a, b) => Number(a.seq || 0) - Number(b.seq || 0));
+  const refreshHints = [];
 
   for (const evt of events) {
     const rawLevel = String(evt.level || '').toLowerCase();
@@ -662,11 +731,21 @@ async function pollAgentEvents() {
       agentName: evt.agentName || '',
       timestamp: evt.timestamp,
     });
+
+    if (isMetadataExtractionDoneEvent(evt)) {
+      refreshHints.push({
+        logicalPath: extractPathFromAgentEventText(evt.text || ''),
+      });
+    }
   }
 
   const latestSeq = Number(payload.latestSeq || 0);
   if (Number.isFinite(latestSeq) && latestSeq > agentEventCursor) {
     agentEventCursor = latestSeq;
+  }
+
+  if (refreshHints.length > 0) {
+    queueMetadataAutoRefresh(refreshHints);
   }
 }
 
@@ -799,6 +878,7 @@ function openClusterModal(title, data, mode) {
   if (isAdd) {
     $('cluster-ssh-user-input').value = '';
     $('cluster-ssh-password-input').value = '';
+    $('cluster-ssh-port-input').value = '22';
     $('cluster-deploy-dir-input').value = '~';
     $('cluster-python-cmd-input').value = 'python3';
     $('cluster-port-input').value = '6888';
@@ -864,6 +944,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
     const port = $('cluster-port-input').value.trim();
     const desc = $('cluster-desc-input').value.trim();
     const sshUsername = $('cluster-ssh-user-input').value.trim();
+    const sshPort = $('cluster-ssh-port-input').value.trim();
     const sshPassword = $('cluster-ssh-password-input').value;
     const deployDirectory = $('cluster-deploy-dir-input').value.trim();
     const pythonCmd = $('cluster-python-cmd-input').value.trim();
@@ -871,6 +952,13 @@ $('cluster-modal-save').addEventListener('click', async () => {
 
     if (!name || !ip || !sshUsername || !sshPassword || !deployDirectory || !zookeeperConnectionString) {
       alert('请填写完整信息（SSH密码为必填）');
+      return;
+    }
+
+    const normalizedSshPort = sshPort || '22';
+    const sshPortNum = Number(normalizedSshPort);
+    if (!Number.isInteger(sshPortNum) || sshPortNum < 1 || sshPortNum > 65535) {
+      alert('SSH端口必须是 1-65535 的整数');
       return;
     }
 
@@ -890,6 +978,7 @@ $('cluster-modal-save').addEventListener('click', async () => {
         port: port || '6888',
         description: desc,
         sshUsername,
+        sshPort: String(sshPortNum),
         sshPassword,
         deployDirectory,
         pythonCmd: pythonCmd || 'python3',
@@ -1023,6 +1112,7 @@ async function refreshClusterView(silent) {
     syncAgentPoolNodeState();
     renderClusterTable();
     initClusterTopology();
+    await loadDataSourceSummary();
   } catch (e) {
     if (!silent) {
       throw e;
@@ -1059,6 +1149,7 @@ function openDeleteModal(node) {
   $('cluster-delete-info').innerHTML = '确定要停止并删除节点 <strong>' + escapeHtml(node.name) + '</strong> (' + escapeHtml(node.ip) + ':' + escapeHtml(node.port) + ') 吗？此操作不可撤销。';
   $('cluster-delete-ssh-user').value = '';
   $('cluster-delete-ssh-password').value = '';
+  $('cluster-delete-ssh-port').value = '22';
   $('cluster-delete-deploy-dir').value = node.deployDirectory || '~';
   $('cluster-delete-progress-wrap').classList.add('hidden');
   $('cluster-delete-current-step').textContent = '等待开始...';
@@ -1075,11 +1166,19 @@ $('cluster-delete-modal-close-x').addEventListener('click', () => hideModal('mod
 $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   const nodeId = $('cluster-delete-modal-confirm').dataset.nodeId;
   const sshUsername = $('cluster-delete-ssh-user').value.trim();
+  const sshPort = $('cluster-delete-ssh-port').value.trim();
   const sshPassword = $('cluster-delete-ssh-password').value;
   const deployDirectory = $('cluster-delete-deploy-dir').value.trim();
 
   if (!sshUsername || !sshPassword) {
     alert('请填写SSH凭据');
+    return;
+  }
+
+  const normalizedSshPort = sshPort || '22';
+  const sshPortNum = Number(normalizedSshPort);
+  if (!Number.isInteger(sshPortNum) || sshPortNum < 1 || sshPortNum > 65535) {
+    alert('SSH端口必须是 1-65535 的整数');
     return;
   }
 
@@ -1090,7 +1189,7 @@ $('cluster-delete-modal-confirm').addEventListener('click', async () => {
   $('cluster-delete-progress-wrap').classList.remove('hidden');
 
   try {
-    const task = await stopClusterNode(nodeId, { sshUsername, sshPassword, deployDirectory });
+    const task = await stopClusterNode(nodeId, { sshUsername, sshPort: String(sshPortNum), sshPassword, deployDirectory });
     await waitForStopTask(task.taskId);
     await refreshClusterView(true);
     hideModal('modal-cluster-delete');
@@ -1172,6 +1271,7 @@ function renderStopTaskProgress(task) {
 
 // ==================== 拓扑图 ====================
 function initClusterTopology() {
+  if (clusterViewMode !== 'graph') return;
   const container = $('cluster-topology');
   if (!container) return;
   if (!topologyChart) {
@@ -1424,9 +1524,182 @@ function exitPolicyEdit() {
 }
 
 // ==================== 元数据服务 ====================
+function getGraphNodeIds(graphData) {
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  return nodes.map(n => String(n?.id ?? ''))
+    .filter(Boolean)
+    .sort();
+}
+
+function buildGraphSignature(graphData) {
+  const nodePart = getGraphNodeIds(graphData).join(',');
+  const links = Array.isArray(graphData?.links) ? graphData.links : [];
+  const linkPart = links
+    .map(l => `${String(l?.source ?? '')}->${String(l?.target ?? '')}:${String(l?.type ?? '')}:${String(l?.label ?? '')}`)
+    .sort()
+    .join(',');
+  return `${nodePart}||${linkPart}`;
+}
+
+function calculateGraphDelta(nextGraph) {
+  const nextSignature = buildGraphSignature(nextGraph);
+  const nextNodeIds = new Set(getGraphNodeIds(nextGraph));
+  const addedNodeIds = [];
+  nextNodeIds.forEach(id => {
+    if (!metadataGraphNodeIds.has(id)) {
+      addedNodeIds.push(id);
+    }
+  });
+  return {
+    changed: nextSignature !== metadataGraphSignature,
+    addedNodeIds,
+    nextNodeIds,
+    nextSignature,
+  };
+}
+
+function pickFocusKeywordFromAdded(graphData, addedNodeIds, fallbackKeyword = '') {
+  if (!Array.isArray(addedNodeIds) || addedNodeIds.length === 0) {
+    return (fallbackKeyword || '').trim();
+  }
+
+  const rank = {
+    DataAsset: 1,
+    LogicalPath: 2,
+    Entity: 3,
+    Field: 4
+  };
+
+  const nodes = Array.isArray(graphData?.nodes) ? graphData.nodes : [];
+  const candidates = nodes
+    .filter(n => addedNodeIds.includes(String(n?.id ?? '')))
+    .map(n => ({
+      name: String(n?.name || '').trim(),
+      categoryName: String(n?.categoryName || ''),
+      rank: rank[String(n?.categoryName || '')] || 9,
+    }))
+    .filter(n => n.name && n.name !== '(unknown)')
+    .sort((a, b) => a.rank - b.rank);
+
+  if (candidates.length > 0) {
+    return candidates[0].name;
+  }
+  return (fallbackKeyword || '').trim();
+}
+
+function updateMetadataGraphTracking(graphData, logicalPath, searchKeyword) {
+  metadataGraphSignature = buildGraphSignature(graphData);
+  metadataGraphNodeIds = new Set(getGraphNodeIds(graphData));
+  if (logicalPath !== undefined) {
+    metadataCurrentLogicalPath = String(logicalPath || '').trim();
+  }
+  if (searchKeyword !== undefined) {
+    metadataActiveSearchKeyword = String(searchKeyword || '').trim();
+  }
+}
+
+function renderAndTrackMetadataGraph(graphData, options = {}) {
+  const {
+    focusKeyword = '',
+    focusMode = 'search',
+    logicalPath = metadataCurrentLogicalPath,
+    searchKeyword = metadataActiveSearchKeyword,
+  } = options;
+  renderMetadataGraph(graphData, focusKeyword, focusMode);
+  updateMetadataGraphTracking(graphData, logicalPath, searchKeyword);
+}
+
+function extractPathFromAgentEventText(text) {
+  const source = String(text || '');
+  const match = source.match(/path\s*=\s*([^,\s]+)/i);
+  return match ? String(match[1] || '').trim() : '';
+}
+
+function isMetadataExtractionDoneEvent(evt) {
+  const status = String(evt?.status || '').toUpperCase();
+  const level = String(evt?.level || '').toLowerCase();
+  const text = String(evt?.text || '');
+  return status === 'DONE'
+    || level === 'success'
+    || /Transform extraction completed/i.test(text);
+}
+
+function queueMetadataAutoRefresh(hints = []) {
+  if (metadataAutoRefreshInFlight) {
+    // Collapse multiple incoming events into one catch-up refresh.
+    metadataAutoRefreshPending = true;
+    return;
+  }
+  metadataAutoRefreshPending = false;
+  performMetadataAutoRefresh(hints).catch(e => {
+    console.error('Metadata auto refresh failed:', e);
+  });
+}
+
+async function performMetadataAutoRefresh(hints = []) {
+  metadataAutoRefreshInFlight = true;
+  try {
+    if (metadataFullscreen || !metadataChart) {
+      return;
+    }
+
+    const activeSearchKeyword = String(metadataActiveSearchKeyword || '').trim();
+    if (activeSearchKeyword) {
+      const nextGraph = await queryMetadataBySystem({ keyword: activeSearchKeyword });
+      const delta = calculateGraphDelta(nextGraph);
+      if (!delta.changed) {
+        return;
+      }
+      const hasAdded = Array.isArray(delta.addedNodeIds) && delta.addedNodeIds.length > 0;
+      const focusKeyword = pickFocusKeywordFromAdded(nextGraph, delta.addedNodeIds, activeSearchKeyword);
+      renderAndTrackMetadataGraph(nextGraph, {
+        focusKeyword,
+        focusMode: hasAdded ? 'new' : 'search',
+        logicalPath: metadataCurrentLogicalPath,
+        searchKeyword: activeSearchKeyword,
+      });
+      return;
+    }
+
+    const nextGraph = await fetchMetadataGraph(metadataCurrentLogicalPath);
+    const delta = calculateGraphDelta(nextGraph);
+    if (!delta.changed) {
+      return;
+    }
+
+    const hintedPath = Array.isArray(hints)
+      ? (hints.find(h => String(h?.logicalPath || '').trim())?.logicalPath || '')
+      : '';
+    let fallbackKeyword = '';
+    if (hintedPath) {
+      const segments = String(hintedPath).split('/').filter(Boolean);
+      fallbackKeyword = segments.length > 0 ? segments[segments.length - 1] : '/';
+    }
+
+    const focusKeyword = pickFocusKeywordFromAdded(nextGraph, delta.addedNodeIds, fallbackKeyword);
+    renderAndTrackMetadataGraph(nextGraph, {
+      focusKeyword,
+      focusMode: 'new',
+      logicalPath: metadataCurrentLogicalPath,
+      searchKeyword: '',
+    });
+  } finally {
+    metadataAutoRefreshInFlight = false;
+    if (metadataAutoRefreshPending) {
+      metadataAutoRefreshPending = false;
+      performMetadataAutoRefresh([]).catch(e => {
+        console.error('Metadata catch-up refresh failed:', e);
+      });
+    }
+  }
+}
+
 async function initMetadataGraph(logicalPath = '') {
   const graphData = await fetchMetadataGraph(logicalPath);
-  renderMetadataGraph(graphData);
+  renderAndTrackMetadataGraph(graphData, {
+    logicalPath,
+    searchKeyword: '',
+  });
 }
 
 async function fetchMetadataGraph(logicalPath = '') {
@@ -1472,7 +1745,7 @@ async function queryMetadataByLLM(question) {
   return result.data;
 }
 
-function renderMetadataGraph(graphData, focusKeyword = '') {
+function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search') {
   const container = $('metadata-graph');
   if (!container) return;
   if (!metadataChart) {
@@ -1547,12 +1820,22 @@ function renderMetadataGraph(graphData, focusKeyword = '') {
     const matched = !!focus && displayName.toLowerCase().includes(focus);
     const symbolSize = isRootPath ? Math.max(56, Number(n.symbolSize || 42)) : Number(n.symbolSize || 26);
 
+    const matchStyle = focusMode === 'new'
+      ? {
+          color: baseColor,
+          shadowBlur: isRootPath ? 20 : 16,
+          shadowColor: baseColor + 'cc',
+          borderColor: 'rgba(255, 255, 255, 0.95)',
+          borderWidth: isRootPath ? 2.8 : 2.2,
+        }
+      : { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' };
+
     return {
       ...n,
       name: displayName,
       symbolSize,
       itemStyle: matched
-        ? { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' }
+        ? matchStyle
         : {
             color: baseColor,
             shadowBlur: isRootPath ? 16 : 8,
@@ -1587,7 +1870,14 @@ function renderMetadataGraph(graphData, focusKeyword = '') {
       ...l,
       relationText,
       lineStyle: matched
-        ? { color: '#ff4466', width: 3 }
+        ? (focusMode === 'new'
+          ? {
+              color: baseEdgeColor,
+              width: semanticEdge ? 3 : 2.6,
+              opacity: 1,
+              type: 'solid',
+            }
+          : { color: '#ff4466', width: 3 })
         : {
             color: baseEdgeColor,
             curveness: semanticEdge ? 0.2 : 0.1,
@@ -1713,7 +2003,7 @@ function extractRelationText(value) {
 }
 
 function searchMetadataNode(keyword) {
-  if (!metadataChart) { alert('请先构建网络'); return; }
+  if (!metadataChart) { alert('请先刷新图谱'); return; }
   const option = metadataChart.getOption();
   const series = option.series[0];
   const categoryPalette = {
@@ -1794,8 +2084,8 @@ $('metadata-build-btn').addEventListener('click', async () => {
   try {
     await initMetadataGraph(logicalPath);
   } catch (e) {
-    alert('构建图谱失败: ' + e.message);
-    console.error('Build metadata graph error:', e);
+    alert('刷新图谱失败: ' + e.message);
+    console.error('Refresh metadata graph error:', e);
   }
 });
 
@@ -1845,7 +2135,12 @@ $('metadata-search-btn').addEventListener('click', async () => {
       }
     }
 
-    renderMetadataGraph(graph, focusKeyword);
+    renderAndTrackMetadataGraph(graph, {
+      focusKeyword,
+      focusMode: 'search',
+      logicalPath: metadataCurrentLogicalPath,
+      searchKeyword: metadataFullscreen ? '' : quickKeyword,
+    });
     if (graph.cypher) {
       console.log('Metadata query cypher:', graph.cypher);
     }
@@ -2051,18 +2346,14 @@ $('storage-source-modal-save').addEventListener('click', async () => {
       body: JSON.stringify(payload),
     });
 
-    const discovered = Number(result?.discoveredAssetCount || 0);
-    const imported = Number(result?.importedMetaCount || 0);
-    const skipped = Number(result?.skippedMetaCount || 0);
-
     pushAgentMessage({
       level: 'success',
       status: '完成',
       agentName: storageAgentName,
-      text: `新增${sourceLabel}数据源成功，发现 ${discovered} 个资产，同步 ${imported} 条元数据（跳过 ${skipped} 条），已进入定时UDF抽取队列`,
+      text: `新增${sourceLabel}数据源成功，已进入定时UDF抽取队列`,
     });
 
-    alert(`新增数据源成功\n发现资产: ${discovered}\n同步元数据: ${imported}\n跳过: ${skipped}`);
+    alert(`新增数据源成功`);
     closeStorageSourceModal();
   } catch (e) {
     pushAgentMessage({
@@ -2279,9 +2570,14 @@ function renderAccessItem(item) {
     document: '文档数据', keyvalue: '键值数据', directory: '目录'
   };
 
+  const rawSize = Number(item?.fileSize || 0);
+  const sizeText = dataType === 'directory'
+    ? '-'
+    : (rawSize > 0 ? formatFileSize(rawSize) : '-');
+
   setAccessInfo(
     typeLabels[dataType] || dataType || '-',
-    dataType === 'directory' ? '-' : formatFileSize(item?.fileSize),
+    sizeText,
     dataType === 'directory' ? '-' : (item?.createTime || '-')
   );
 
@@ -2510,7 +2806,8 @@ function renderTablePreview(container, previewData, dataType) {
   }
   const cols = previewData.columns;
   const rows = previewData.rows;
-  const maxRows = Math.min(rows.length, 50);
+  const previewLimit = 50;
+  const maxRows = Math.min(rows.length, previewLimit);
 
   let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr>';
   cols.forEach(c => { html += `<th>${escapeHtml(c)}</th>`; });
@@ -2525,8 +2822,8 @@ function renderTablePreview(container, previewData, dataType) {
     html += '</tr>';
   }
   html += '</tbody></table>';
-  if (rows.length > maxRows) {
-    html += `<p style="color:var(--text-dim);font-size:11px;padding:4px 8px;">显示前 ${maxRows} 行，共 ${previewData.totalRows} 行</p>`;
+  if (rows.length === previewLimit) {
+    html += `<p style="color:var(--text-dim);font-size:11px;padding:4px 8px;">显示前 ${maxRows} 行</p>`;
   }
   html += '</div>';
   container.innerHTML = html;
@@ -2791,3 +3088,14 @@ document.querySelectorAll('.password-toggle').forEach(btn => {
 
 init();
 console.log('可扩展存储引擎可视化大屏初始化完成');
+
+
+$('cluster-list-mode-btn')?.addEventListener('click', () => setClusterViewMode('list'));
+$('cluster-graph-mode-btn')?.addEventListener('click', () => setClusterViewMode('graph'));
+setClusterViewMode('list');
+
+const clusterListModeBtn = $('cluster-list-mode-btn');
+const clusterGraphModeBtn = $('cluster-graph-mode-btn');
+if (clusterListModeBtn) clusterListModeBtn.addEventListener('click', () => setClusterViewMode('list'));
+if (clusterGraphModeBtn) clusterGraphModeBtn.addEventListener('click', () => setClusterViewMode('graph'));
+setClusterViewMode('list');

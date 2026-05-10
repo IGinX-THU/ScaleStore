@@ -7,6 +7,7 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.config.IGinxConnectionPool;
 import com.storage.engine.constant.IGinxConstants;
+import com.storage.engine.service.adapter.StorageUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
@@ -408,6 +409,51 @@ public class IGinxDao {
       return -1;
   }
 
+  // ==================== Data Source Operations ====================
+
+  public void insertDataSource(long key, String name, String ip, String port, String type,
+                               String schemaPrefix, String dataPrefix, boolean connected,
+                               boolean isDefault, long dataSize, String sourceGroup, boolean isValid) {
+      String sql = String.format(
+              Locale.ROOT,
+              "insert into %s(key, name, ip, port, type, schemaPrefix, dataPrefix, connected, isDefault, dataSize, sourceGroup, isValid) values (%d, '%s', '%s', '%s', '%s', '%s', '%s', %b, %b, %d, '%s', %b);",
+              IGinxConstants.DATASOURCE_PATH,
+              key,
+              escapeSql(name),
+              escapeSql(ip),
+              escapeSql(port),
+              escapeSql(type),
+              escapeSqlKeepBackslash(schemaPrefix),
+              escapeSqlKeepBackslash(dataPrefix),
+              connected,
+              isDefault,
+              dataSize,
+              escapeSql(sourceGroup),
+              isValid);
+      executeSql(sql);
+  }
+
+  public SessionExecuteSqlResult getAllDataSources() {
+      try {
+          return executeSql("select * from " + IGinxConstants.DATASOURCE_PATH + ";");
+      } catch (RuntimeException e) {
+          return null;
+      }
+  }
+
+  public long getMaxDataSourceId() {
+      try {
+          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.DATASOURCE_PATH + ";");
+          if (result.getKeys() != null && result.getKeys().length > 0) {
+              long[] keys = result.getKeys();
+              return keys[keys.length - 1];
+          }
+      } catch (RuntimeException e) {
+          // sys.datasource path may not exist yet
+      }
+      return -1;
+  }
+
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
@@ -470,26 +516,13 @@ public class IGinxDao {
   // ==================== Data Query Operations ====================
 
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
-      String queryPath = normalizePathForQuery(pathPrefix);
+      String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
       return executeSql("select * from " + queryPath + ";");
   }
 
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
-      String queryPath = normalizePathForQuery(pathPrefix);
+      String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
       return executeSql("select * from " + queryPath + " limit " + limit + ";");
-  }
-
-  public void deleteDataByPath(String pathPrefix) {
-      String queryPath = normalizePathForQuery(pathPrefix);
-      executeSql("delete from " + queryPath + ".*;");
-  }
-
-  private String normalizePathForQuery(String pathPrefix) {
-      String path = pathPrefix == null ? "" : pathPrefix.trim();
-      while (path.contains("\\\\")) {
-          path = path.replace("\\\\", "\\");
-      }
-      return path;
   }
 
   // ==================== Cluster Info Operations ====================
@@ -514,13 +547,49 @@ public class IGinxDao {
   }
 
   public SessionExecuteSqlResult executeSql(String sql) {
-      logger.info("[IGinX-SQL] {}", sql);
+//      logger.info("[IGinX-SQL] {}", sql);
       return withRetry("executeSql", new SessionAction<SessionExecuteSqlResult>() {
           @Override
           public SessionExecuteSqlResult run(Session session) throws SessionException {
               return session.executeSql(sql);
           }
       });
+  }
+
+  /**
+   * Execute SQL by preferring a target IGinX endpoint first, then fallback to other nodes.
+   * This is used for endpoint-sensitive operations (for example filesystem external source registration).
+   */
+  public SessionExecuteSqlResult executeSqlPreferEndpoint(String sql, String preferredIp, Integer preferredPort) {
+      logger.info("[IGinX-SQL][PreferEndpoint {}:{}] {}",
+              preferredIp,
+              preferredPort,
+              sql);
+
+      String preferredPortText = preferredPort == null ? null : String.valueOf(preferredPort.intValue());
+      List<Session> orderedSessions = connectionPool.getSessionsPrioritized(preferredIp, preferredPortText);
+      if (orderedSessions.isEmpty()) {
+          throw new RuntimeException("Failed to executeSql: no available IGinX session");
+      }
+
+      RuntimeException last = null;
+      for (Session session : orderedSessions) {
+          synchronized (session) {
+              try {
+                  return session.executeSql(sql);
+              } catch (SessionException e) {
+                  if (shouldEvictSession(e)) {
+                      connectionPool.evictSession(session, "executeSqlPreferEndpoint failed: " + e.getMessage());
+                  }
+                  last = new RuntimeException("Failed to executeSql on one IGinX endpoint: " + e.getMessage(), e);
+              }
+          }
+      }
+
+      if (last != null) {
+          throw last;
+      }
+      throw new RuntimeException("Failed to executeSql: no available IGinX session");
   }
 
   private boolean shouldEvictSession(SessionException e) {

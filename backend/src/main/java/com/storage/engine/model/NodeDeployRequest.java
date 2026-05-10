@@ -9,6 +9,7 @@ public class NodeDeployRequest {
 
     private String sshUsername;
     private String sshPassword;
+    private String sshPort;
     private String deployDirectory;
     private String packagePath;
     private String zookeeperConnectionString;
@@ -70,6 +71,14 @@ public class NodeDeployRequest {
         this.sshPassword = sshPassword;
     }
 
+    public String getSshPort() {
+        return sshPort;
+    }
+
+    public void setSshPort(String sshPort) {
+        this.sshPort = sshPort;
+    }
+
     public String getDeployDirectory() {
         return deployDirectory;
     }
@@ -103,3 +112,4 @@ public class NodeDeployRequest {
     }
 
 }
+

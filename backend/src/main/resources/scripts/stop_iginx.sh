@@ -2,15 +2,16 @@
 
 # ================================================================
 # IGinX 远程停止脚本（按端口 + 目录识别实例并停止）
-# 用法: ./stop_iginx.sh <目标IP> <用户名> <密码> <远程安装目录> <IGinX端口>
-# 示例: ./stop_iginx.sh 10.0.21.44 ubuntu password ~ 6888
+# 用法: ./stop_iginx.sh <目标IP> <用户名> <密码> <SSH端口> <远程安装目录> <IGinX端口>
+# 示例: ./stop_iginx.sh 10.0.21.44 ubuntu password 22 ~ 6888
 # ================================================================
 
 REMOTE_IP=$1
 REMOTE_USER=$2
 REMOTE_PASS=$3
-REMOTE_INSTALL_DIR=$4
-IGINX_PORT=${5:-6888}
+SSH_PORT=${4:-22}
+REMOTE_INSTALL_DIR=$5
+IGINX_PORT=${6:-6888}
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -21,14 +22,18 @@ info()  { echo -e "${GREEN}[INFO]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
-if [ $# -lt 4 ]; then
-    error "参数不足。用法: $0 <目标IP> <用户名> <密码> <远程安装目录> [IGinX端口]"
+if [ $# -lt 5 ]; then
+    error "参数不足。用法: $0 <目标IP> <用户名> <密码> <SSH端口> <远程安装目录> [IGinX端口]"
+fi
+
+if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
+    error "SSH端口非法: $SSH_PORT（需为 1-65535 的整数）"
 fi
 
 PACKAGE_DIRNAME="IGinX-FastDeploy-0.8.0"
 REMOTE_TARGET_DIR="$REMOTE_INSTALL_DIR/$PACKAGE_DIRNAME"
 
-info "停止参数: IP=$REMOTE_IP, 端口=$IGINX_PORT, 目录=$REMOTE_TARGET_DIR"
+info "停止参数: IP=$REMOTE_IP, SSH端口=$SSH_PORT, 端口=$IGINX_PORT, 目录=$REMOTE_TARGET_DIR"
 
 # ────────── 检查 sshpass ──────────
 if ! command -v sshpass &> /dev/null; then
@@ -42,7 +47,7 @@ if ! command -v sshpass &> /dev/null; then
     fi
 fi
 
-SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10)
+SSH_OPTS=(-o StrictHostKeyChecking=no -o ConnectTimeout=10 -p "$SSH_PORT")
 
 ssh_exec() {
     sshpass -p "$REMOTE_PASS" ssh "${SSH_OPTS[@]}" "$REMOTE_USER@$REMOTE_IP" "$@"

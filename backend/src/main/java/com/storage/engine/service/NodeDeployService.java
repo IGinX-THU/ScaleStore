@@ -68,6 +68,7 @@ public class NodeDeployService {
         String targetIp = required(request.getIp(), "节点IP不能为空");
         String username = required(request.getSshUsername(), "SSH用户名不能为空");
         String password = required(request.getSshPassword(), "SSH密码不能为空");
+        String sshPort = resolveSshPort(request.getSshPort());
 
         String packagePath = safeValue(request.getPackagePath(), defaultPackagePath);
         File packageFile = new File(packagePath);
@@ -91,6 +92,7 @@ public class NodeDeployService {
         command.add(targetIp);
         command.add(username);
         command.add(password);
+        command.add(sshPort);
         command.add(packageFile.getAbsolutePath());
         command.add(deployDir);
         command.add(zkConnection);
@@ -146,11 +148,12 @@ public class NodeDeployService {
     // ==================== Stop (Delete Node) ====================
 
     public NodeDeployTaskStatus startStopTask(final String targetIp, final String nodePort, final String username,
-                                              final String password, final String deployDirectory,
+                                              final String sshPort, final String password, final String deployDirectory,
                                               final Integer expectedClusterId, final Runnable successAction) {
         required(targetIp, "节点IP不能为空");
         required(username, "SSH用户名不能为空");
         required(password, "SSH密码不能为空");
+        String resolvedSshPort = resolveSshPort(sshPort);
 
         String deployDir = safeValue(deployDirectory, defaultDeployDirectory);
 
@@ -162,6 +165,7 @@ public class NodeDeployService {
         command.add(targetIp);
         command.add(username);
         command.add(password);
+        command.add(resolvedSshPort);
         command.add(deployDir);
         command.add(safeValue(nodePort, "6888"));
 
@@ -644,6 +648,19 @@ public class NodeDeployService {
             return defaultValue;
         }
         return value.trim();
+    }
+
+    private String resolveSshPort(String port) {
+        String normalized = safeValue(port, "22");
+        try {
+            int parsed = Integer.parseInt(normalized);
+            if (parsed < 1 || parsed > 65535) {
+                throw new RuntimeException("SSH端口必须在 1-65535 之间");
+            }
+            return String.valueOf(parsed);
+        } catch (NumberFormatException e) {
+            throw new RuntimeException("SSH端口必须是整数");
+        }
     }
 
     private void appendLog(DeployTaskState taskState, String line) {

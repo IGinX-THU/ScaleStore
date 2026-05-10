@@ -133,7 +133,8 @@ public final class StorageUtils {
     }
 
     /**
-     * Find last unescaped dot in an IGinX path (escaped dot is written as \\. ).
+     * Find last unescaped dot in an IGinX path.
+     * A dot is considered escaped when it is immediately preceded by one or more backslashes.
      */
     public static int findLastUnescapedDot(String text) {
         if (text == null || text.isEmpty()) {
@@ -143,15 +144,10 @@ public final class StorageUtils {
             if (text.charAt(i) != '.') {
                 continue;
             }
-            int slashCount = 0;
-            int j = i - 1;
-            while (j >= 0 && text.charAt(j) == '\\') {
-                slashCount++;
-                j--;
+            if (i > 0 && text.charAt(i - 1) == '\\') {
+                continue;
             }
-            if ((slashCount % 2) == 0) {
-                return i;
-            }
+            return i;
         }
         return -1;
     }

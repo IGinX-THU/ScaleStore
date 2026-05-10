@@ -1550,3 +1550,58 @@ body.metadata-fullscreen-active {
 .password-toggle:hover {
   opacity: 1;
 }
+
+
+.view-mode-switch {
+  display: inline-flex;
+  gap: 0;
+  padding: 0;
+  border: 1px solid rgba(0, 180, 255, 0.18);
+  border-radius: 999px;
+  background: rgba(0, 180, 255, 0.05);
+}
+
+.view-mode-switch .btn.active {
+  background: rgba(0, 207, 255, 0.2);
+  color: var(--text-bright);
+}
+
+.cluster-view-panel.hidden {
+  display: none;
+}
+
+.datasource-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.datasource-stat-card {
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: rgba(0, 180, 255, 0.05);
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.datasource-stat-label {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+.datasource-stat-card strong {
+  color: var(--text-bright);
+  font-size: 18px;
+}
+
+.view-mode-switch .btn {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.view-mode-switch .btn + .btn {
+  border-left: 1px solid rgba(0, 180, 255, 0.18);
+}

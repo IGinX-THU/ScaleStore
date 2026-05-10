@@ -23,7 +23,6 @@ public class MetadataKnowledgeService {
 
     private static final Logger logger = LoggerFactory.getLogger(MetadataKnowledgeService.class);
     private static final int LLM_CYPHER_MAX_ATTEMPTS = 2;
-    private static final int DEFAULT_CYPHER_QUERY_LIMIT = 80;
     private static final Pattern PATH_PATTERN = Pattern.compile("(/[a-zA-Z0-9_./-]*)");
     private static final Pattern KEYWORD_PATTERN_1 = Pattern.compile("有关(.+?)的");
     private static final Pattern KEYWORD_PATTERN_2 = Pattern.compile("关于(.+?)的");
@@ -103,7 +102,8 @@ public class MetadataKnowledgeService {
             + "OPTIONAL MATCH (e)-[sr:SEMANTIC_RELATION]->(t:Entity) "
             + "RETURN p,hd,d,m,e,hf,f,sr,t";
 
-        String finalCypher = ensureLimit(cypher, DEFAULT_CYPHER_QUERY_LIMIT);
+        int queryLimit = resolveGraphLimit(0);
+        String finalCypher = ensureLimit(cypher, queryLimit);
         logger.info("系统参数化查询: logicalPath={}, dataType={}, keyword={}, cypher={}",
                 path, dt, kw, finalCypher);
         Map<String, Object> graph = neo4jDao.queryByCypher(finalCypher);
@@ -182,7 +182,8 @@ public class MetadataKnowledgeService {
             }
 
             try {
-                String finalCypher = ensureLimit(cypher, DEFAULT_CYPHER_QUERY_LIMIT);
+                int queryLimit = resolveGraphLimit(0);
+                String finalCypher = ensureLimit(cypher, queryLimit);
                 Map<String, Object> graph = neo4jDao.queryByCypher(finalCypher);
                 if (isGraphEmpty(graph)) {
                     previousError = "empty_result";
@@ -218,8 +219,9 @@ public class MetadataKnowledgeService {
     }
 
     private Map<String, Object> keywordFallback(String keyword) {
-        Map<String, Object> graph = neo4jDao.queryByKeyword(keyword);
-        graph.put("cypher", "MATCH (n) WHERE ... RETURN n LIMIT 80");
+        int queryLimit = resolveGraphLimit(0);
+        Map<String, Object> graph = neo4jDao.queryByKeyword(keyword, queryLimit);
+        graph.put("cypher", "MATCH (n) WHERE ... RETURN n LIMIT " + queryLimit);
         graph.put("strategy", "keyword_fallback");
         graph.put("strategyReason", "llm_failed_or_unsafe");
         graph.put("strategyConfidence", 0.0);

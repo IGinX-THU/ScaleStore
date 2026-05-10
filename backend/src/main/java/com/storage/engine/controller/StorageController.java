@@ -3,6 +3,8 @@ package com.storage.engine.controller;
 import com.storage.engine.model.AddStorageEngineRequest;
 import com.storage.engine.model.DataItem;
 import com.storage.engine.model.Response;
+import com.storage.engine.model.DataSourceSummary;
+import com.storage.engine.service.DataSourceService;
 import com.storage.engine.service.StorageService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
@@ -17,6 +19,9 @@ public class StorageController {
 
     @Autowired
     private StorageService storageService;
+
+    @Autowired
+    private DataSourceService dataSourceService;
 
     @PostMapping("/storage/sources")
     public ResponseEntity<Response<Map<String, Object>>> addStorageSource(@RequestBody AddStorageEngineRequest request) {
@@ -64,6 +69,17 @@ public class StorageController {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Response.error(500, "Storage failed: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/storage/datasources")
+    public ResponseEntity<Response<DataSourceSummary>> getDataSourceSummary() {
+        try {
+            return ResponseEntity.ok(Response.success(dataSourceService.getDataSourceSummary()));
+        } catch (Exception e) {
+            e.printStackTrace();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Response.error(500, "Get data source summary failed: " + e.getMessage()));
         }
     }
 }

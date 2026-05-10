@@ -2,21 +2,22 @@
 
 # ================================================================
 # IGinX 远程部署脚本
-# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <pythonCMD> <本机udf_list路径> <本机metadata目录路径>
-# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu password ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 python3 /opt/resources/udf/udf_list /opt/resources/udf/metadata
+# 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <SSH端口> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <pythonCMD> <本机udf_list路径> <本机metadata目录路径>
+# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu password 22 ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 python3 /opt/resources/udf/udf_list /opt/resources/udf/metadata
 # ================================================================
 
 # ────────── 参数 ──────────
 REMOTE_IP=$1
 REMOTE_USER=$2
 REMOTE_PASS=$3
-LOCAL_PACKAGE=$4
-REMOTE_INSTALL_DIR=$5
-ZK_ADDRESS=$6
-IGINX_PORT=${7:-6888}
-PYTHON_CMD=${8:-python3}
-LOCAL_UDF_LIST=$9
-LOCAL_METADATA_DIR=${10}
+SSH_PORT=${4:-22}
+LOCAL_PACKAGE=$5
+REMOTE_INSTALL_DIR=$6
+ZK_ADDRESS=$7
+IGINX_PORT=${8:-6888}
+PYTHON_CMD=${9:-python3}
+LOCAL_UDF_LIST=${10}
+LOCAL_METADATA_DIR=${11}
 
 # ────────── 颜色输出 ──────────
 GREEN='\033[0;32m'
@@ -29,8 +30,12 @@ warn()  { echo -e "${YELLOW}[WARN]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1"; exit 1; }
 
 # ────────── 参数检查 ──────────
-if [ $# -lt 10 ]; then
+if [ $# -lt 11 ]; then
     error "参数不足。请同时提供 pythonCMD、udf_list 路径、metadata 目录路径"
+fi
+
+if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt 65535 ]; then
+    error "SSH端口非法: $SSH_PORT（需为 1-65535 的整数）"
 fi
 
 if [ ! -f "$LOCAL_PACKAGE" ]; then
@@ -54,7 +59,7 @@ LOG_FILE="$REMOTE_TARGET_DIR/sbin/logs/iginx.log"
 REMOTE_UDF_HOME="$REMOTE_TARGET_DIR/udf_funcs"
 REMOTE_UDF_PY_DIR="$REMOTE_UDF_HOME/python_scripts"
 
-info "部署参数: IGinX端口=$IGINX_PORT, pythonCMD=$PYTHON_CMD"
+info "部署参数: SSH端口=$SSH_PORT, IGinX端口=$IGINX_PORT, pythonCMD=$PYTHON_CMD"
 
 # ────────── 检查 sshpass ──────────
 if ! command -v sshpass &> /dev/null; then
@@ -69,9 +74,10 @@ if ! command -v sshpass &> /dev/null; then
 fi
 
 # ────────── 公共 SSH/SCP 参数 ──────────
-SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10"
+SSH_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -p $SSH_PORT"
+SCP_OPTS="-o StrictHostKeyChecking=no -o ConnectTimeout=10 -P $SSH_PORT"
 SSH_CMD="sshpass -p '$REMOTE_PASS' ssh $SSH_OPTS $REMOTE_USER@$REMOTE_IP"
-SCP_CMD="sshpass -p '$REMOTE_PASS' scp $SSH_OPTS"
+SCP_CMD="sshpass -p '$REMOTE_PASS' scp $SCP_OPTS"
 
 # ────────── 测试连通性 ──────────
 info "测试与 $REMOTE_IP 的 SSH 连接..."
