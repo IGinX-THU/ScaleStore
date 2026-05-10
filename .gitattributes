@@ -1,4 +1,8 @@
+# Shell scripts must use LF (Linux requirement)
 *.sh text eol=lf
 docker/*.sh text eol=lf
 docker/Dockerfile text eol=lf
 docker/docker-compose.yml text eol=lf
+
+# Other files: auto-detect (will be CRLF on Windows, LF in repo)
+* text=auto
