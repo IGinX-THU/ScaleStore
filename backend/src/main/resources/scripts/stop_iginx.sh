@@ -30,7 +30,7 @@ if ! [[ "$SSH_PORT" =~ ^[0-9]+$ ]] || [ "$SSH_PORT" -lt 1 ] || [ "$SSH_PORT" -gt
     error "SSH端口非法: $SSH_PORT（需为 1-65535 的整数）"
 fi
 
-PACKAGE_DIRNAME="IGinX-FastDeploy-0.8.0"
+PACKAGE_DIRNAME="iginx-0.9.0-SNAPSHOT"
 REMOTE_TARGET_DIR="$REMOTE_INSTALL_DIR/$PACKAGE_DIRNAME"
 
 info "停止参数: IP=$REMOTE_IP, SSH端口=$SSH_PORT, 端口=$IGINX_PORT, 目录=$REMOTE_TARGET_DIR"
