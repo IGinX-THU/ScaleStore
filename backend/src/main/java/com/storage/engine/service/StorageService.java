@@ -428,7 +428,7 @@ public class StorageService {
             return "show columns;";
         }
 
-        String identifier = quoteIdentifierPath(normalizedPrefix);
+        String identifier = StorageUtils.quoteIdentifierPath(normalizedPrefix);
         if (normalizedPrefix.endsWith(".*")) {
             return "show columns " + identifier + ";";
         }
@@ -436,73 +436,6 @@ public class StorageService {
             return "show columns " + identifier + ";";
         }
         return "show columns " + identifier + ".*;";
-    }
-
-    private String quoteIdentifierPath(String rawPath) {
-        String normalized = safe(rawPath);
-        if (normalized.isEmpty()) {
-            return normalized;
-        }
-
-        boolean wildcard = normalized.endsWith(".*");
-        String base = wildcard ? normalized.substring(0, normalized.length() - 2) : normalized;
-
-        List<String> segments = splitUnescapedSegmentsForSql(base);
-        if (segments.isEmpty()) {
-            return wildcard ? "*" : "";
-        }
-
-        StringBuilder quoted = new StringBuilder();
-        for (int i = 0; i < segments.size(); i++) {
-            if (i > 0) {
-                quoted.append('.');
-            }
-            quoted.append(quoteIdentifierSegment(segments.get(i)));
-        }
-
-        if (wildcard) {
-            quoted.append(".*");
-        }
-        return quoted.toString();
-    }
-
-    private String quoteIdentifierSegment(String rawSegment) {
-        String seg = safe(rawSegment).replace("`", "``");
-        return "`" + seg + "`";
-    }
-
-    private List<String> splitUnescapedSegmentsForSql(String text) {
-        List<String> segments = new ArrayList<String>();
-        if (text == null || text.isEmpty()) {
-            return segments;
-        }
-
-        StringBuilder current = new StringBuilder();
-        boolean escaping = false;
-        for (int i = 0; i < text.length(); i++) {
-            char c = text.charAt(i);
-            if (escaping) {
-                current.append(c);
-                escaping = false;
-                continue;
-            }
-            if (c == '\\') {
-                current.append('\\');
-                escaping = true;
-                continue;
-            }
-            if (c == '.') {
-                segments.add(current.toString());
-                current.setLength(0);
-                continue;
-            }
-            current.append(c);
-        }
-        if (escaping) {
-            current.append('\\');
-        }
-        segments.add(current.toString());
-        return segments;
     }
 
     private long estimateExternalAssetSize(String assetPath, AddSourceContext context) {
@@ -569,7 +502,7 @@ public class StorageService {
     }
 
     private long resolveFilesystemRowCount(String parentPath, String leafField) {
-        String sql = "select count(" + quoteIdentifierSegment(leafField) + ") from " + quoteIdentifierPath(parentPath) + ";";
+        String sql = "select count(" + StorageUtils.quoteIdentifierSegment(leafField) + ") from " + StorageUtils.quoteIdentifierPath(parentPath) + ";";
         logger.info("[ExternalSource] Resolve filesystem row count SQL: {}", sql);
         SessionExecuteSqlResult result = iginxDao.executeSql(sql);
         List<Long> counts = parseCountValues(result);
@@ -581,8 +514,8 @@ public class StorageService {
     }
 
     private long queryFilesystemRowBytes(String parentPath, String leafField, long offset) {
-        String sql = "select " + quoteIdentifierSegment(leafField)
-                + " from " + quoteIdentifierPath(parentPath)
+        String sql = "select " + StorageUtils.quoteIdentifierSegment(leafField)
+                + " from " + StorageUtils.quoteIdentifierPath(parentPath)
                 + " limit 1 offset " + Math.max(0L, offset) + ";";
         logger.info("[ExternalSource] Fetch filesystem row SQL: {}", sql);
         SessionExecuteSqlResult result = iginxDao.executeSql(sql);
@@ -590,7 +523,7 @@ public class StorageService {
     }
 
     private long queryStructuredRowsTotalBytes(String assetPath, int limit) {
-        String sql = "select * from " + quoteIdentifierPath(assetPath)
+        String sql = "select * from " + StorageUtils.quoteIdentifierPath(assetPath)
                 + (limit > 0 ? " limit " + limit : "") + ";";
         logger.info("[ExternalSource] Fetch structured sample SQL: {}", sql);
         SessionExecuteSqlResult result = iginxDao.executeSql(sql);
@@ -651,7 +584,7 @@ public class StorageService {
     }
 
     private long resolveExternalRowCount(String assetPath) {
-        String quotedAssetPath = quoteIdentifierPath(assetPath);
+        String quotedAssetPath = StorageUtils.quoteIdentifierPath(assetPath);
         String sql = "select count(*) from " + quotedAssetPath + ";";
         logger.info("[ExternalSource] Resolve structured row count SQL: {}", sql);
         SessionExecuteSqlResult result = iginxDao.executeSql(sql);

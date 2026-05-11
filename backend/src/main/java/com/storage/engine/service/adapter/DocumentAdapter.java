@@ -4,8 +4,9 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
-import com.storage.engine.model.MetadataExtractResult;
 import com.storage.engine.service.LlmService;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -19,6 +20,8 @@ import java.util.*;
  */
 @Component
 public class DocumentAdapter implements StorageAdapter {
+
+    private static final Logger logger = LoggerFactory.getLogger(DocumentAdapter.class);
 
     @Autowired
     private IGinxDao iginxDao;
@@ -100,11 +103,14 @@ public class DocumentAdapter implements StorageAdapter {
         }
 
         String leaf = StorageUtils.normalizeEscapedPath(leafPath);
-        String sql = "select " + leaf + " from " + parentPath;
+        String quotedLeaf = StorageUtils.quoteIdentifierSegment(leaf);
+        String quotedParent = StorageUtils.quoteIdentifierPath(parentPath);
+        String sql = "select " + quotedLeaf + " from " + quotedParent;
         if (limit != null && limit.intValue() > 0) {
             sql += " limit " + limit.intValue();
         }
         sql += ";";
+        logger.info("[IGinX-SQL] {}", sql);
         return iginxDao.executeSql(sql);
     }
 }
