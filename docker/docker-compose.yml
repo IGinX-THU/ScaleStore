@@ -7,9 +7,22 @@
 #   SSH ports:   2201 - 2223  (container internal: 22)
 #   IGinX ports: 6889 - 6911  (container internal: same as external)
 #
+# Network configuration:
+#   Network: scalestore-cluster (172.25.0.0/16)
+#   Fixed IPs: 172.25.0.2 - 172.25.0.24 (node-02 to node-24)
+#
 # All containers connect to host ZooKeeper at host.docker.internal:2181
 #
 # Default SSH credentials: root / scalestore
+
+networks:
+  scalestore-cluster:
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.25.0.0/16
+          gateway: 172.25.0.1
 
 x-iginx-node: &iginx-node
   image: scalestore-iginx-node:latest
@@ -19,12 +32,17 @@ x-iginx-node: &iginx-node
   restart: unless-stopped
   extra_hosts:
     - "host.docker.internal:host-gateway"
+  networks:
+    scalestore-cluster: {}
 
 services:
   iginx-node-02:
     <<: *iginx-node
     container_name: iginx-node-02
     hostname: iginx-node-02
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.2
     ports:
       - "2201:22"
       - "6889:6889"
@@ -33,6 +51,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-03
     hostname: iginx-node-03
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.3
     ports:
       - "2202:22"
       - "6890:6890"
@@ -41,6 +62,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-04
     hostname: iginx-node-04
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.4
     ports:
       - "2203:22"
       - "6891:6891"
@@ -49,6 +73,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-05
     hostname: iginx-node-05
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.5
     ports:
       - "2204:22"
       - "6892:6892"
@@ -57,6 +84,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-06
     hostname: iginx-node-06
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.6
     ports:
       - "2205:22"
       - "6893:6893"
@@ -65,6 +95,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-07
     hostname: iginx-node-07
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.7
     ports:
       - "2206:22"
       - "6894:6894"
@@ -73,6 +106,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-08
     hostname: iginx-node-08
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.8
     ports:
       - "2207:22"
       - "6895:6895"
@@ -81,6 +117,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-09
     hostname: iginx-node-09
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.9
     ports:
       - "2208:22"
       - "6896:6896"
@@ -89,6 +128,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-10
     hostname: iginx-node-10
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.10
     ports:
       - "2209:22"
       - "6897:6897"
@@ -97,6 +139,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-11
     hostname: iginx-node-11
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.11
     ports:
       - "2210:22"
       - "6898:6898"
@@ -105,6 +150,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-12
     hostname: iginx-node-12
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.12
     ports:
       - "2211:22"
       - "6899:6899"
@@ -113,6 +161,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-13
     hostname: iginx-node-13
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.13
     ports:
       - "2212:22"
       - "6900:6900"
@@ -121,6 +172,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-14
     hostname: iginx-node-14
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.14
     ports:
       - "2213:22"
       - "6901:6901"
@@ -129,6 +183,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-15
     hostname: iginx-node-15
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.15
     ports:
       - "2214:22"
       - "6902:6902"
@@ -137,6 +194,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-16
     hostname: iginx-node-16
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.16
     ports:
       - "2215:22"
       - "6903:6903"
@@ -145,6 +205,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-17
     hostname: iginx-node-17
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.17
     ports:
       - "2216:22"
       - "6904:6904"
@@ -153,6 +216,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-18
     hostname: iginx-node-18
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.18
     ports:
       - "2217:22"
       - "6905:6905"
@@ -161,6 +227,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-19
     hostname: iginx-node-19
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.19
     ports:
       - "2218:22"
       - "6906:6906"
@@ -169,6 +238,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-20
     hostname: iginx-node-20
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.20
     ports:
       - "2219:22"
       - "6907:6907"
@@ -177,6 +249,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-21
     hostname: iginx-node-21
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.21
     ports:
       - "2220:22"
       - "6908:6908"
@@ -185,6 +260,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-22
     hostname: iginx-node-22
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.22
     ports:
       - "2221:22"
       - "6909:6909"
@@ -193,6 +271,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-23
     hostname: iginx-node-23
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.23
     ports:
       - "2222:22"
       - "6910:6910"
@@ -201,6 +282,9 @@ services:
     <<: *iginx-node
     container_name: iginx-node-24
     hostname: iginx-node-24
+    networks:
+      scalestore-cluster:
+        ipv4_address: 172.25.0.24
     ports:
       - "2223:22"
       - "6911:6911"
