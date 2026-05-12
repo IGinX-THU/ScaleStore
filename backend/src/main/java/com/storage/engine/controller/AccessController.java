@@ -57,6 +57,16 @@ public class AccessController {
                 return ResponseEntity.notFound().build();
             }
 
+            // 检查文件大小限制：只允许下载 10MB 以下的0文件
+            long fileSize = meta.getFileSize() != null ? meta.getFileSize() : 0L;
+            long maxDownloadSize = 100 * 1024 * 1024; // 10MB
+            if (fileSize > maxDownloadSize) {
+                String errorMsg = String.format("文件太大，不允许下载。文件大小: %.2f MB，最大允许: 100 MB",
+                    fileSize / (1024.0 * 1024.0));
+                return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body(errorMsg.getBytes(StandardCharsets.UTF_8));
+            }
+
             byte[] data = accessService.downloadData(logicalPath, fileName);
             if (data == null || data.length == 0) {
                 return ResponseEntity.noContent().build();
