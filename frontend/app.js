@@ -2353,7 +2353,8 @@ $('storage-source-modal-save').addEventListener('click', async () => {
       text: `新增${sourceLabel}数据源成功，已进入定时UDF抽取队列`,
     });
 
-    alert(`新增数据源成功`);
+    await loadDataSourceSummary();
+    alert('新增数据源成功');
     closeStorageSourceModal();
   } catch (e) {
     pushAgentMessage({

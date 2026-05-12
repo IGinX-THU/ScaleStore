@@ -56,6 +56,23 @@ public class StorageService {
 
         executeAddStorageEngineSql(context, sql);
 
+        // 同步注册数据源到元数据表，确保前端能立即看到
+        logger.info("[ExternalSource] Registering data source synchronously: schemaPrefix={}", context.schemaPrefix);
+        try {
+            dataSourceService.registerExternalDataSource(
+                    context.ip,
+                    context.port,
+                    context.sourceType,
+                    context.schemaPrefix,
+                    "",
+                    0L);
+            logger.info("[ExternalSource] Data source registered successfully: schemaPrefix={}", context.schemaPrefix);
+        } catch (Exception e) {
+            logger.error("[ExternalSource] Failed to register data source: schemaPrefix={}", context.schemaPrefix, e);
+            throw new RuntimeException("数据源注册失败: " + e.getMessage(), e);
+        }
+
+        // 异步执行元数据同步
         triggerExternalMetadataSyncAsync(context);
 
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
@@ -63,8 +80,8 @@ public class StorageService {
         payload.put("sourceType", context.sourceType);
         payload.put("schemaPrefix", context.schemaPrefix);
         payload.put("mappedDataType", context.mappedDataType);
-        payload.put("syncStatus", "PENDING");
-        payload.put("message", "添加数据源成功，后台将持续进行解析");
+        payload.put("syncStatus", "REGISTERED");
+        payload.put("message", "添加数据源成功，数据源已注册，后台将持续进行解析");
         return payload;
     }
 
