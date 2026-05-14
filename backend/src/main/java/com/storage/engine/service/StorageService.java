@@ -501,7 +501,6 @@ public class StorageService {
         }
 
         long lastRowBytes = queryFilesystemRowBytes(parentPath, leafField, rowCount - 1L);
-        logger.info("last row bytes for {}: {}, rowCount: {}", assetPath, lastRowBytes, rowCount);
         
         if (rowCount == 1L) {
             return lastRowBytes;
