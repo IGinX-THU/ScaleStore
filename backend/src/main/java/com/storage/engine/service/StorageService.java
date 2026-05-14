@@ -32,6 +32,7 @@ public class StorageService {
     private static final int EXTERNAL_SIZE_FLUSH_BATCH = 100;
     private static final long EXTERNAL_SIZE_FLUSH_BYTES = 10L * 1024L * 1024L * 1024L;
     private static final int STRUCTURED_SAMPLE_ROW_COUNT = 100;
+    private static final long FULL_ROW_BYTES = 1024L * 1024L;
 
     @Autowired
     private IGinxDao iginxDao;
@@ -499,19 +500,20 @@ public class StorageService {
             return 0L;
         }
 
-        long firstRowBytes = queryFilesystemRowBytes(parentPath, leafField, 0L);
+        long lastRowBytes = queryFilesystemRowBytes(parentPath, leafField, rowCount - 1L);
+        logger.info("last row bytes for {}: {}, rowCount: {}", assetPath, lastRowBytes, rowCount);
+        
         if (rowCount == 1L) {
-            return firstRowBytes;
+            return lastRowBytes;
         }
 
-        long lastRowBytes = queryFilesystemRowBytes(parentPath, leafField, rowCount - 1L);
         long prefixRows = rowCount - 1L;
 
-        if (firstRowBytes > 0L && prefixRows > 0L && firstRowBytes > Long.MAX_VALUE / prefixRows) {
+        if (FULL_ROW_BYTES > Long.MAX_VALUE / prefixRows) {
             return Long.MAX_VALUE;
         }
 
-        long total = firstRowBytes * prefixRows;
+        long total = FULL_ROW_BYTES * prefixRows;
         if (Long.MAX_VALUE - total < lastRowBytes) {
             return Long.MAX_VALUE;
         }
