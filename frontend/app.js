@@ -2257,6 +2257,12 @@ function syncStorageSourceFormOptions(resetPort = false) {
   }
 }
 
+function syncStorageSourceSizeStrategyOptions() {
+  const strategy = $('storage-source-size-strategy-input').value;
+  const sshFields = $('storage-source-ssh-fields');
+  sshFields.classList.toggle('hidden', strategy !== 'ssh');
+}
+
 function openStorageSourceModal() {
   $('storage-source-type-input').value = 'filesystem';
   $('storage-source-ip-input').value = '127.0.0.1';
@@ -2265,7 +2271,12 @@ function openStorageSourceModal() {
   $('storage-source-password-input').value = '';
   $('storage-source-dummy-dir-input').value = '';
   $('storage-source-iginx-port-input').value = '6888';
+  $('storage-source-size-strategy-input').value = 'system';
+  $('storage-source-ssh-username-input').value = '';
+  $('storage-source-ssh-password-input').value = '';
+  $('storage-source-ssh-port-input').value = '22';
   syncStorageSourceFormOptions(true);
+  syncStorageSourceSizeStrategyOptions();
   showModal('modal-storage-source');
 }
 
@@ -2294,14 +2305,38 @@ function buildStorageSourcePayload() {
   if (sourceType === 'filesystem') {
     const dummyDir = $('storage-source-dummy-dir-input').value.trim();
     const iginxPort = Number($('storage-source-iginx-port-input').value.trim());
+    const sizeStrategy = $('storage-source-size-strategy-input').value;
+    
     if (!dummyDir) {
       throw new Error('filesystem 需要填写 dummy_dir');
     }
     if (!Number.isFinite(iginxPort) || iginxPort <= 0) {
       throw new Error('filesystem 需要填写正确的 iginx_port');
     }
+    
     payload.dummyDir = dummyDir;
     payload.iginxPort = iginxPort;
+    payload.sizeCalculationStrategy = sizeStrategy;
+    
+    if (sizeStrategy === 'ssh') {
+      const sshUsername = $('storage-source-ssh-username-input').value.trim();
+      const sshPassword = $('storage-source-ssh-password-input').value;
+      const sshPort = Number($('storage-source-ssh-port-input').value.trim());
+      
+      if (!sshUsername) {
+        throw new Error('选择命令行获取策略时，SSH用户名不能为空');
+      }
+      if (!sshPassword) {
+        throw new Error('选择命令行获取策略时，SSH密码不能为空');
+      }
+      if (!Number.isFinite(sshPort) || sshPort <= 0 || sshPort > 65535) {
+        throw new Error('SSH端口必须在 1-65535 之间');
+      }
+      
+      payload.sshUsername = sshUsername;
+      payload.sshPassword = sshPassword;
+      payload.sshPort = sshPort;
+    }
   } else {
     const username = $('storage-source-username-input').value.trim();
     const password = $('storage-source-password-input').value;
@@ -2319,6 +2354,7 @@ $('storage-source-add-btn').addEventListener('click', openStorageSourceModal);
 $('storage-source-modal-cancel').addEventListener('click', closeStorageSourceModal);
 $('storage-source-modal-close-x').addEventListener('click', closeStorageSourceModal);
 $('storage-source-type-input').addEventListener('change', () => syncStorageSourceFormOptions(true));
+$('storage-source-size-strategy-input').addEventListener('change', () => syncStorageSourceSizeStrategyOptions());
 
 $('storage-source-modal-save').addEventListener('click', async () => {
   const saveBtn = $('storage-source-modal-save');

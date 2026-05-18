@@ -8,12 +8,14 @@ import com.storage.engine.model.DataItem;
 import com.storage.engine.service.adapter.StorageAdapter;
 import com.storage.engine.service.adapter.StorageAdapterFactory;
 import com.storage.engine.service.adapter.StorageUtils;
+import com.storage.engine.utils.ScriptExecutionUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.web.multipart.MultipartFile;
 
+import java.io.File;
 import java.nio.charset.StandardCharsets;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
@@ -48,6 +50,9 @@ public class StorageService {
 
     @Autowired
     private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
+
+    @Autowired
+    private ScriptExecutionUtils scriptExecutionUtils;
 
     public synchronized Map<String, Object> addExternalStorageEngine(AddStorageEngineRequest request) {
         AddSourceContext context = validateAndBuildContext(request);
@@ -145,6 +150,11 @@ public class StorageService {
         copy.schemaPrefix = src.schemaPrefix;
         copy.logicalSourceKey = src.logicalSourceKey;
         copy.mappedDataType = src.mappedDataType;
+        copy.sizeCalculationStrategy = src.sizeCalculationStrategy;
+        copy.sshUsername = src.sshUsername;
+        copy.sshPassword = src.sshPassword;
+        copy.sshPort = src.sshPort;
+        copy.sshFileSizeCache = src.sshFileSizeCache;
         return copy;
     }
 
@@ -454,7 +464,7 @@ public class StorageService {
         }
 
         if (isFilesystemExternalSource(context)) {
-            return estimateFilesystemExternalAssetSize(assetPath);
+            return estimateFilesystemExternalAssetSize(assetPath, context);
         }
         return estimateStructuredExternalAssetSize(assetPath, context);
     }
@@ -509,6 +519,13 @@ public class StorageService {
             return Long.MAX_VALUE;
         }
         return total + Math.max(0L, lastRowBytes);
+    }
+
+    private long estimateFilesystemExternalAssetSize(String assetPath, AddSourceContext context) {
+        if (context != null && "ssh".equals(context.sizeCalculationStrategy)) {
+            return estimateFilesystemSizeBySSH(assetPath, context);
+        }
+        return estimateFilesystemExternalAssetSize(assetPath);
     }
 
     private long resolveFilesystemRowCount(String parentPath, String leafField) {
@@ -928,6 +945,10 @@ public class StorageService {
         context.iginxPort = request.getIginxPort() == null ? -1 : request.getIginxPort().intValue();
         context.schemaPrefix = DEFAULT_EXTERN_SCHEMA_PREFIX;
         context.logicalSourceKey = context.sourceType;
+        context.sizeCalculationStrategy = safe(request.getSizeCalculationStrategy());
+        context.sshUsername = safe(request.getSshUsername());
+        context.sshPassword = safe(request.getSshPassword());
+        context.sshPort = request.getSshPort() == null ? 22 : request.getSshPort().intValue();
 
         if (!("filesystem".equals(context.sourceType)
                 || "mysql".equals(context.sourceType)
@@ -950,6 +971,19 @@ public class StorageService {
             if (context.iginxPort <= 0) {
                 throw new IllegalArgumentException("filesystem 类型必须填写 iginx_port");
             }
+            
+            if ("ssh".equals(context.sizeCalculationStrategy)) {
+                if (context.sshUsername.isEmpty()) {
+                    throw new IllegalArgumentException("选择命令行获取策略时，SSH用户名不能为空");
+                }
+                if (context.sshPassword.isEmpty()) {
+                    throw new IllegalArgumentException("选择命令行获取策略时，SSH密码不能为空");
+                }
+                if (context.sshPort <= 0 || context.sshPort > 65535) {
+                    throw new IllegalArgumentException("SSH端口必须在 1-65535 之间");
+                }
+            }
+            
             context.mappedDataType = IGinxConstants.TYPE_DOCUMENT;
         } else if ("iotdb".equals(context.sourceType)) {
             if (context.username.isEmpty() || context.password.isEmpty()) {
@@ -1198,6 +1232,131 @@ public class StorageService {
         }
     }
 
+    private long estimateFilesystemSizeBySSH(String assetPath, AddSourceContext context) {
+        try {
+            String relativePath = extractRelativePathFromAsset(assetPath, context);
+            
+            if (context.sshFileSizeCache == null) {
+                logger.info("[ExternalSource] SSH size cache not initialized, executing script for data source: {}", context.dummyDir);
+                
+                File scriptFile = scriptExecutionUtils.resolveScriptFile(
+                        "scripts/calculate_filesystem_size.sh", 
+                        "文件大小计算脚本");
+                
+                Map<String, Long> fileSizeMap = executeSSHSizeScript(
+                        scriptFile.getAbsolutePath(),
+                        context.ip,
+                        context.sshUsername,
+                        context.sshPassword,
+                        String.valueOf(context.sshPort),
+                        context.dummyDir);
+                
+                context.sshFileSizeCache = fileSizeMap;
+                
+                logger.info("[ExternalSource] SSH script executed, cached {} files for data source: {}", 
+                        fileSizeMap.size(), context.dummyDir);
+            } else {
+                logger.debug("[ExternalSource] Using cached SSH file sizes ({} files)", context.sshFileSizeCache.size());
+            }
+            
+            Long fileSize = context.sshFileSizeCache.get(relativePath);
+            if (fileSize != null && fileSize > 0L) {
+//                logger.info("[ExternalSource] Found size for file '{}': {} bytes (from cache)", relativePath, fileSize);
+                return fileSize;
+            }
+            
+            logger.warn("[ExternalSource] SSH cache did not contain size for file '{}'. Available files: {}", 
+                    relativePath, context.sshFileSizeCache.keySet());
+            return estimateFilesystemExternalAssetSize(assetPath);
+        } catch (Exception e) {
+            logger.error("[ExternalSource] Failed to estimate filesystem size by SSH, fallback to system calculation", e);
+            return estimateFilesystemExternalAssetSize(assetPath);
+        }
+    }
+
+    private String extractRelativePathFromAsset(String assetPath, AddSourceContext context) {
+        String normalizedAssetPath = StorageUtils.normalizeEscapedPath(assetPath);
+        String normalizedSchemaPrefix = StorageUtils.normalizeEscapedPath(context.schemaPrefix);
+        
+        if (!normalizedAssetPath.startsWith(normalizedSchemaPrefix + ".")) {
+            String[] parentAndLeaf = splitParentAndLeafStrict(assetPath);
+            return parentAndLeaf[1].replace("\\.", ".");
+        }
+        
+        String pathAfterPrefix = normalizedAssetPath.substring(normalizedSchemaPrefix.length() + 1);
+        
+        List<String> segments = splitUnescapedSegments(pathAfterPrefix);
+        if (segments.isEmpty()) {
+            return "";
+        }
+        
+        segments.remove(0);
+        
+        StringBuilder relativePath = new StringBuilder();
+        for (int i = 0; i < segments.size(); i++) {
+            if (i > 0) {
+                relativePath.append("/");
+            }
+            relativePath.append(segments.get(i));
+        }
+        
+        return relativePath.toString();
+    }
+
+    private Map<String, Long> executeSSHSizeScript(String scriptPath, String ip, String username, 
+                                                   String password, String sshPort, String targetDir) throws Exception {
+        List<String> command = new ArrayList<>();
+        command.add("bash");
+        command.add(scriptPath);
+        command.add(ip);
+        command.add(username);
+        command.add(password);
+        command.add(sshPort);
+        command.add(targetDir);
+        
+        ScriptExecutionUtils.ScriptExecutionResult result = scriptExecutionUtils.executeScript(command, 120);
+        
+        if (!result.isSuccess()) {
+            throw new RuntimeException("SSH size calculation script failed with exit code: " + result.getExitCode() + 
+                    ", error: " + result.getError());
+        }
+        
+        return parseSSHSizeScriptOutput(result.getOutput());
+    }
+
+    private Map<String, Long> parseSSHSizeScriptOutput(String jsonOutput) {
+        Map<String, Long> fileSizeMap = new HashMap<>();
+        try {
+            logger.info("[ExternalSource] Parsing SSH script output: {}", jsonOutput);
+            
+            com.fasterxml.jackson.databind.ObjectMapper mapper = new com.fasterxml.jackson.databind.ObjectMapper();
+            com.fasterxml.jackson.databind.JsonNode root = mapper.readTree(jsonOutput);
+            
+            if (!root.has("success") || !root.get("success").asBoolean()) {
+                throw new RuntimeException("SSH script execution failed");
+            }
+            
+            com.fasterxml.jackson.databind.JsonNode files = root.get("files");
+            if (files != null && files.isArray()) {
+                for (com.fasterxml.jackson.databind.JsonNode file : files) {
+                    long sizeInKB = file.get("size").asLong();
+                    String path = file.get("path").asText();
+                    
+                    long sizeInBytes = sizeInKB * 1024L;
+                    
+//                    logger.info("[ExternalSource] Parsed file from SSH script - path: '{}', sizeInKB: {}, sizeInBytes: {}",
+//                            path, sizeInKB, sizeInBytes);
+                    
+                    fileSizeMap.put(path, sizeInBytes);
+                }
+            }
+        } catch (Exception e) {
+            logger.error("[ExternalSource] Failed to parse SSH script output", e);
+            throw new RuntimeException("Failed to parse SSH script output: " + e.getMessage(), e);
+        }
+        return fileSizeMap;
+    }
+
     private static class AddSourceContext {
         private String sourceType;
         private String ip;
@@ -1209,6 +1368,11 @@ public class StorageService {
         private String schemaPrefix;
         private String logicalSourceKey;
         private String mappedDataType;
+        private String sizeCalculationStrategy;
+        private String sshUsername;
+        private String sshPassword;
+        private int sshPort;
+        private Map<String, Long> sshFileSizeCache;
     }
 
     private static class ExternalMetaSyncResult {
