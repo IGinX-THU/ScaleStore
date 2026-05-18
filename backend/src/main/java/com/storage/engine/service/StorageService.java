@@ -96,14 +96,6 @@ public class StorageService {
                         "外部数据源解析任务已启动: schemaPrefix=" + safe(asyncContext.schemaPrefix),
                         "External-Source");
 
-                dataSourceService.registerExternalDataSource(
-                        asyncContext.ip,
-                        asyncContext.port,
-                        asyncContext.sourceType,
-                        asyncContext.schemaPrefix,
-                        "",
-                        0L);
-
                 ExternalMetaSyncResult syncResult = syncExternalMetadata(asyncContext);
                 logger.info(
                     "[ExternalSource] Async metadata sync finished. sourceType={}, schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
