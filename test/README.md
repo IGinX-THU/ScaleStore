@@ -1,11 +1,10 @@
 # 批量添加数据源测试
 
-使用Python脚本批量添加filesystem数据源，用于测试系统在大量数据源情况下的性能和稳定性。
+使用 Python 脚本批量添加 filesystem 数据源，用于测试系统在大量数据源情况下的性能和稳定性。
 
 ## 📁 文件说明
 
-- `quick_test.py` - 快速测试（10个数据源）
-- `batch_add_datasource.py` - 批量测试（700个数据源）
+- `batch_add_datasource.py` - 批量测试脚本（通过 TOTAL_COUNT 控制数量）
 - `README.md` - 本文档
 ## 🚀 快速开始
 
@@ -19,27 +18,21 @@ pip install requests
 
 编辑测试文件，修改顶部的配置参数：
 
-**quick_test.py:**
-```python
-API_URL = "http://localhost:8080/storage/sources"
-TEST_COUNT = 10
-DUMMY_DIR = "/tmp/test-data"  # 改为实际存在的目录
-```
-
 **batch_add_datasource.py:**
 ```python
 API_URL = "http://localhost:8080/storage/sources"
 TOTAL_COUNT = 700
 DUMMY_DIR = "/tmp/test-data"  # 改为实际存在的目录
+SIZE_CALCULATION_STRATEGY = "ssh"
+SSH_USERNAME = "your_ssh_username"
+SSH_PASSWORD = "your_ssh_password"
+SSH_PORT = 22
 ```
 
 ### 3. 运行测试
 
 ```bash
-# 快速测试（10个数据源）
-python quick_test.py
-
-# 批量测试（700个数据源）
+# 批量测试（700个数据源，修改 TOTAL_COUNT 可变更数量）
 python batch_add_datasource.py
 ```
 
@@ -54,6 +47,10 @@ python batch_add_datasource.py
 | `SOURCE_PORT_START` | 起始端口号 | 6669 |
 | `DUMMY_DIR` | 测试目录路径 | `/tmp/test-data` |
 | `IGINX_PORT` | IGinX端口 | 6888 |
+| `SIZE_CALCULATION_STRATEGY` | 大小计算方式 | `ssh` |
+| `SSH_USERNAME` | SSH用户名 | 空（需配置） |
+| `SSH_PASSWORD` | SSH密码 | 空（需配置） |
+| `SSH_PORT` | SSH端口 | 22 |
 | `REQUEST_DELAY` | 请求间隔（秒） | 0.1 |
 | `TIMEOUT` | 请求超时（秒） | 60 |
 
@@ -182,27 +179,3 @@ TOTAL_COUNT = 100  # 改为100个
 ```python
 REQUEST_DELAY = 0.5  # 改为0.5秒
 ```
-
-### 使用相同的数据源配置
-
-如果想重复添加相同的数据源（而不是递增端口），修改 `add_datasource` 函数：
-
-```python
-def add_datasource(index):
-    port = SOURCE_PORT_START  # 移除 + index，使用固定端口
-    # ...
-```
-
-## 💡 扩展建议
-
-如果需要更专业的测试，可以考虑：
-
-1. **并发测试** - 使用 `concurrent.futures` 实现多线程并发
-2. **不同类型** - 测试 MySQL、PostgreSQL、IoTDB 等其他类型的数据源
-3. **压力测试** - 使用 Locust 进行分布式压力测试
-4. **性能监控** - 记录每个请求的响应时间，生成性能报告
-
-## 📚 相关资源
-
-- [Python requests 文档](https://requests.readthedocs.io/)
-- [ScaleStore 项目文档](../README.md)

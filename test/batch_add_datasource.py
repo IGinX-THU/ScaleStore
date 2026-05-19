@@ -3,13 +3,12 @@
 
 """
 批量添加 filesystem 数据源测试脚本
-使用 Python + requests 库，简单高效
+使用 SSH 方式计算大小（由用户配置 SSH 账号）
 """
 
-import requests
 import time
-import json
-from datetime import datetime
+
+import requests
 
 # ==================== 配置参数 ====================
 API_URL = "http://localhost:8080/storage/sources"
@@ -19,6 +18,12 @@ SOURCE_IP = "127.0.0.1"
 SOURCE_PORT_START = 6669
 DUMMY_DIR = "/tmp/test-data"
 IGINX_PORT = 6888
+
+SIZE_CALCULATION_STRATEGY = "ssh"  # 使用 SSH 方式计算大小
+SSH_USERNAME = ""  # 必填
+SSH_PASSWORD = ""  # 必填
+SSH_PORT = 22
+
 REQUEST_DELAY = 0.1  # 请求间隔（秒）
 TIMEOUT = 60  # 请求超时（秒）
 
@@ -34,17 +39,28 @@ def print_colored(text, color):
     """彩色打印"""
     print(f"{color}{text}{Colors.END}")
 
-def add_datasource(index):
-    """添加单个数据源"""
-    port = SOURCE_PORT_START + index
-    
+def build_payload(port):
     payload = {
         "sourceType": SOURCE_TYPE,
         "ip": SOURCE_IP,
         "port": port,
         "dummyDir": DUMMY_DIR,
-        "iginxPort": IGINX_PORT
+        "iginxPort": IGINX_PORT,
+        "sizeCalculationStrategy": SIZE_CALCULATION_STRATEGY,
     }
+
+    if SIZE_CALCULATION_STRATEGY == "ssh":
+        payload["sshUsername"] = SSH_USERNAME
+        payload["sshPassword"] = SSH_PASSWORD
+        payload["sshPort"] = SSH_PORT
+
+    return payload
+
+
+def add_datasource(index):
+    """添加单个数据源"""
+    port = SOURCE_PORT_START + index
+    payload = build_payload(port)
     
     try:
         response = requests.post(
@@ -66,14 +82,24 @@ def add_datasource(index):
     except Exception as e:
         return False, str(e), port
 
+def validate_config():
+    if SIZE_CALCULATION_STRATEGY == "ssh":
+        if not SSH_USERNAME:
+            raise ValueError("SSH_USERNAME 不能为空")
+        if not SSH_PASSWORD:
+            raise ValueError("SSH_PASSWORD 不能为空")
+
+
 def main():
     """主函数"""
+    validate_config()
     print("=" * 50)
     print("批量添加 Filesystem 数据源测试")
     print("=" * 50)
     print(f"目标数量: {TOTAL_COUNT}")
     print(f"API地址: {API_URL}")
     print(f"数据源类型: {SOURCE_TYPE}")
+    print(f"大小计算方式: {SIZE_CALCULATION_STRATEGY}")
     print("=" * 50)
     print()
     
