@@ -12,6 +12,11 @@ public class AddStorageEngineRequest {
     private String dummyDir;
     private Integer iginxPort;
 
+    private String sizeCalculationStrategy;
+    private String sshUsername;
+    private String sshPassword;
+    private Integer sshPort;
+
     public String getSourceType() {
         return sourceType;
     }
@@ -66,5 +71,37 @@ public class AddStorageEngineRequest {
 
     public void setIginxPort(Integer iginxPort) {
         this.iginxPort = iginxPort;
+    }
+
+    public String getSizeCalculationStrategy() {
+        return sizeCalculationStrategy;
+    }
+
+    public void setSizeCalculationStrategy(String sizeCalculationStrategy) {
+        this.sizeCalculationStrategy = sizeCalculationStrategy;
+    }
+
+    public String getSshUsername() {
+        return sshUsername;
+    }
+
+    public void setSshUsername(String sshUsername) {
+        this.sshUsername = sshUsername;
+    }
+
+    public String getSshPassword() {
+        return sshPassword;
+    }
+
+    public void setSshPassword(String sshPassword) {
+        this.sshPassword = sshPassword;
+    }
+
+    public Integer getSshPort() {
+        return sshPort;
+    }
+
+    public void setSshPort(Integer sshPort) {
+        this.sshPort = sshPort;
     }
 }

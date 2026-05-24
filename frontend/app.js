@@ -2257,6 +2257,12 @@ function syncStorageSourceFormOptions(resetPort = false) {
   }
 }
 
+function syncStorageSourceSizeStrategyOptions() {
+  const strategy = $('storage-source-size-strategy-input').value;
+  const sshFields = $('storage-source-ssh-fields');
+  sshFields.classList.toggle('hidden', strategy !== 'ssh');
+}
+
 function openStorageSourceModal() {
   $('storage-source-type-input').value = 'filesystem';
   $('storage-source-ip-input').value = '127.0.0.1';
@@ -2265,7 +2271,12 @@ function openStorageSourceModal() {
   $('storage-source-password-input').value = '';
   $('storage-source-dummy-dir-input').value = '';
   $('storage-source-iginx-port-input').value = '6888';
+  $('storage-source-size-strategy-input').value = 'system';
+  $('storage-source-ssh-username-input').value = '';
+  $('storage-source-ssh-password-input').value = '';
+  $('storage-source-ssh-port-input').value = '22';
   syncStorageSourceFormOptions(true);
+  syncStorageSourceSizeStrategyOptions();
   showModal('modal-storage-source');
 }
 
@@ -2294,14 +2305,38 @@ function buildStorageSourcePayload() {
   if (sourceType === 'filesystem') {
     const dummyDir = $('storage-source-dummy-dir-input').value.trim();
     const iginxPort = Number($('storage-source-iginx-port-input').value.trim());
+    const sizeStrategy = $('storage-source-size-strategy-input').value;
+    
     if (!dummyDir) {
       throw new Error('filesystem 需要填写 dummy_dir');
     }
     if (!Number.isFinite(iginxPort) || iginxPort <= 0) {
       throw new Error('filesystem 需要填写正确的 iginx_port');
     }
+    
     payload.dummyDir = dummyDir;
     payload.iginxPort = iginxPort;
+    payload.sizeCalculationStrategy = sizeStrategy;
+    
+    if (sizeStrategy === 'ssh') {
+      const sshUsername = $('storage-source-ssh-username-input').value.trim();
+      const sshPassword = $('storage-source-ssh-password-input').value;
+      const sshPort = Number($('storage-source-ssh-port-input').value.trim());
+      
+      if (!sshUsername) {
+        throw new Error('选择命令行获取策略时，SSH用户名不能为空');
+      }
+      if (!sshPassword) {
+        throw new Error('选择命令行获取策略时，SSH密码不能为空');
+      }
+      if (!Number.isFinite(sshPort) || sshPort <= 0 || sshPort > 65535) {
+        throw new Error('SSH端口必须在 1-65535 之间');
+      }
+      
+      payload.sshUsername = sshUsername;
+      payload.sshPassword = sshPassword;
+      payload.sshPort = sshPort;
+    }
   } else {
     const username = $('storage-source-username-input').value.trim();
     const password = $('storage-source-password-input').value;
@@ -2319,6 +2354,7 @@ $('storage-source-add-btn').addEventListener('click', openStorageSourceModal);
 $('storage-source-modal-cancel').addEventListener('click', closeStorageSourceModal);
 $('storage-source-modal-close-x').addEventListener('click', closeStorageSourceModal);
 $('storage-source-type-input').addEventListener('change', () => syncStorageSourceFormOptions(true));
+$('storage-source-size-strategy-input').addEventListener('change', () => syncStorageSourceSizeStrategyOptions());
 
 $('storage-source-modal-save').addEventListener('click', async () => {
   const saveBtn = $('storage-source-modal-save');
@@ -2353,7 +2389,8 @@ $('storage-source-modal-save').addEventListener('click', async () => {
       text: `新增${sourceLabel}数据源成功，已进入定时UDF抽取队列`,
     });
 
-    alert(`新增数据源成功`);
+    await loadDataSourceSummary();
+    alert('新增数据源成功');
     closeStorageSourceModal();
   } catch (e) {
     pushAgentMessage({
@@ -2791,7 +2828,14 @@ function renderImagePreview(container, previewData, meta) {
   const format = (meta.fileFormat || 'png').toLowerCase();
   const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp' };
   const mime = mimeMap[format] || 'image/png';
+  
+  // 显示预览限制提示
+  const previewLimitText = previewData.previewLimit || '图像数据最多预览前5MB数据';
+  
   container.innerHTML = `<div style="text-align:center;padding:12px;overflow:auto;max-height:100%;">
+    <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
+      ℹ️ ${escapeHtml(previewLimitText)}
+    </div>
     <img src="data:${mime};base64,${previewData.base64}" 
          style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
          alt="${meta.fileName || 'image'}">
@@ -2842,7 +2886,15 @@ function renderDocumentPreview(container, content, meta) {
       displayContent = JSON.stringify(JSON.parse(content), null, 2);
     } catch (e) { /* keep original */ }
   }
-  container.innerHTML = `<pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:100%;margin:0;padding:8px;">${escapeHtml(displayContent)}</pre>`;
+  
+  // 显示预览限制提示
+  const previewLimitText = '文档数据最多预览前1MB数据';
+
+  container.innerHTML = `
+    <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin:8px;font-size:11px;color:#ffb347;">
+      ℹ️ ${escapeHtml(previewLimitText)}
+    </div>
+    <pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:100%;margin:0;padding:8px;">${escapeHtml(displayContent)}</pre>`;
 }
 
 function renderKeyValuePreview(container, kvData) {
@@ -2948,16 +3000,17 @@ $('access-download-btn').addEventListener('click', async () => {
   try {
     const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(folderPath)}&fileName=${encodeURIComponent(fileName)}`);
     if (!response.ok) {
-      throw new Error('下载失败: HTTP ' + response.status);
+      const errorText = await response.text();
+      throw new Error(errorText || 'HTTP ' + response.status);
     }
 
     // Get filename from Content-Disposition header
     const disposition = response.headers.get('Content-Disposition');
-    let fileName = 'download';
+    let downloadFileName = fileName; // 使用不同的变量名避免冲突
     if (disposition) {
       const match = disposition.match(/filename[^;=\n]*=["']?([^"';\n]*)["']?/);
       if (match && match[1]) {
-        fileName = decodeURIComponent(match[1]);
+        downloadFileName = decodeURIComponent(match[1]);
       }
     }
 
@@ -2965,7 +3018,7 @@ $('access-download-btn').addEventListener('click', async () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = fileName;
+    a.download = downloadFileName;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);

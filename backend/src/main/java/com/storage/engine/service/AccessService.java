@@ -489,8 +489,17 @@ public class AccessService {
                 externalBody = externalBody.substring(sourceKey.length() + 1);
             }
 
-            String normalized = externalBody.replace("/", ".").replaceAll("[^a-zA-Z0-9._-]", "_");
-            String basePath = normalized.isEmpty() ? schemaPrefix : (schemaPrefix + "." + normalized);
+            // Split by / and escape dots in each segment
+            String[] segments = externalBody.isEmpty() ? new String[0] : externalBody.split("/");
+            StringBuilder pathBuilder = new StringBuilder(schemaPrefix);
+            for (String seg : segments) {
+                String cleaned = seg == null ? "" : seg.trim().replaceAll("[^a-zA-Z0-9._-]", "_");
+                if (!cleaned.isEmpty()) {
+                    pathBuilder.append('.').append(cleaned.replace(".", "\\."));
+                }
+            }
+            String basePath = pathBuilder.toString();
+            
             if (!fileName.isEmpty()) {
                 if (isFilesystemLikeSourceKey(sourceKey)) {
                     return StorageUtils.toFileLeafPath(basePath, fileName);

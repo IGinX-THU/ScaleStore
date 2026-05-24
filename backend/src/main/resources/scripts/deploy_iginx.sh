@@ -3,7 +3,7 @@
 # ================================================================
 # IGinX 远程部署脚本
 # 用法: ./deploy_iginx.sh <目标IP> <用户名> <密码> <SSH端口> <本机安装包路径> <远程安装目录> <ZK地址> <IGinX端口> <pythonCMD> <本机udf_list路径> <本机metadata目录路径>
-# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu password 22 ~/IGinX-FastDeploy-0.8.0.tar.gz ~ 10.0.20.108:2181 6888 python3 /opt/resources/udf/udf_list /opt/resources/udf/metadata
+# 示例: ./deploy_iginx.sh 10.0.21.44 ubuntu password 22 ~/iginx-0.9.0-SNAPSHOT.tar.gz ~ 10.0.20.108:2181 6888 python3 /opt/resources/udf/udf_list /opt/resources/udf/metadata
 # ================================================================
 
 # ────────── 参数 ──────────

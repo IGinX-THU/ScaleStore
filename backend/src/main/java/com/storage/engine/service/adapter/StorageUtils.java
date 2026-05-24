@@ -363,4 +363,89 @@ public final class StorageUtils {
             }
         }
     }
+
+    /**
+     * Quote an identifier segment for use in SQL queries.
+     * Wraps the identifier in backticks and escapes any existing backticks.
+     */
+    public static String quoteIdentifierSegment(String rawSegment) {
+        if (rawSegment == null || rawSegment.isEmpty()) {
+            return rawSegment;
+        }
+        String seg = rawSegment.replace("`", "``");
+        return "`" + seg + "`";
+    }
+
+    /**
+     * Quote a dotted path for use in SQL queries.
+     * Splits the path by unescaped dots and quotes each segment individually.
+     * Example: data.extern.my-table -> `data`.`extern`.`my-table`
+     * Example: data.file\.txt -> `data`.`file\.txt` (backslash-escaped dot is kept in segment)
+     */
+    public static String quoteIdentifierPath(String rawPath) {
+        if (rawPath == null || rawPath.isEmpty()) {
+            return rawPath;
+        }
+
+        boolean wildcard = rawPath.endsWith(".*");
+        String base = wildcard ? rawPath.substring(0, rawPath.length() - 2) : rawPath;
+
+        List<String> segments = splitUnescapedSegmentsForSql(base);
+        if (segments.isEmpty()) {
+            return wildcard ? "*" : "";
+        }
+
+        StringBuilder quoted = new StringBuilder();
+        for (int i = 0; i < segments.size(); i++) {
+            if (i > 0) {
+                quoted.append('.');
+            }
+            quoted.append(quoteIdentifierSegment(segments.get(i)));
+        }
+
+        if (wildcard) {
+            quoted.append(".*");
+        }
+        return quoted.toString();
+    }
+
+    /**
+     * Split a path by unescaped dots for SQL identifier quoting.
+     * A dot is considered escaped when it is immediately preceded by a backslash.
+     * The backslash is kept in the segment (e.g., "a\.b" remains as one segment "a\.b").
+     */
+    public static List<String> splitUnescapedSegmentsForSql(String text) {
+        List<String> segments = new ArrayList<String>();
+        if (text == null || text.isEmpty()) {
+            return segments;
+        }
+
+        StringBuilder current = new StringBuilder();
+        boolean escaping = false;
+        for (int i = 0; i < text.length(); i++) {
+            char c = text.charAt(i);
+            if (escaping) {
+                current.append(c);
+                escaping = false;
+                continue;
+            }
+            if (c == '\\') {
+                current.append('\\');
+                escaping = true;
+                continue;
+            }
+            if (c == '.') {
+                segments.add(current.toString());
+                current.setLength(0);
+                continue;
+            }
+            current.append(c);
+        }
+        if (escaping) {
+            current.append('\\');
+        }
+        segments.add(current.toString());
+        return segments;
+    }
+
 }

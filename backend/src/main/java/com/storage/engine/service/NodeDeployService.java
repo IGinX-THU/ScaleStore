@@ -5,20 +5,15 @@ import cn.edu.tsinghua.iginx.thrift.IginxInfo;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.NodeDeployRequest;
 import com.storage.engine.model.NodeDeployTaskStatus;
+import com.storage.engine.utils.ScriptExecutionUtils;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.core.io.ClassPathResource;
-import org.springframework.core.io.Resource;
-import org.springframework.core.io.support.PathMatchingResourcePatternResolver;
 import org.springframework.stereotype.Service;
 
 import java.io.BufferedReader;
 import java.io.File;
-import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.Files;
-import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
@@ -46,8 +41,8 @@ public class NodeDeployService {
     @Autowired
     private IGinxDao iginxDao;
 
-    @Value("${resource.base-path:classpath:/}")
-    private String resourceBasePath;
+    @Autowired
+    private ScriptExecutionUtils scriptExecutionUtils;
 
     @Value("${deploy.iginx.default-package-path:/home/ubuntu/IGinX-0.9.0-SNAPSHOT.tar.gz}")
     private String defaultPackagePath;
@@ -80,8 +75,8 @@ public class NodeDeployService {
         String zkConnection = safeValue(request.getZookeeperConnectionString(), defaultZkConnection);
         String pythonCmd = safeValue(request.getPythonCmd(), defaultPythonCmd);
 
-        File scriptFile = resolveScriptFile(DEPLOY_SCRIPT_RELATIVE_PATH, "部署脚本");
-        File udfListFile = resolveResourceFile("udf/udf_list", "UDF列表文件");
+        File scriptFile = scriptExecutionUtils.resolveScriptFile(DEPLOY_SCRIPT_RELATIVE_PATH, "部署脚本");
+        File udfListFile = scriptExecutionUtils.resolveResourceFile("udf/udf_list", "UDF列表文件");
         File metadataDir = resolveMetadataDirectory();
 
         String iginxPort = safeValue(request.getPort(), "6888");
@@ -157,7 +152,7 @@ public class NodeDeployService {
 
         String deployDir = safeValue(deployDirectory, defaultDeployDirectory);
 
-        File scriptFile = resolveScriptFile(STOP_SCRIPT_RELATIVE_PATH, "停止脚本");
+        File scriptFile = scriptExecutionUtils.resolveScriptFile(STOP_SCRIPT_RELATIVE_PATH, "停止脚本");
 
         final List<String> command = new ArrayList<String>();
         command.add("bash");
@@ -442,198 +437,12 @@ public class NodeDeployService {
         }
     }
 
-    private File resolveScriptFile(String relativePath, String label) {
-        try {
-            if (isClasspathRoot()) {
-                String classpathPath = joinClasspathPath(relativePath);
-                ClassPathResource resource = new ClassPathResource(classpathPath);
-                if (!resource.exists()) {
-                    throw new RuntimeException(label + "不存在: classpath:" + classpathPath);
-                }
-                File scriptFile = materializeResourceFile(resource, relativePath);
-                if (!scriptFile.canExecute()) {
-                    scriptFile.setExecutable(true);
-                }
-                return scriptFile;
-            }
-
-            String root = removeFilePrefix(resourceBasePath);
-            File scriptFile = new File(root, relativePath.replace("/", File.separator));
-            if (!scriptFile.exists()) {
-                throw new RuntimeException(label + "不存在: " + scriptFile.getPath());
-            }
-            return scriptFile;
-        } catch (Exception e) {
-            if (e instanceof RuntimeException) {
-                throw (RuntimeException) e;
-            }
-            throw new RuntimeException("加载" + label + "失败: " + e.getMessage(), e);
-        }
-    }
-
-    private File resolveResourceFile(String relativePath, String label) {
-        try {
-            if (isClasspathRoot()) {
-                String classpathPath = joinClasspathPath(relativePath);
-                ClassPathResource resource = new ClassPathResource(classpathPath);
-                if (!resource.exists()) {
-                    throw new RuntimeException(label + "不存在: classpath:" + classpathPath);
-                }
-                return materializeResourceFile(resource, relativePath);
-            }
-
-            String root = removeFilePrefix(resourceBasePath);
-            File file = new File(root, relativePath.replace("/", File.separator));
-            if (!file.exists() || !file.isFile()) {
-                throw new RuntimeException(label + "不存在: " + file.getPath());
-            }
-            return file;
-        } catch (Exception e) {
-            if (e instanceof RuntimeException) {
-                throw (RuntimeException) e;
-            }
-            throw new RuntimeException("加载" + label + "失败: " + e.getMessage(), e);
-        }
-    }
-
     private File resolveMetadataDirectory() {
-        File metadataDir = resolveOptionalResourceDirectory("udf/metadata");
+        File metadataDir = scriptExecutionUtils.resolveOptionalResourceDirectory("udf/metadata");
         if (metadataDir != null) {
             return metadataDir;
         }
         throw new RuntimeException("UDF元数据目录不存在: 期望 resource.base-path 下的 udf/metadata");
-    }
-
-    private File resolveOptionalResourceDirectory(String relativePath) {
-        try {
-            if (isClasspathRoot()) {
-                String classpathPath = joinClasspathPath(relativePath);
-                ClassPathResource dirResource = new ClassPathResource(classpathPath);
-                if (!dirResource.exists()) {
-                    return null;
-                }
-
-                try {
-                    File file = dirResource.getFile();
-                    if (file.exists() && file.isDirectory()) {
-                        return file;
-                    }
-                } catch (Exception ignored) {
-                    // Fall through to materialize-from-pattern for packaged classpath resources.
-                }
-
-                return materializeResourceDirectory(classpathPath, relativePath);
-            }
-
-            String root = removeFilePrefix(resourceBasePath);
-            File dir = new File(root, relativePath.replace("/", File.separator));
-            if (!dir.exists() || !dir.isDirectory()) {
-                return null;
-            }
-            return dir;
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private File materializeResourceFile(ClassPathResource resource, String relativePath) throws Exception {
-        String name = new File(relativePath).getName();
-        File tmpScript = File.createTempFile("scalestore-", "-" + name);
-        try (InputStream input = resource.getInputStream()) {
-            Files.copy(input, tmpScript.toPath(), StandardCopyOption.REPLACE_EXISTING);
-        }
-        tmpScript.deleteOnExit();
-        return tmpScript;
-    }
-
-    private File materializeResourceDirectory(String classpathPath, String relativePath) throws Exception {
-        PathMatchingResourcePatternResolver resolver = new PathMatchingResourcePatternResolver();
-        Resource[] resources = resolver.getResources("classpath*:" + classpathPath + "/**");
-        if (resources == null || resources.length == 0) {
-            return null;
-        }
-
-        File baseDir = Files.createTempDirectory("scalestore-" + new File(relativePath).getName() + "-").toFile();
-        markDeleteOnExit(baseDir);
-
-        String normalizedPath = classpathPath.replace('\\', '/');
-        String anchor = normalizedPath + "/";
-        boolean copied = false;
-
-        for (Resource resource : resources) {
-            if (resource == null || !resource.exists() || !resource.isReadable()) {
-                continue;
-            }
-
-            String url = resource.getURL().toString().replace('\\', '/');
-            int idx = url.indexOf(anchor);
-            if (idx < 0) {
-                continue;
-            }
-
-            String sub = url.substring(idx + anchor.length());
-            if (sub.isEmpty() || sub.endsWith("/")) {
-                continue;
-            }
-
-            File target = new File(baseDir, sub);
-            File parent = target.getParentFile();
-            if (parent != null && !parent.exists()) {
-                parent.mkdirs();
-            }
-            try (InputStream input = resource.getInputStream()) {
-                Files.copy(input, target.toPath(), StandardCopyOption.REPLACE_EXISTING);
-            }
-            copied = true;
-        }
-
-        return copied ? baseDir : null;
-    }
-
-    private void markDeleteOnExit(File file) {
-        if (file == null || !file.exists()) {
-            return;
-        }
-        if (file.isDirectory()) {
-            File[] children = file.listFiles();
-            if (children != null) {
-                for (File child : children) {
-                    markDeleteOnExit(child);
-                }
-            }
-        }
-        file.deleteOnExit();
-    }
-
-    private boolean isClasspathRoot() {
-        String root = resourceBasePath == null ? "" : resourceBasePath.trim();
-        return root.isEmpty() || ".".equals(root) || root.startsWith("classpath:");
-    }
-
-    private String joinClasspathPath(String relativePath) {
-        String root = resourceBasePath == null ? "" : resourceBasePath.trim();
-        if (root.startsWith("classpath:")) {
-            root = root.substring("classpath:".length());
-        }
-        root = root.replace('\\', '/');
-        while (root.startsWith("/")) {
-            root = root.substring(1);
-        }
-        while (root.endsWith("/")) {
-            root = root.substring(0, root.length() - 1);
-        }
-        if (root.isEmpty() || ".".equals(root)) {
-            return relativePath;
-        }
-        return root + "/" + relativePath;
-    }
-
-    private String removeFilePrefix(String path) {
-        String value = path == null ? "" : path.trim();
-        if (value.startsWith("file:")) {
-            return value.substring("file:".length());
-        }
-        return value;
     }
 
     private String required(String value, String message) {

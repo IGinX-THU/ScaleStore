@@ -517,12 +517,18 @@ public class IGinxDao {
 
   public SessionExecuteSqlResult queryDataByPath(String pathPrefix) {
       String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
-      return executeSql("select * from " + queryPath + ";");
+      String quotedPath = StorageUtils.quoteIdentifierPath(queryPath);
+      String sql = "select * from " + quotedPath + ";";
+      logger.info("[IGinX-SQL] {}", sql);
+      return executeSql(sql);
   }
 
   public SessionExecuteSqlResult queryDataByPathWithLimit(String pathPrefix, int limit) {
       String queryPath = StorageUtils.normalizeEscapedPath(pathPrefix);
-      return executeSql("select * from " + queryPath + " limit " + limit + ";");
+      String quotedPath = StorageUtils.quoteIdentifierPath(queryPath);
+      String sql = "select * from " + quotedPath + " limit " + limit + ";";
+      logger.info("[IGinX-SQL] {}", sql);
+      return executeSql(sql);
   }
 
   // ==================== Cluster Info Operations ====================
