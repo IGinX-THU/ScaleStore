@@ -25,6 +25,8 @@ SSH_PASSWORD = ""  # 必填
 SSH_PORT = 22
 
 REQUEST_DELAY = 0.1  # 请求间隔（秒）
+BATCH_SIZE = 10 # 每批请求数量
+BATCH_REQUEST_DELAY = 0 # 每批请求间隔（秒）
 TIMEOUT = 60  # 请求超时（秒）
 
 # ==================== 颜色输出 ====================
@@ -124,8 +126,8 @@ def main():
                 Colors.RED
             )
         
-        # 每10个打印进度
-        if i % 10 == 0:
+        # 每 BATCH_SIZE 个打印进度
+        if i % BATCH_SIZE == 0:
             progress = (i * 100.0) / TOTAL_COUNT
             print()
             print_colored(
@@ -134,6 +136,7 @@ def main():
                 Colors.YELLOW
             )
             print()
+            time.sleep(BATCH_REQUEST_DELAY)
         
         # 延迟
         time.sleep(REQUEST_DELAY)
