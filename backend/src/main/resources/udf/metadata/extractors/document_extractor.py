@@ -6,6 +6,7 @@ class DocumentMetadataExtractor(BaseMetadataExtractor):
 
     USER_PROMPT_TEMPLATE = (
         "请从输入的文档文本中抽取语义三元组。 "
+        "尽可能提取代表元数据的语义，而非具体的数值或事实。 "
         "请严格只返回 JSON，不要输出 Markdown 或解释。 "
         "返回格式要求："
         "{{\"entities\":[\"entity\"],\"triples\":[{{\"subject\":\"entityA\",\"predicate\":\"relation\",\"object\":\"entityB\"}}]}}. "
@@ -15,7 +16,7 @@ class DocumentMetadataExtractor(BaseMetadataExtractor):
     )
 
     USER_RETRY_PROMPT_TEMPLATE = (
-        "你上一轮可能没有返回可用三元组。请再次检查内容并尽量抽取核心语义关系；若确实无关系，triples 返回空数组。 "
+        "你上一轮可能没有返回可用三元组。请再次检查内容并尽量抽取核心语义关系；尽可能提取代表元数据的语义，而非具体的数值或事实；若确实无关系，triples 返回空数组。 "
         "请严格只返回 JSON，不要输出 Markdown 或解释。 "
         "返回格式要求："
         "{{\"entities\":[\"entity\"],\"triples\":[{{\"subject\":\"entityA\",\"predicate\":\"relation\",\"object\":\"entityB\"}}]}}. "

@@ -125,7 +125,6 @@ public final class StorageUtils {
         if (slash >= 0 && slash < base.length() - 1) {
             base = base.substring(slash + 1);
         }
-        base = base.replaceAll("[^a-zA-Z0-9._-]", "_");
         if (base.isEmpty()) {
             base = "content.bin";
         }

@@ -113,7 +113,7 @@ function renderPagination(containerId, stateKey, totalPages, total, onPageChange
 function formatBytes(bytes) {
   const value = Number(bytes || 0);
   if (!Number.isFinite(value) || value <= 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   let size = value;
   let idx = 0;
   while (size >= 1024 && idx < units.length - 1) {
@@ -2982,7 +2982,7 @@ function escapeHtml(str) {
 
 function formatFileSize(bytes) {
   if (!bytes || bytes === 0) return '0 B';
-  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   return (bytes / Math.pow(1024, i)).toFixed(1) + ' ' + units[i];
 }
