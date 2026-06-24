@@ -17,6 +17,9 @@ public class AddStorageEngineRequest {
     private String sshPassword;
     private Integer sshPort;
 
+    private Boolean readSchema;
+    private String descriptionDocument;
+
     public String getSourceType() {
         return sourceType;
     }
@@ -103,5 +106,21 @@ public class AddStorageEngineRequest {
 
     public void setSshPort(Integer sshPort) {
         this.sshPort = sshPort;
+    }
+
+    public Boolean getReadSchema() {
+        return readSchema;
+    }
+
+    public void setReadSchema(Boolean readSchema) {
+        this.readSchema = readSchema;
+    }
+
+    public String getDescriptionDocument() {
+        return descriptionDocument;
+    }
+
+    public void setDescriptionDocument(String descriptionDocument) {
+        this.descriptionDocument = descriptionDocument;
     }
 }

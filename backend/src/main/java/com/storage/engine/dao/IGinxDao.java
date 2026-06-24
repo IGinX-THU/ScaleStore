@@ -10,6 +10,7 @@ import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.service.adapter.StorageUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 
 import java.util.*;
@@ -36,6 +37,18 @@ public class IGinxDao {
     };
 
   private final IGinxConnectionPool connectionPool;
+
+  @Value("${iginx.host}")
+  private String seedHost;
+
+  @Value("${iginx.port}")
+  private int seedPort;
+
+  @Value("${iginx.username}")
+  private String username;
+
+  @Value("${iginx.password}")
+  private String password;
 
   private interface SessionAction<T> {
       T run(Session session) throws SessionException;
@@ -458,9 +471,18 @@ public class IGinxDao {
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
              String contentPath, long fileSize, String fileFormat, String createTime) {
+      insertMeta(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, "PENDING");
+  }
+
+  public void insertMeta(long key, String logicalPath, String dataType, String fileName,
+             String contentPath, long fileSize, String fileFormat, String createTime, String knowledgeExtractStatus) {
+      String safeStatus = knowledgeExtractStatus == null ? "PENDING" : knowledgeExtractStatus.trim().toUpperCase(Locale.ROOT);
+      if (safeStatus.isEmpty()) {
+          safeStatus = "PENDING";
+      }
       String sql = String.format(
               Locale.ROOT,
-          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
+          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s');",
               IGinxConstants.STORAGE_META_PATH,
               key,
               escapeSql(logicalPath),
@@ -469,7 +491,8 @@ public class IGinxDao {
           escapeSqlKeepBackslash(contentPath),
               fileSize,
               escapeSql(fileFormat),
-              escapeSql(createTime));
+              escapeSql(createTime),
+              escapeSql(safeStatus));
       executeSql(sql);
   }
 
@@ -560,6 +583,32 @@ public class IGinxDao {
               return session.executeSql(sql);
           }
       });
+  }
+
+  /**
+   * Execute an expensive SQL statement with an isolated one-off session.
+   *
+   * Long-running UDF queries must not occupy the shared pool session lock, or
+   * normal requests such as /access/list and datasource summary refresh will
+   * wait behind the UDF until it finishes.
+   */
+  public SessionExecuteSqlResult executeLongRunningSql(String sql) {
+      Session session = null;
+      try {
+          session = new Session(seedHost, seedPort, username, password);
+          session.openSession();
+          return session.executeSql(sql);
+      } catch (SessionException e) {
+          throw new RuntimeException("Failed to execute long-running SQL: " + e.getMessage(), e);
+      } finally {
+          if (session != null) {
+              try {
+                  session.closeSession();
+              } catch (Exception e) {
+                  logger.warn("[IGinX-SQL] Failed to close long-running SQL session: {}", e.getMessage());
+              }
+          }
+      }
   }
 
   /**

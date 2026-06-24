@@ -116,7 +116,7 @@ public class LlmService {
                     + "1) 只读查询，不允许写操作。\n"
                     + "2) 优先返回节点与关系本身（如 n,r,m / p,hd,d,m,e），不要只返回计数或字符串。\n"
                     + "3) 实体相关问题必须尽量把来源数据文件带出来：优先包含 DataAsset-[:MENTIONS]->Entity 和 LogicalPath-[:HAS_DATA]->DataAsset。\n"
-                    + "4) 仅使用以下关系名: CONTAINS, HAS_DATA, HAS_FILED, MENTIONS, SEMANTIC_RELATION。\n"
+                    + "4) 仅使用以下关系名: CONTAINS, HAS_DATA, HAS_FIELD, MENTIONS。\n"
                     + "5) 仅使用以下标签名: LogicalPath, DataAsset, Field, Entity。\n"
                     + "6) 不要使用CALL/APOC。\n"
                     + "7) 如果无特殊要求，加 LIMIT 80。";
@@ -163,9 +163,9 @@ public class LlmService {
                     + "1) 只读查询，不允许写操作。\n"
                     + "2) 严禁引用未定义变量；WITH/RETURN 中变量必须全部已定义。\n"
                     + "3) 能不用 WITH 就不要用 WITH；若使用 WITH，必须显式传递后续会使用的变量。\n"
-                    + "4) 仅使用关系: CONTAINS, HAS_DATA, HAS_FILED, MENTIONS, SEMANTIC_RELATION。\n"
+                    + "4) 仅使用关系: CONTAINS, HAS_DATA, HAS_FIELD, MENTIONS。\n"
                     + "5) 仅使用标签: LogicalPath, DataAsset, Field, Entity。\n"
-                    + "6) 优先返回可绘图子图变量（例如 p,hd,d,m,e,hf,f,sr,t），不要只返回 count。\n"
+                    + "6) 优先返回可绘图子图变量（例如 p,hd,d,m,e,hf,f），不要只返回 count。\n"
                     + "7) 无特殊要求时加 LIMIT 80。\n"
                     + "8) 只输出一条Cypher，不要Markdown和解释文本。";
 

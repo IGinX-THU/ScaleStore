@@ -35,6 +35,12 @@ public class StorageService {
     private static final long EXTERNAL_SIZE_FLUSH_BYTES = 10L * 1024L * 1024L * 1024L;
     private static final int STRUCTURED_SAMPLE_ROW_COUNT = 100;
     private static final long FULL_ROW_BYTES = 1024L * 1024L;
+    private static final String DEFAULT_FILESYSTEM_STRUCT = "FileTree";
+    private static final String DEFAULT_DESCRIPTION_DOCUMENT = "description.txt";
+    private static final String SCHEMA_KNOWLEDGE_UDF = "SchemaKnowledgeExtract";
+    private static final String STATUS_SCHEMA_PROCESSING = "SCHEMA_PROCESSING";
+    private static final String STATUS_SCHEMA_SUCCESS = "SCHEMA_SUCCESS";
+    private static final String STATUS_SCHEMA_FAILED = "SCHEMA_FAILED";
 
     @Autowired
     private IGinxDao iginxDao;
@@ -53,6 +59,9 @@ public class StorageService {
 
     @Autowired
     private ScriptExecutionUtils scriptExecutionUtils;
+
+    private final Object metaIdAllocationLock = new Object();
+    private long nextMetaIdCandidate = -1L;
 
     public synchronized Map<String, Object> addExternalStorageEngine(AddStorageEngineRequest request) {
         AddSourceContext context = validateAndBuildContext(request);
@@ -78,14 +87,18 @@ public class StorageService {
             throw new RuntimeException("数据源注册失败: " + e.getMessage(), e);
         }
 
-        // 异步执行元数据同步
-        triggerExternalMetadataSyncAsync(context);
+        if (context.readSchema && isFilesystemExternalSource(context)) {
+            triggerExternalSchemaMetadataSyncAsync(context);
+        } else {
+            triggerExternalMetadataSyncAsync(context);
+        }
 
         Map<String, Object> payload = new LinkedHashMap<String, Object>();
         payload.put("sql", sql);
         payload.put("sourceType", context.sourceType);
         payload.put("schemaPrefix", context.schemaPrefix);
         payload.put("mappedDataType", context.mappedDataType);
+        payload.put("readSchema", Boolean.valueOf(context.readSchema));
         payload.put("syncStatus", "REGISTERED");
         payload.put("message", "添加数据源成功，数据源已注册，后台将持续进行解析");
         return payload;
@@ -135,6 +148,44 @@ public class StorageService {
         });
     }
 
+    private void triggerExternalSchemaMetadataSyncAsync(AddSourceContext context) {
+        final AddSourceContext asyncContext = copyContext(context);
+        CompletableFuture.runAsync(() -> {
+            try {
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "running",
+                        "SCHEMA_STARTED",
+                        "Filesystem schema extraction started: schemaPrefix=" + safe(asyncContext.schemaPrefix),
+                        "External-Source");
+
+                ExternalMetaSyncResult syncResult = syncExternalSchemaMetadata(asyncContext);
+                logger.info(
+                    "[ExternalSource] Async schema metadata sync finished. schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
+                    asyncContext.schemaPrefix,
+                    syncResult.discoveredCount,
+                    syncResult.importedCount,
+                    syncResult.skippedCount,
+                    syncResult.replacedCount);
+
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "success",
+                        "SCHEMA_DONE",
+                        "Filesystem schema extraction completed: schemaPrefix=" + safe(asyncContext.schemaPrefix)
+                                + ", imported=" + syncResult.importedCount
+                                + ", skipped=" + syncResult.skippedCount,
+                        "External-Source");
+            } catch (Exception ex) {
+                logger.error("[ExternalSource] Async schema metadata sync failed. schemaPrefix={}", asyncContext.schemaPrefix, ex);
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "warn",
+                        "SCHEMA_FAILED",
+                        "Filesystem schema extraction failed: schemaPrefix=" + safe(asyncContext.schemaPrefix)
+                                + ", reason=" + safe(ex.getMessage()),
+                        "External-Source");
+            }
+        });
+    }
+
     private AddSourceContext copyContext(AddSourceContext src) {
         AddSourceContext copy = new AddSourceContext();
         if (src == null) {
@@ -155,6 +206,8 @@ public class StorageService {
         copy.sshPassword = src.sshPassword;
         copy.sshPort = src.sshPort;
         copy.sshFileSizeCache = src.sshFileSizeCache;
+        copy.readSchema = src.readSchema;
+        copy.descriptionDocument = src.descriptionDocument;
         return copy;
     }
 
@@ -191,7 +244,7 @@ public class StorageService {
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
 
         // Generate metadata ID
-        long metaId = iginxDao.getMaxMetaId() + 1;
+        long metaId = allocateMetaId();
 
         // Convert logical folder path to a file-scoped IGinX path.
         String folderPath = StorageUtils.toIginxDataPath(logicalPath);
@@ -218,6 +271,17 @@ public class StorageService {
 
         dataSourceService.increaseDefaultDataSourceSize(fileSize);
         return item;
+    }
+
+    private long allocateMetaId() {
+        synchronized (metaIdAllocationLock) {
+            long databaseNextId = iginxDao.getMaxMetaId() + 1;
+            long nextId = nextMetaIdCandidate < 0L
+                    ? databaseNextId
+                    : Math.max(nextMetaIdCandidate, databaseNextId);
+            nextMetaIdCandidate = nextId + 1;
+            return nextId;
+        }
     }
 
     private String buildContentPath(String iginxDataPath, String dataType) {
@@ -265,7 +329,6 @@ public class StorageService {
             return result;
         }
 
-        long nextMetaId = iginxDao.getMaxMetaId() + 1;
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
         List<DataItem> existingMeta = accessService.getAllMeta();
 
@@ -293,9 +356,10 @@ public class StorageService {
             String inferredDataType = inferExternalDataType(context, fileName, fileFormat);
             String contentPath = buildContentPath(assetPath, inferredDataType);
             long estimatedFileSize = estimateExternalAssetSize(assetPath, context);
+            long metaId = allocateMetaId();
 
             iginxDao.insertMeta(
-                    nextMetaId,
+                    metaId,
                     logicalPath,
                     inferredDataType,
                     fileName,
@@ -309,7 +373,7 @@ public class StorageService {
             result.importedLogicalPaths.add(normalizePath(logicalPath + "/" + fileName));
 
             DataItem added = new DataItem();
-            added.setId((int) nextMetaId);
+            added.setId((int) metaId);
             added.setLogicalPath(logicalPath);
             added.setFileName(fileName);
             added.setDataType(inferredDataType);
@@ -328,8 +392,6 @@ public class StorageService {
             }
 
             publishExternalSyncEvent("running", "IMPORTED", logicalPath, fileName, estimatedFileSize, "已完成元数据导入");
-
-            nextMetaId++;
         }
 
         if (pendingSizeDelta > 0L) {
@@ -339,6 +401,200 @@ public class StorageService {
         }
 
         return result;
+    }
+
+    private ExternalMetaSyncResult syncExternalSchemaMetadata(AddSourceContext context) {
+        String showColumnsSql = buildShowColumnsSql(context.schemaPrefix);
+        logger.info("[ExternalSource] Filesystem schema show columns SQL: {}", showColumnsSql);
+        SessionExecuteSqlResult showColumnsResult = iginxDao.executeSql(showColumnsSql);
+        logger.info("[ExternalSource] Filesystem schema show columns raw result. paths={}, rows={}, firstRowSize={}, dataTypes={}",
+                showColumnsResult == null || showColumnsResult.getPaths() == null ? 0 : showColumnsResult.getPaths().size(),
+                showColumnsResult == null || showColumnsResult.getValues() == null ? 0 : showColumnsResult.getValues().size(),
+                showColumnsResult == null || showColumnsResult.getValues() == null || showColumnsResult.getValues().isEmpty()
+                        || showColumnsResult.getValues().get(0) == null ? 0 : showColumnsResult.getValues().get(0).size(),
+                showColumnsResult == null || showColumnsResult.getDataTypeList() == null ? 0 : showColumnsResult.getDataTypeList().size());
+        List<ColumnSchema> columnSchemas = parseShowColumnsSchemas(showColumnsResult);
+        Map<String, FilesystemSchemaAsset> assets = groupFilesystemSchemaAssets(columnSchemas, context);
+        logger.info("[ExternalSource] Filesystem schema columns parsed. schemaPrefix={}, columnCount={}, assetCount={}, sampleColumns={}",
+                context.schemaPrefix,
+                columnSchemas.size(),
+                assets.size(),
+                summarizeSchemaColumns(columnSchemas));
+
+        ExternalMetaSyncResult result = new ExternalMetaSyncResult();
+        result.discoveredCount = assets.size();
+        if (assets.isEmpty()) {
+            return result;
+        }
+
+        String createTime = LocalDateTime.now().format(TIME_FORMATTER);
+        List<DataItem> existingMeta = accessService.getAllMeta();
+        List<Long> importedMetaIds = new ArrayList<Long>();
+
+        long pendingSizeDelta = 0L;
+        int pendingFlushFiles = 0;
+
+        for (FilesystemSchemaAsset asset : assets.values()) {
+            String assetPath = asset.assetPath;
+            String logicalPath = toFilesystemFolderLogicalPath(assetPath, context);
+            String fileName = deriveExternalFileName(assetPath, context, logicalPath);
+
+            int removedColumnMetas = deleteLegacySchemaColumnMetas(existingMeta, logicalPath, fileName);
+            if (removedColumnMetas > 0) {
+                result.replacedCount += removedColumnMetas;
+                publishExternalSyncEvent("info", "REPLACED", logicalPath, fileName, 0L,
+                        "removed legacy column-level metadata count=" + removedColumnMetas);
+            }
+
+            String fileFormat = getFileExtension(fileName);
+            String inferredDataType = inferSchemaFilesystemDataType(fileName, fileFormat, asset.columns);
+            String contentPath = buildContentPath(assetPath, inferredDataType);
+
+            DataItem existing = findMetaByPathAndFile(existingMeta, logicalPath, fileName);
+            if (existing != null) {
+                if (!shouldRefreshSchemaMeta(existing, inferredDataType, contentPath)) {
+                    result.skippedCount++;
+                    publishExternalSyncEvent("info", "SKIPPED", logicalPath, fileName, 0L, "metadata already exists");
+                    continue;
+                }
+                iginxDao.deleteMeta(existing.getId().longValue());
+                existingMeta.remove(existing);
+                result.replacedCount++;
+                publishExternalSyncEvent("info", "REPLACED", logicalPath, fileName, 0L,
+                        "refreshed stale schema metadata");
+            }
+
+            long estimatedFileSize = estimateSchemaFilesystemAssetSize(assetPath, context, inferredDataType, asset.columns);
+            long metaId = allocateMetaId();
+
+            iginxDao.insertMeta(
+                    metaId,
+                    logicalPath,
+                    inferredDataType,
+                    fileName,
+                    contentPath,
+                    estimatedFileSize,
+                    fileFormat,
+                    createTime,
+                    STATUS_SCHEMA_PROCESSING);
+
+            result.importedCount++;
+            result.totalEstimatedSize += Math.max(0L, estimatedFileSize);
+            result.importedLogicalPaths.add(normalizePath(logicalPath + "/" + fileName));
+            importedMetaIds.add(Long.valueOf(metaId));
+
+            DataItem added = new DataItem();
+            added.setId((int) metaId);
+            added.setLogicalPath(logicalPath);
+            added.setFileName(fileName);
+            added.setDataType(inferredDataType);
+            added.setContentPath(contentPath);
+            added.setFileSize(estimatedFileSize);
+            added.setKnowledgeExtractStatus(STATUS_SCHEMA_PROCESSING);
+            existingMeta.add(added);
+
+            pendingSizeDelta += Math.max(0L, estimatedFileSize);
+            pendingFlushFiles++;
+            if (pendingFlushFiles >= EXTERNAL_SIZE_FLUSH_BATCH || pendingSizeDelta >= EXTERNAL_SIZE_FLUSH_BYTES) {
+                dataSourceService.increaseExternalDataSourceSize(context.schemaPrefix, pendingSizeDelta);
+                pendingSizeDelta = 0L;
+                pendingFlushFiles = 0;
+            }
+
+            publishExternalSyncEvent("running", "IMPORTED", logicalPath, fileName, estimatedFileSize,
+                    "schema metadata imported");
+        }
+
+        if (pendingSizeDelta > 0L) {
+            dataSourceService.increaseExternalDataSourceSize(context.schemaPrefix, pendingSizeDelta);
+        }
+
+        if (!importedMetaIds.isEmpty()) {
+            triggerSchemaKnowledgeExtractionAsync(context, columnSchemas, importedMetaIds);
+        }
+
+        return result;
+    }
+
+    private void triggerSchemaKnowledgeExtractionAsync(
+            AddSourceContext context,
+            List<ColumnSchema> columnSchemas,
+            List<Long> metaIds) {
+        final AddSourceContext asyncContext = copyContext(context);
+        final List<ColumnSchema> asyncColumnSchemas = columnSchemas == null
+                ? Collections.emptyList()
+                : new ArrayList<ColumnSchema>(columnSchemas);
+        final List<Long> asyncMetaIds = metaIds == null
+                ? Collections.emptyList()
+                : new ArrayList<Long>(metaIds);
+
+        if (asyncMetaIds.isEmpty()) {
+            return;
+        }
+
+        CompletableFuture.runAsync(() -> {
+            boolean udfSuccess = false;
+            SchemaKnowledgeUdfResult udfResult = null;
+            try {
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "running",
+                        "SCHEMA_UDF_STARTED",
+                        "SchemaKnowledgeExtract started: schemaPrefix=" + safe(asyncContext.schemaPrefix),
+                        "External-Source");
+
+                String description = readFilesystemDescription(asyncContext, asyncColumnSchemas);
+                udfResult = executeSchemaKnowledgeExtractUdf(asyncContext, description);
+                udfSuccess = udfResult.success;
+                if (!udfSuccess) {
+                    throw new IllegalStateException(udfResult.message);
+                }
+                metadataExtractionSchedulerService.publishExternalSourceEvent(
+                        "success",
+                        "SCHEMA_UDF_DONE",
+                        "SchemaKnowledgeExtract completed: assets=" + udfResult.assetCount
+                                + ", entities=" + udfResult.entityCount
+                                + ", relations=" + udfResult.relationCount,
+                        "External-Source");
+            } catch (Exception ex) {
+                logger.error("[ExternalSource] Async schema knowledge extraction failed. schemaPrefix={}",
+                        asyncContext.schemaPrefix,
+                        ex);
+                udfResult = new SchemaKnowledgeUdfResult();
+                udfResult.success = false;
+                udfResult.message = ex.getMessage();
+            } finally {
+                updateMetaKnowledgeStatuses(asyncMetaIds, udfSuccess ? STATUS_SCHEMA_SUCCESS : STATUS_SCHEMA_FAILED);
+                if (!udfSuccess) {
+                    String reason = udfResult == null ? "SchemaKnowledgeExtract failed" : udfResult.message;
+                    metadataExtractionSchedulerService.publishExternalSourceEvent(
+                            "warn",
+                            "SCHEMA_UDF_FAILED",
+                            "SchemaKnowledgeExtract failed: " + safe(reason),
+                            "External-Source");
+                }
+            }
+        });
+    }
+
+    private boolean shouldRefreshSchemaMeta(DataItem existing, String expectedDataType, String expectedContentPath) {
+        if (existing == null) {
+            return false;
+        }
+        String actualType = safe(existing.getDataType()).toLowerCase(Locale.ROOT);
+        String expectedType = safe(expectedDataType).toLowerCase(Locale.ROOT);
+        if (!actualType.equals(expectedType)) {
+            return true;
+        }
+        String actualContentPath = StorageUtils.normalizeEscapedPath(safe(existing.getContentPath()));
+        String normalizedExpectedContentPath = StorageUtils.normalizeEscapedPath(safe(expectedContentPath));
+        if (!actualContentPath.equals(normalizedExpectedContentPath)) {
+            return true;
+        }
+        if (!isSchemaTabularDataType(expectedDataType)) {
+            return true;
+        }
+        Long size = existing.getFileSize();
+        return size == null || size.longValue() <= 0L;
     }
 
     private List<String> listExternalColumns(AddSourceContext context) {
@@ -355,6 +611,666 @@ public class StorageService {
         return new ArrayList<String>(deduped);
     }
 
+    private Map<String, FilesystemSchemaAsset> groupFilesystemSchemaAssets(List<ColumnSchema> schemas, AddSourceContext context) {
+        LinkedHashMap<String, FilesystemSchemaAsset> assets = new LinkedHashMap<String, FilesystemSchemaAsset>();
+        if (schemas == null || context == null) {
+            return assets;
+        }
+        String expectedPrefix = context.schemaPrefix + ".";
+        for (ColumnSchema schema : schemas) {
+            if (schema == null || schema.path.isEmpty() || !schema.path.startsWith(expectedPrefix)) {
+                continue;
+            }
+            String assetPath = deriveFilesystemFileAssetPath(schema.path, context);
+            if (assetPath.isEmpty()) {
+                continue;
+            }
+            FilesystemSchemaAsset asset = assets.get(assetPath);
+            if (asset == null) {
+                asset = new FilesystemSchemaAsset(assetPath);
+                assets.put(assetPath, asset);
+            }
+            asset.columns.add(schema);
+        }
+        return assets;
+    }
+
+    private String deriveFilesystemFileAssetPath(String columnPath, AddSourceContext context) {
+        List<String> segments = splitUnescapedSegments(columnPath);
+        if (segments.isEmpty()) {
+            return "";
+        }
+
+        int startIndex = splitUnescapedSegments(context.schemaPrefix).size();
+        for (int i = Math.max(0, startIndex); i < segments.size(); i++) {
+            String segment = safe(segments.get(i));
+            if (!isFilesystemFileSegment(segment)) {
+                continue;
+            }
+            List<String> assetSegments = new ArrayList<String>();
+            for (int j = 0; j <= i; j++) {
+                assetSegments.add(segments.get(j));
+            }
+            return joinEscapedPathSegments(assetSegments);
+        }
+        return "";
+    }
+
+    private boolean isFilesystemFileSegment(String segment) {
+        String ext = getFileExtension(segment);
+        if (ext.isEmpty()) {
+            return false;
+        }
+        return isImageExtension(ext)
+                || isStructuredTextExtension(ext)
+                || isKeyValueExtension(ext)
+                || isDocumentExtension(ext)
+                || "log".equals(ext)
+                || "text".equals(ext)
+                || "xlsx".equals(ext)
+                || "xls".equals(ext);
+    }
+
+    private boolean isDescriptionDocumentFile(String fileName, AddSourceContext context) {
+        String target = normalizeFileName(context == null ? DEFAULT_DESCRIPTION_DOCUMENT : context.descriptionDocument);
+        if (target.isEmpty()) {
+            target = DEFAULT_DESCRIPTION_DOCUMENT;
+        }
+        return target.equalsIgnoreCase(normalizeFileName(fileName));
+    }
+
+    private String joinEscapedPathSegments(List<String> segments) {
+        StringBuilder sb = new StringBuilder();
+        if (segments == null) {
+            return "";
+        }
+        for (String segment : segments) {
+            String safeSegment = safe(segment);
+            if (safeSegment.isEmpty()) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append('.');
+            }
+            sb.append(escapePathSegment(safeSegment));
+        }
+        return sb.toString();
+    }
+
+    private String escapePathSegment(String segment) {
+        return safe(segment).replace("\\", "\\\\").replace(".", "\\.");
+    }
+
+    private String inferSchemaFilesystemDataType(String fileName, String fileFormat, List<ColumnSchema> columns) {
+        String ext = safe(fileFormat).toLowerCase(Locale.ROOT);
+        String lowerName = safe(fileName).toLowerCase(Locale.ROOT);
+        if (isImageExtension(ext)) {
+            return IGinxConstants.TYPE_IMAGE;
+        }
+        if ("csv".equals(ext) || "tsv".equals(ext)) {
+            if (looksLikeTimeseriesName(lowerName) || hasTimeLikeColumn(columns)) {
+                return IGinxConstants.TYPE_TIMESERIES;
+            }
+            return IGinxConstants.TYPE_RELATIONAL;
+        }
+        return IGinxConstants.TYPE_DOCUMENT;
+    }
+
+    private boolean hasTimeLikeColumn(List<ColumnSchema> columns) {
+        if (columns == null) {
+            return false;
+        }
+        for (ColumnSchema column : columns) {
+            String leaf = getLastPathSegment(column == null ? "" : column.path).toLowerCase(Locale.ROOT);
+            if ("time".equals(leaf)
+                    || "timestamp".equals(leaf)
+                    || "date".equals(leaf)
+                    || "datetime".equals(leaf)
+                    || leaf.endsWith("_time")
+                    || leaf.endsWith("_timestamp")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private int deleteLegacySchemaColumnMetas(List<DataItem> existingMeta, String logicalPath, String schemaFileName) {
+        if (existingMeta == null || schemaFileName == null || schemaFileName.trim().isEmpty()) {
+            return 0;
+        }
+        String legacyColumnFolder = normalizePath(logicalPath + "/" + normalizeFileName(schemaFileName));
+        int removed = 0;
+        Iterator<DataItem> iterator = existingMeta.iterator();
+        while (iterator.hasNext()) {
+            DataItem item = iterator.next();
+            if (item == null || item.getId() == null) {
+                continue;
+            }
+            if (!legacyColumnFolder.equals(normalizePath(item.getLogicalPath()))) {
+                continue;
+            }
+            iginxDao.deleteMeta(item.getId().longValue());
+            iterator.remove();
+            removed++;
+        }
+        return removed;
+    }
+
+    private String getLastPathSegment(String path) {
+        List<String> segments = splitUnescapedSegments(path);
+        if (segments.isEmpty()) {
+            return "";
+        }
+        return safe(segments.get(segments.size() - 1));
+    }
+
+    private long estimateSchemaFilesystemAssetSize(String assetPath,
+                                                   AddSourceContext context,
+                                                   String dataType,
+                                                   List<ColumnSchema> columns) {
+        if (context != null && "ssh".equals(context.sizeCalculationStrategy)) {
+            return estimateFilesystemSizeBySSH(assetPath, context);
+        }
+        try {
+            if (isSchemaTabularDataType(dataType)) {
+                return estimateSchemaTabularAssetSize(assetPath, columns);
+            }
+            return estimateFilesystemExternalAssetActualSize(assetPath);
+        } catch (Exception e) {
+            logger.warn("[ExternalSource] Schema file size fallback to 0. assetPath={}, dataType={}", assetPath, dataType, e);
+        }
+        return 0L;
+    }
+
+    private boolean isSchemaTabularDataType(String dataType) {
+        String type = safe(dataType).toLowerCase(Locale.ROOT);
+        return IGinxConstants.TYPE_RELATIONAL.equals(type)
+                || IGinxConstants.TYPE_TIMESERIES.equals(type);
+    }
+
+    private long estimateSchemaTabularAssetSize(String assetPath, List<ColumnSchema> columns) {
+        List<ColumnSchema> usableColumns = new ArrayList<ColumnSchema>();
+        if (columns != null) {
+            for (ColumnSchema column : columns) {
+                if (column != null && !safe(column.path).isEmpty()) {
+                    usableColumns.add(column);
+                }
+            }
+        }
+        if (usableColumns.isEmpty()) {
+            usableColumns = filterColumnsUnderAsset(assetPath, columns);
+        }
+        if (usableColumns.isEmpty()) {
+            logger.warn("[ExternalSource] No schema columns found for tabular filesystem asset: {}", assetPath);
+            return 0L;
+        }
+
+        long rowCount = resolveSchemaTabularRowCount(assetPath, usableColumns);
+        if (rowCount <= 0L) {
+            logger.warn("[ExternalSource] Schema tabular row count is 0. assetPath={}, columns={}",
+                    assetPath, summarizeSchemaColumns(usableColumns));
+            return 0L;
+        }
+
+        long bytesPerRow = 0L;
+        for (ColumnSchema column : usableColumns) {
+            long bytes = estimateSchemaColumnBytes(assetPath, column);
+            if (Long.MAX_VALUE - bytesPerRow < bytes) {
+                bytesPerRow = Long.MAX_VALUE;
+                break;
+            }
+            bytesPerRow += Math.max(0L, bytes);
+        }
+
+        if (bytesPerRow <= 0L) {
+            logger.warn("[ExternalSource] Schema tabular bytesPerRow is 0. assetPath={}, rowCount={}", assetPath, rowCount);
+            return 0L;
+        }
+        if (bytesPerRow > Long.MAX_VALUE / rowCount) {
+            return Long.MAX_VALUE;
+        }
+        long estimated = bytesPerRow * rowCount;
+        return estimated;
+    }
+
+    private List<ColumnSchema> filterColumnsUnderAsset(String assetPath, List<ColumnSchema> columns) {
+        List<ColumnSchema> out = new ArrayList<ColumnSchema>();
+        if (columns == null) {
+            return out;
+        }
+        String normalizedAsset = StorageUtils.normalizeEscapedPath(safe(assetPath));
+        String prefix = normalizedAsset + ".";
+        for (ColumnSchema column : columns) {
+            if (column == null || column.path.isEmpty()) {
+                continue;
+            }
+            String normalizedColumn = StorageUtils.normalizeEscapedPath(column.path);
+            if (normalizedColumn.startsWith(prefix)) {
+                out.add(column);
+            }
+        }
+        return out;
+    }
+
+    private long resolveSchemaTabularRowCount(String assetPath, List<ColumnSchema> columns) {
+        ColumnSchema countColumn = chooseCountColumn(columns);
+        if (countColumn == null) {
+            return 0L;
+        }
+        String leaf = getLastPathSegment(countColumn.path);
+        if (leaf.isEmpty()) {
+            return 0L;
+        }
+
+        List<String> fromCandidates = buildSchemaAssetFromCandidates(assetPath);
+        for (String from : fromCandidates) {
+            String sql = "select count(" + quoteColumnLeafForSql(leaf) + ") from " + from + ";";
+            try {
+                SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+                List<Long> counts = parseCountValues(result);
+                if (!counts.isEmpty()) {
+                    return counts.get(0).longValue();
+                }
+            } catch (Exception e) {
+                logger.warn("[ExternalSource] Schema tabular row count SQL failed. assetPath={}, leaf={}, sql={}, error={}",
+                        assetPath, leaf, sql, e.getMessage(), e);
+            }
+        }
+        return 0L;
+    }
+
+    private List<String> buildSchemaAssetFromCandidates(String assetPath) {
+        List<String> candidates = new ArrayList<String>();
+        String safePath = safe(assetPath);
+        addUnique(candidates, StorageUtils.quoteIdentifierPath(safePath));
+        return candidates;
+    }
+
+    private void addUnique(List<String> values, String value) {
+        if (value == null || value.isEmpty() || values.contains(value)) {
+            return;
+        }
+        values.add(value);
+    }
+
+    private String quoteWholeIdentifierPath(String rawPath) {
+        String value = safe(rawPath);
+        if (value.isEmpty()) {
+            return value;
+        }
+        return "`" + value.replace("`", "``") + "`";
+    }
+
+    private String quoteColumnLeafForSql(String leaf) {
+        String value = safe(leaf);
+        if (value.matches("[A-Za-z_][A-Za-z0-9_]*")) {
+            return value;
+        }
+        return StorageUtils.quoteIdentifierSegment(value);
+    }
+
+    private ColumnSchema chooseCountColumn(List<ColumnSchema> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return null;
+        }
+        for (ColumnSchema column : columns) {
+            if (column != null && fixedTypeBytes(column.type) > 0L) {
+                return column;
+            }
+        }
+        for (ColumnSchema column : columns) {
+            if (column != null && !column.path.isEmpty()) {
+                return column;
+            }
+        }
+        return null;
+    }
+
+    private long estimateSchemaColumnBytes(String assetPath, ColumnSchema column) {
+        if (column == null) {
+            return 0L;
+        }
+        long fixedBytes = fixedTypeBytes(column.type);
+        if (fixedBytes > 0L) {
+            return fixedBytes;
+        }
+        if ("BINARY".equalsIgnoreCase(safe(column.type))) {
+            return estimateSchemaBinaryColumnAverageBytes(assetPath, column);
+        }
+        return 0L;
+    }
+
+    private long fixedTypeBytes(String type) {
+        String normalized = safe(type).toUpperCase(Locale.ROOT);
+        if ("BOOLEAN".equals(normalized)) {
+            return 1L;
+        }
+        if ("INTEGER".equals(normalized) || "INT".equals(normalized)) {
+            return 4L;
+        }
+        if ("LONG".equals(normalized)) {
+            return 8L;
+        }
+        if ("FLOAT".equals(normalized)) {
+            return 4L;
+        }
+        if ("DOUBLE".equals(normalized)) {
+            return 8L;
+        }
+        return 0L;
+    }
+
+    private long estimateSchemaBinaryColumnAverageBytes(String assetPath, ColumnSchema column) {
+        String leaf = getLastPathSegment(column == null ? "" : column.path);
+        if (leaf.isEmpty()) {
+            return 0L;
+        }
+        SessionExecuteSqlResult result = null;
+        for (String from : buildSchemaAssetFromCandidates(assetPath)) {
+            String sql = "select " + quoteColumnLeafForSql(leaf)
+                    + " from " + from
+                    + " limit " + STRUCTURED_SAMPLE_ROW_COUNT + ";";
+            try {
+                logger.info("[ExternalSource] Fetch schema binary sample SQL: {}", sql);
+                result = iginxDao.executeSql(sql);
+                if (result != null && result.getValues() != null && !result.getValues().isEmpty()) {
+                    break;
+                }
+                logger.warn("[ExternalSource] Schema binary sample result is empty. assetPath={}, leaf={}, sql={}",
+                        assetPath, leaf, sql);
+            } catch (Exception e) {
+                logger.warn("[ExternalSource] Schema binary sample SQL failed. assetPath={}, leaf={}, sql={}, error={}",
+                        assetPath, leaf, sql, e.getMessage(), e);
+            }
+        }
+        if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
+            return 0L;
+        }
+
+        long total = 0L;
+        int count = 0;
+        for (List<Object> row : result.getValues()) {
+            if (row == null || row.isEmpty()) {
+                continue;
+            }
+            total += estimateValueBytes(row.get(0));
+            count++;
+        }
+        if (count <= 0) {
+            return 0L;
+        }
+        return Math.max(1L, total / count);
+    }
+
+    private String summarizeSchemaColumns(List<ColumnSchema> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        int limit = Math.min(columns.size(), 12);
+        for (int i = 0; i < limit; i++) {
+            ColumnSchema column = columns.get(i);
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(getLastPathSegment(column == null ? "" : column.path))
+                    .append(":")
+                    .append(column == null ? "" : safe(column.type));
+        }
+        if (columns.size() > limit) {
+            sb.append(", ... total=").append(columns.size());
+        }
+        sb.append("]");
+        return sb.toString();
+    }
+
+    private void updateMetaKnowledgeStatuses(List<Long> metaIds, String status) {
+        if (metaIds == null) {
+            return;
+        }
+        for (Long metaId : metaIds) {
+            if (metaId == null) {
+                continue;
+            }
+            iginxDao.updateMetaKnowledgeStatus(metaId.longValue(), status);
+        }
+    }
+
+    private String readFilesystemDescription(AddSourceContext context, List<ColumnSchema> schemas) {
+        String document = normalizeDescriptionDocument(context == null ? "" : context.descriptionDocument);
+        String parentPath = deriveFilesystemDescriptionParentPath(context, schemas, document);
+        String leafName = getDescriptionDocumentLeaf(document);
+        String sql = "select " + StorageUtils.quoteIdentifierSegment(escapePathSegment(leafName))
+                + " from " + StorageUtils.quoteIdentifierPath(parentPath)
+                + " limit 1;";
+        try {
+            SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+            return firstResultValueAsText(result);
+        } catch (Exception e) {
+            logger.warn("[ExternalSource] Failed to read {}, continue with empty description. parentPath={}",
+                    document, parentPath, e);
+            return "";
+        }
+    }
+
+    private String normalizeDescriptionDocument(String document) {
+        String text = safe(document).replace('\\', '/');
+        while (text.startsWith("/")) {
+            text = text.substring(1);
+        }
+        if (text.isEmpty()) {
+            return DEFAULT_DESCRIPTION_DOCUMENT;
+        }
+        return text;
+    }
+
+    private String getDescriptionDocumentLeaf(String document) {
+        String text = normalizeDescriptionDocument(document);
+        int slash = text.lastIndexOf('/');
+        if (slash >= 0 && slash < text.length() - 1) {
+            return text.substring(slash + 1);
+        }
+        return text;
+    }
+
+    private List<String> getDescriptionDocumentParentSegments(String document) {
+        String text = normalizeDescriptionDocument(document);
+        int slash = text.lastIndexOf('/');
+        if (slash <= 0) {
+            return Collections.emptyList();
+        }
+        String parent = text.substring(0, slash);
+        List<String> segments = new ArrayList<String>();
+        for (String part : parent.split("/+")) {
+            String seg = safe(part);
+            if (!seg.isEmpty()) {
+                segments.add(seg);
+            }
+        }
+        return segments;
+    }
+
+    private String deriveFilesystemDescriptionParentPath(AddSourceContext context, List<ColumnSchema> schemas, String document) {
+        if (context == null) {
+            return "";
+        }
+        int prefixSize = splitUnescapedSegments(context.schemaPrefix).size();
+        List<String> relativeParent = getDescriptionDocumentParentSegments(document);
+        if (schemas != null) {
+            for (ColumnSchema schema : schemas) {
+                if (schema == null || schema.path.isEmpty()) {
+                    continue;
+                }
+                List<String> segments = splitUnescapedSegments(schema.path);
+                if (segments.size() > prefixSize) {
+                    List<String> parentSegments = new ArrayList<String>();
+                    parentSegments.addAll(splitUnescapedSegments(context.schemaPrefix));
+                    parentSegments.add(segments.get(prefixSize));
+                    parentSegments.addAll(relativeParent);
+                    return joinEscapedPathSegments(parentSegments);
+                }
+            }
+        }
+        if (relativeParent.isEmpty()) {
+            return context.schemaPrefix;
+        }
+        List<String> parentSegments = new ArrayList<String>();
+        parentSegments.addAll(splitUnescapedSegments(context.schemaPrefix));
+        parentSegments.addAll(relativeParent);
+        return joinEscapedPathSegments(parentSegments);
+    }
+
+    private String firstResultValueAsText(SessionExecuteSqlResult result) {
+        if (result == null || result.getValues() == null) {
+            return "";
+        }
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                String text = valueAsString(value);
+                if (!text.isEmpty()) {
+                    return text;
+                }
+            }
+        }
+        return "";
+    }
+
+    private SchemaKnowledgeUdfResult executeSchemaKnowledgeExtractUdf(AddSourceContext context, String description) {
+        String showColumnsSql = buildShowColumnsSql(context.schemaPrefix);
+        String sql = "select " + SCHEMA_KNOWLEDGE_UDF
+                + "(*, description='" + escapeSqlLiteral(description) + "'"
+                + ", descriptionDocument='" + escapeSqlLiteral(context.descriptionDocument) + "'"
+                + ", logicalPath='" + escapeSqlLiteral(EXTERN_LOGICAL_PREFIX + "/" + context.logicalSourceKey) + "'"
+                + ", schemaPrefix='" + escapeSqlLiteral(context.schemaPrefix) + "'"
+                + ", sourceType='" + escapeSqlLiteral(context.sourceType) + "')"
+                + " from (" + trimTrailingSemicolon(showColumnsSql) + ");";
+        logger.info("[ExternalSource] Schema knowledge UDF SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeLongRunningSql(sql);
+        return parseSchemaKnowledgeUdfResult(result);
+    }
+
+    private SchemaKnowledgeUdfResult parseSchemaKnowledgeUdfResult(SessionExecuteSqlResult result) {
+        SchemaKnowledgeUdfResult out = new SchemaKnowledgeUdfResult();
+        if (result == null || result.getValues() == null) {
+            out.success = true;
+            out.message = "SchemaKnowledgeExtract returned empty result";
+            return out;
+        }
+
+        Map<String, Integer> indexes = buildSchemaKnowledgeResultIndexes(result.getPaths());
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            SchemaKnowledgeUdfResult named = parseSchemaKnowledgeNamedRow(row, indexes);
+            if (named != null) {
+                return named;
+            }
+            if (row.size() >= 5) {
+                String status = valueAsString(row.get(0));
+                if ("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status)) {
+                    out.success = "SUCCESS".equalsIgnoreCase(status);
+                    out.assetCount = valueAsInt(row.get(1));
+                    out.entityCount = valueAsInt(row.get(2));
+                    out.relationCount = valueAsInt(row.get(3));
+                    out.message = valueAsString(row.get(4));
+                    return out;
+                }
+                status = valueAsString(row.get(4));
+                if ("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status)) {
+                    out.success = "SUCCESS".equalsIgnoreCase(status);
+                    out.assetCount = valueAsInt(row.get(0));
+                    out.entityCount = valueAsInt(row.get(1));
+                    out.message = valueAsString(row.get(2));
+                    out.relationCount = valueAsInt(row.get(3));
+                    return out;
+                }
+            }
+            for (int i = 0; i < row.size(); i++) {
+                String text = valueAsString(row.get(i));
+                if ("FAILED".equalsIgnoreCase(text)) {
+                    out.success = false;
+                    out.message = "SchemaKnowledgeExtract returned FAILED";
+                    return out;
+                }
+            }
+        }
+        out.success = true;
+        out.message = "SchemaKnowledgeExtract completed";
+        return out;
+    }
+
+    private Map<String, Integer> buildSchemaKnowledgeResultIndexes(List<String> paths) {
+        Map<String, Integer> indexes = new HashMap<String, Integer>();
+        if (paths == null) {
+            return indexes;
+        }
+        for (int i = 0; i < paths.size(); i++) {
+            String name = normalizeResultColumnName(paths.get(i));
+            if (!name.isEmpty() && !indexes.containsKey(name)) {
+                indexes.put(name, Integer.valueOf(i));
+            }
+        }
+        return indexes;
+    }
+
+    private String normalizeResultColumnName(String path) {
+        String text = safe(path);
+        if (text.isEmpty()) {
+            return "";
+        }
+        List<String> segments = splitUnescapedSegments(text);
+        if (!segments.isEmpty()) {
+            text = segments.get(segments.size() - 1);
+        }
+        return text.replace("_", "").replace("-", "").toLowerCase(Locale.ROOT);
+    }
+
+    private SchemaKnowledgeUdfResult parseSchemaKnowledgeNamedRow(List<Object> row, Map<String, Integer> indexes) {
+        if (indexes == null || indexes.isEmpty()) {
+            return null;
+        }
+        Integer statusIdx = indexes.get("status");
+        if (!isValidRowIndex(row, statusIdx)) {
+            return null;
+        }
+        String status = valueAsString(row.get(statusIdx.intValue()));
+        if (!"SUCCESS".equalsIgnoreCase(status) && !"FAILED".equalsIgnoreCase(status)) {
+            return null;
+        }
+
+        SchemaKnowledgeUdfResult out = new SchemaKnowledgeUdfResult();
+        out.success = "SUCCESS".equalsIgnoreCase(status);
+        out.assetCount = valueAsInt(rowValue(row, indexes.get("assetcount")));
+        out.entityCount = valueAsInt(rowValue(row, indexes.get("entitycount")));
+        out.relationCount = valueAsInt(rowValue(row, indexes.get("relationcount")));
+        out.message = valueAsString(rowValue(row, indexes.get("message")));
+        return out;
+    }
+
+    private Object rowValue(List<Object> row, Integer idx) {
+        return isValidRowIndex(row, idx) ? row.get(idx.intValue()) : null;
+    }
+
+    private boolean isValidRowIndex(List<Object> row, Integer idx) {
+        return row != null && idx != null && idx.intValue() >= 0 && idx.intValue() < row.size();
+    }
+
+    private String trimTrailingSemicolon(String sql) {
+        String text = safe(sql);
+        while (text.endsWith(";")) {
+            text = text.substring(0, text.length() - 1).trim();
+        }
+        return text;
+    }
+
+    private String escapeSqlLiteral(String value) {
+        return value == null ? "" : value.replace("'", "''");
+    }
+
     private List<ColumnSchema> parseShowColumnsSchemas(SessionExecuteSqlResult result) {
         List<ColumnSchema> out = new ArrayList<ColumnSchema>();
         if (result == null) {
@@ -363,6 +1279,7 @@ public class StorageService {
 
         List<String> headers = result.getPaths();
         List<List<Object>> rows = result.getValues();
+        List<?> dataTypes = result.getDataTypeList();
 
         int pathIdx = 0;
         int typeIdx = 1;
@@ -387,19 +1304,34 @@ public class StorageService {
                     continue;
                 }
                 String type = row.size() > typeIdx ? valueAsString(row.get(typeIdx)) : "";
+                if (type.isEmpty()) {
+                    type = dataTypeNameAt(dataTypes, out.size());
+                }
                 out.add(new ColumnSchema(path, type));
             }
         }
 
         if (out.isEmpty() && headers != null) {
-            for (String headerPath : headers) {
+            for (int i = 0; i < headers.size(); i++) {
+                String headerPath = headers.get(i);
                 if (headerPath != null) {
-                    out.add(new ColumnSchema(headerPath, ""));
+                    out.add(new ColumnSchema(headerPath, dataTypeNameAt(dataTypes, i)));
                 }
             }
         }
 
         return out;
+    }
+
+    private String dataTypeNameAt(List<?> dataTypes, int index) {
+        if (dataTypes == null || index < 0 || index >= dataTypes.size()) {
+            return "";
+        }
+        Object value = dataTypes.get(index);
+        if (value == null) {
+            return "";
+        }
+        return value.toString();
     }
 
     private List<ColumnSchema> listExternalColumnSchemas(String assetPath, AddSourceContext context) {
@@ -477,6 +1409,9 @@ public class StorageService {
 
         long rowCount = resolveExternalRowCount(assetPath);
         if (rowCount <= 0L) {
+            rowCount = resolveStructuredRowCountFromFirstColumn(columns);
+        }
+        if (rowCount <= 0L) {
             return 0L;
         }
 
@@ -490,6 +1425,24 @@ public class StorageService {
             return Long.MAX_VALUE;
         }
         return avgPerRow * rowCount;
+    }
+
+    private long resolveStructuredRowCountFromFirstColumn(List<ColumnSchema> columns) {
+        if (columns == null || columns.isEmpty()) {
+            return 0L;
+        }
+        for (ColumnSchema column : columns) {
+            if (column == null || column.path.isEmpty()) {
+                continue;
+            }
+            try {
+                String[] parentAndLeaf = splitParentAndLeafStrict(column.path);
+                return resolveFilesystemRowCount(parentAndLeaf[0], parentAndLeaf[1]);
+            } catch (Exception e) {
+                logger.warn("[ExternalSource] Structured row count fallback failed. columnPath={}", column.path, e);
+            }
+        }
+        return 0L;
     }
 
     private long estimateFilesystemExternalAssetSize(String assetPath) {
@@ -519,6 +1472,19 @@ public class StorageService {
             return Long.MAX_VALUE;
         }
         return total + Math.max(0L, lastRowBytes);
+    }
+
+    private long estimateFilesystemExternalAssetActualSize(String assetPath) {
+        String[] parentAndLeaf = splitParentAndLeafStrict(assetPath);
+        String parentPath = parentAndLeaf[0];
+        String leafField = parentAndLeaf[1];
+        String sql = "select " + StorageUtils.quoteIdentifierSegment(leafField)
+                + " from " + StorageUtils.quoteIdentifierPath(parentPath) + ";";
+        logger.info("[ExternalSource] Fetch filesystem actual bytes SQL: {}", sql);
+        SessionExecuteSqlResult result = iginxDao.executeSql(sql);
+        long bytes = sumResultValueBytes(result);
+        logger.info("[ExternalSource] Filesystem actual bytes resolved. assetPath={}, bytes={}", assetPath, bytes);
+        return bytes;
     }
 
     private long estimateFilesystemExternalAssetSize(String assetPath, AddSourceContext context) {
@@ -949,6 +1915,8 @@ public class StorageService {
         context.sshUsername = safe(request.getSshUsername());
         context.sshPassword = safe(request.getSshPassword());
         context.sshPort = request.getSshPort() == null ? 22 : request.getSshPort().intValue();
+        context.readSchema = Boolean.TRUE.equals(request.getReadSchema());
+        context.descriptionDocument = normalizeDescriptionDocument(request.getDescriptionDocument());
 
         if (!("filesystem".equals(context.sourceType)
                 || "mysql".equals(context.sourceType)
@@ -985,6 +1953,8 @@ public class StorageService {
             }
             
             context.mappedDataType = IGinxConstants.TYPE_DOCUMENT;
+        } else if (context.readSchema) {
+            throw new IllegalArgumentException("readSchema only supports filesystem");
         } else if ("iotdb".equals(context.sourceType)) {
             if (context.username.isEmpty() || context.password.isEmpty()) {
                 throw new IllegalArgumentException("iotdb 类型必须填写 username 和 password");
@@ -1008,14 +1978,22 @@ public class StorageService {
         String schemaPrefix = context.schemaPrefix;
 
         if ("filesystem".equals(context.sourceType)) {
+            List<String> options = new ArrayList<String>();
+            options.add("has_data \"true\"");
+            options.add("is_read_only \"true\"");
+            options.add("schema_prefix \"" + escapeOption(schemaPrefix) + "\"");
+            options.add("dummy_dir \"" + escapeOption(context.dummyDir) + "\"");
+            options.add("iginx_port \"" + context.iginxPort + "\"");
+            if (context.readSchema) {
+                options.add("dummy.struct \"" + DEFAULT_FILESYSTEM_STRUCT + "\"");
+                options.add("dummy.config.formats.CSV.inferSchema \"true\"");
+            }
             return String.format(
                     Locale.ROOT,
-                    "ADD STORAGEENGINE (\"%s\", %d, \"filesystem\", OPTIONS (has_data \"true\", is_read_only \"true\", schema_prefix \"%s\", dummy_dir \"%s\", iginx_port \"%d\"));",
+                    "ADD STORAGEENGINE (\"%s\", %d, \"filesystem\", OPTIONS (%s));",
                     ip,
                     context.port,
-                    schemaPrefix,
-                    escapeOption(context.dummyDir),
-                    context.iginxPort);
+                    joinOptions(options));
         }
 
         if ("mysql".equals(context.sourceType) || "postgres".equals(context.sourceType)) {
@@ -1053,6 +2031,23 @@ public class StorageService {
         return safe(value)
                 .replace("\\", "\\\\")
                 .replace("\"", "\\\"");
+    }
+
+    private String joinOptions(List<String> options) {
+        StringBuilder sb = new StringBuilder();
+        if (options == null) {
+            return "";
+        }
+        for (String option : options) {
+            if (safe(option).isEmpty()) {
+                continue;
+            }
+            if (sb.length() > 0) {
+                sb.append(", ");
+            }
+            sb.append(option);
+        }
+        return sb.toString();
     }
 
     private String computeSchemaPrefix(AddSourceContext context) {
@@ -1232,6 +2227,20 @@ public class StorageService {
         }
     }
 
+    private int valueAsInt(Object value) {
+        Long parsed = valueAsLong(value);
+        if (parsed == null) {
+            return 0;
+        }
+        if (parsed > Integer.MAX_VALUE) {
+            return Integer.MAX_VALUE;
+        }
+        if (parsed < Integer.MIN_VALUE) {
+            return Integer.MIN_VALUE;
+        }
+        return parsed.intValue();
+    }
+
     private long estimateFilesystemSizeBySSH(String assetPath, AddSourceContext context) {
         try {
             String relativePath = extractRelativePathFromAsset(assetPath, context);
@@ -1373,6 +2382,8 @@ public class StorageService {
         private String sshPassword;
         private int sshPort;
         private Map<String, Long> sshFileSizeCache;
+        private boolean readSchema;
+        private String descriptionDocument;
     }
 
     private static class ExternalMetaSyncResult {
@@ -1392,5 +2403,22 @@ public class StorageService {
             this.path = path == null ? "" : path.trim();
             this.type = type == null ? "" : type.trim();
         }
+    }
+
+    private static class FilesystemSchemaAsset {
+        private final String assetPath;
+        private final List<ColumnSchema> columns = new ArrayList<ColumnSchema>();
+
+        private FilesystemSchemaAsset(String assetPath) {
+            this.assetPath = assetPath == null ? "" : assetPath.trim();
+        }
+    }
+
+    private static class SchemaKnowledgeUdfResult {
+        private boolean success;
+        private int assetCount;
+        private int entityCount;
+        private int relationCount;
+        private String message;
     }
 }

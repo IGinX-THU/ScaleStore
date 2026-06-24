@@ -3,3 +3,4 @@
 
 TRANSFORM,MetadataExtractInfoTransformer,MetadataExtractInfoTransformer,metadata.transformers.MetadataExtractInfoTransformer.py
 TRANSFORM,MetadataExtractExeTransformer,MetadataExtractExeTransformer,metadata.transformers.MetadataExtractExeTransformer.py
+UDSF,SchemaKnowledgeExtract,SchemaKnowledgeExtract,metadata.SchemaKnowledgeExtract.py

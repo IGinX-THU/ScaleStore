@@ -574,6 +574,21 @@
             <input type="number" id="storage-source-iginx-port-input" class="input" placeholder="6888">
           </div>
           <div class="form-group">
+            <div class="form-switch-row">
+              <span class="form-label">推理 schema 并构建图谱</span>
+              <label class="switch-control">
+                <input type="checkbox" id="storage-source-read-schema-input">
+                <span class="switch-slider"></span>
+              </label>
+            </div>
+          </div>
+          <div id="storage-source-description-document-fields" class="hidden">
+            <div class="form-group">
+              <label class="form-label">description document</label>
+              <input type="text" id="storage-source-description-document-input" class="input" placeholder="description.txt">
+            </div>
+          </div>
+          <div class="form-group">
             <label class="form-label">数据量计算策略</label>
             <select id="storage-source-size-strategy-input" class="input">
               <option value="system">系统计算（默认）</option>

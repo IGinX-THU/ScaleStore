@@ -55,6 +55,11 @@ public class Neo4jDao {
 				session.run("CREATE CONSTRAINT data_asset_ukey_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.ukey IS UNIQUE");
 				session.run("CREATE CONSTRAINT field_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.ukey IS UNIQUE");
 				session.run("CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE");
+				session.run("MATCH (d:DataAsset)-[old:HAS_FILED]->(f:Field) "
+						+ "MERGE (d)-[r:HAS_FIELD]->(f) "
+						+ "SET r.updatedAt=coalesce(old.updatedAt,timestamp()) "
+						+ "DELETE old");
+				session.run("MATCH ()-[r:SEMANTIC_RELATION]->() DELETE r");
 				constraintsReady = true;
 			} finally {
 				session.close();
@@ -121,12 +126,11 @@ public class Neo4jDao {
 				+ "WITH assets[assetRank] AS d, assetRank "
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
-				+ "OPTIONAL MATCH (d)-[hf:HAS_FILED]->(f:Field) "
+				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "OPTIONAL MATCH (e)-[sr:SEMANTIC_RELATION]->(t:Entity) "
-				+ "WITH pathChain,p,hd,d,hf,f,m,e,sr,t, assetRank, coalesce(sr.updatedAt,m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
+				+ "WITH pathChain,p,hd,d,hf,f,m,e, assetRank, coalesce(m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
 				+ "ORDER BY assetRank ASC, ord DESC "
-				+ "RETURN pathChain,p,hd,d,hf,f,m,e,sr,t LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,hf,f,m,e LIMIT $limit";
 
 		Session session = getDriver().session();
 		try {
@@ -278,7 +282,7 @@ public class Neo4jDao {
 							+ "MERGE (f:Field {ukey:$ukey}) "
 							+ "ON CREATE SET f.norm=$norm, f.kind=$kind, f.name=$name, f.updatedAt=timestamp() "
 							+ "ON MATCH SET f.norm=coalesce(f.norm,$norm), f.kind=coalesce(f.kind,$kind), f.name=coalesce(f.name,$name), f.updatedAt=timestamp() "
-							+ "MERGE (d)-[r:HAS_FILED]->(f) "
+							+ "MERGE (d)-[r:HAS_FIELD]->(f) "
 							+ "SET r.updatedAt=timestamp()",
 					Values.parameters("path", logicalPath, "ukey", ukey, "norm", norm, "kind", fieldKind, "name", name));
 		}
@@ -324,9 +328,8 @@ public class Neo4jDao {
 			}
 
 			String subjectName = normalizeDisplay(safe(triple.getSubject()));
-			String relationText = normalizeDisplay(safe(triple.getPredicate()));
 			String objectName = normalizeDisplay(safe(triple.getObject()));
-			if (subjectName.isEmpty() || relationText.isEmpty() || objectName.isEmpty()) {
+			if (subjectName.isEmpty() || objectName.isEmpty()) {
 				continue;
 			}
 
@@ -346,16 +349,13 @@ public class Neo4jDao {
 							+ "MERGE (d)-[dm1:MENTIONS]->(s) "
 							+ "SET dm1.updatedAt=timestamp() "
 							+ "MERGE (d)-[dm2:MENTIONS]->(o) "
-							+ "SET dm2.updatedAt=timestamp() "
-							+ "MERGE (s)-[r:SEMANTIC_RELATION {relation:$relation, sourcePath:$path}]->(o) "
-							+ "SET r.updatedAt=timestamp()",
+							+ "SET dm2.updatedAt=timestamp()",
 					Values.parameters(
 							"path", logicalPath,
 							"subjectNorm", subjectNorm,
 							"subjectName", subjectName,
 							"objectNorm", objectNorm,
-							"objectName", objectName,
-							"relation", relationText));
+							"objectName", objectName));
 		}
 	}
 
@@ -493,7 +493,7 @@ public class Neo4jDao {
 		link.put("source", src);
 		link.put("target", tgt);
 		link.put("type", type);
-		link.put("label", "SEMANTIC_RELATION".equals(type) && !semanticRelation.trim().isEmpty() ? semanticRelation : type);
+		link.put("label", type);
 		links.add(link);
 		linkKeys.add(key);
 	}

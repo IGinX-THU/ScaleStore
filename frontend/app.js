@@ -1789,9 +1789,8 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   const relationColor = {
     CONTAINS: 'rgba(104, 176, 233, 0.75)',
     HAS_DATA: '#00c389',
-    HAS_FILED: '#57d6b2',
-    MENTIONS: '#ffb347',
-    SEMANTIC_RELATION: '#ff9a3c'
+    HAS_FIELD: '#57d6b2',
+    MENTIONS: '#ffb347'
   };
 
   if (nodes.length === 0) {
@@ -1864,7 +1863,6 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       || (tgt && String(tgt.name || '').toLowerCase().includes(focus)));
     const relType = String(l.type || l.label || '').toUpperCase();
     const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
-    const semanticEdge = relType === 'SEMANTIC_RELATION';
     const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
     return {
       ...l,
@@ -1873,26 +1871,26 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
         ? (focusMode === 'new'
           ? {
               color: baseEdgeColor,
-              width: semanticEdge ? 3 : 2.6,
+              width: 2.6,
               opacity: 1,
               type: 'solid',
             }
           : { color: '#ff4466', width: 3 })
         : {
             color: baseEdgeColor,
-            curveness: semanticEdge ? 0.2 : 0.1,
-            width: semanticEdge ? 2.2 : 1.5,
+            curveness: 0.1,
+            width: 1.5,
             opacity: 0.95,
-            type: semanticEdge ? 'solid' : 'dashed'
+            type: 'dashed'
           },
       label: {
         show: false,
         formatter: relationText,
-        color: semanticEdge ? '#ffd6aa' : '#c4d6e8',
-        fontSize: semanticEdge ? 11 : 10,
-        backgroundColor: semanticEdge ? 'rgba(23,31,44,0.72)' : 'transparent',
-        padding: semanticEdge ? [2, 4] : [0, 0],
-        borderRadius: semanticEdge ? 3 : 0
+        color: '#c4d6e8',
+        fontSize: 10,
+        backgroundColor: 'transparent',
+        padding: [0, 0],
+        borderRadius: 0
       },
     };
   });
@@ -1912,15 +1910,6 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
           const sourceName = String(sourceNode.name || edge.source || '');
           const targetName = String(targetNode.name || edge.target || '');
           const relationText = extractRelationText(edge.relationText != null ? edge.relationText : edge.label);
-
-          if (relType === 'SEMANTIC_RELATION' && relationText) {
-            return [
-              '<strong>语义关系</strong>',
-              `关系: ${relationText}`,
-              `起点: ${sourceName}`,
-              `终点: ${targetName}`,
-            ].join('<br/>');
-          }
 
           return [
             '<strong>结构关系</strong>',
@@ -2255,12 +2244,22 @@ function syncStorageSourceFormOptions(resetPort = false) {
   if (sourceType === 'filesystem' && !$('storage-source-iginx-port-input').value.trim()) {
     $('storage-source-iginx-port-input').value = '6888';
   }
+
+  syncStorageSourceReadSchemaOptions();
 }
 
 function syncStorageSourceSizeStrategyOptions() {
   const strategy = $('storage-source-size-strategy-input').value;
   const sshFields = $('storage-source-ssh-fields');
   sshFields.classList.toggle('hidden', strategy !== 'ssh');
+}
+
+function syncStorageSourceReadSchemaOptions() {
+  const sourceType = $('storage-source-type-input').value;
+  const readSchemaInput = $('storage-source-read-schema-input');
+  const descriptionFields = $('storage-source-description-document-fields');
+  const showDescription = sourceType === 'filesystem' && readSchemaInput.checked;
+  descriptionFields.classList.toggle('hidden', !showDescription);
 }
 
 function openStorageSourceModal() {
@@ -2272,6 +2271,8 @@ function openStorageSourceModal() {
   $('storage-source-dummy-dir-input').value = '';
   $('storage-source-iginx-port-input').value = '6888';
   $('storage-source-size-strategy-input').value = 'system';
+  $('storage-source-read-schema-input').checked = false;
+  $('storage-source-description-document-input').value = '';
   $('storage-source-ssh-username-input').value = '';
   $('storage-source-ssh-password-input').value = '';
   $('storage-source-ssh-port-input').value = '22';
@@ -2317,6 +2318,12 @@ function buildStorageSourcePayload() {
     payload.dummyDir = dummyDir;
     payload.iginxPort = iginxPort;
     payload.sizeCalculationStrategy = sizeStrategy;
+
+    const readSchema = $('storage-source-read-schema-input').checked;
+    payload.readSchema = readSchema;
+    if (readSchema) {
+      payload.descriptionDocument = $('storage-source-description-document-input').value.trim() || 'description.txt';
+    }
     
     if (sizeStrategy === 'ssh') {
       const sshUsername = $('storage-source-ssh-username-input').value.trim();
@@ -2355,6 +2362,7 @@ $('storage-source-modal-cancel').addEventListener('click', closeStorageSourceMod
 $('storage-source-modal-close-x').addEventListener('click', closeStorageSourceModal);
 $('storage-source-type-input').addEventListener('change', () => syncStorageSourceFormOptions(true));
 $('storage-source-size-strategy-input').addEventListener('change', () => syncStorageSourceSizeStrategyOptions());
+$('storage-source-read-schema-input').addEventListener('change', () => syncStorageSourceReadSchemaOptions());
 
 $('storage-source-modal-save').addEventListener('click', async () => {
   const saveBtn = $('storage-source-modal-save');

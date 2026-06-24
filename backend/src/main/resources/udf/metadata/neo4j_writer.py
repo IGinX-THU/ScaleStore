@@ -133,6 +133,20 @@ class Neo4jGraphWriter(object):
             asset_ukey=payload.get("asset_ukey", ""),
         )
 
+        tx.run(
+            """
+            MATCH (a:DataAsset {ukey: $asset_ukey})-[r:HAS_FILED]->(:Field)
+            DELETE r
+            """,
+            asset_ukey=payload.get("asset_ukey", ""),
+        )
+        tx.run(
+            """
+            MATCH ()-[r:SEMANTIC_RELATION]->()
+            DELETE r
+            """
+        )
+
         # Keep the graph model clean for structured data: no Domain nodes/links.
         tx.run(
             """
@@ -165,7 +179,7 @@ class Neo4jGraphWriter(object):
                              f.kind = coalesce(f.kind, $field_kind),
                              f.name = coalesce(f.name, $field_name),
                              f.updatedAt = timestamp()
-                MERGE (a)-[r:HAS_FILED]->(f)
+                MERGE (a)-[r:HAS_FIELD]->(f)
                 SET r.updatedAt = timestamp()
                 """,
                 asset_ukey=payload.get("asset_ukey", ""),
@@ -199,9 +213,8 @@ class Neo4jGraphWriter(object):
 
         for triple in payload.get("triples", []):
             subject_name = self._normalize_display(self._safe(triple.get("subject", "")))
-            relation_text = self._normalize_display(self._safe(triple.get("predicate", triple.get("relation", ""))))
             object_name = self._normalize_display(self._safe(triple.get("object", "")))
-            if not subject_name or not relation_text or not object_name:
+            if not subject_name or not object_name:
                 continue
 
             subject_norm = self._normalize(subject_name)
@@ -222,16 +235,12 @@ class Neo4jGraphWriter(object):
                 SET r1.updatedAt = timestamp()
                 MERGE (a)-[r2:MENTIONS]->(o)
                 SET r2.updatedAt = timestamp()
-                MERGE (s)-[r:SEMANTIC_RELATION {relation: $relation, sourcePath: $logical_path}]->(o)
-                SET r.updatedAt = timestamp()
                 """,
                 asset_ukey=payload.get("asset_ukey", ""),
-                logical_path=asset_path,
                 subject_norm=subject_norm,
                 subject_name=subject_name,
                 object_norm=object_norm,
                 object_name=object_name,
-                relation=relation_text,
             )
 
     def _normalize_path(self, logical_path):

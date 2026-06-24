@@ -87,7 +87,7 @@ public class MetadataKnowledgeService {
                 + "EXISTS { MATCH (d)-[:MENTIONS]->(eFilter:Entity) "
                 + "WHERE toLower(coalesce(eFilter.name,'')) CONTAINS toLower('" + escapedKeyword + "') "
                 + "OR toLower(coalesce(eFilter.norm,'')) CONTAINS toLower('" + escapedKeyword + "') } "
-                + "OR EXISTS { MATCH (d)-[:HAS_FILED]->(fFilter:Field) "
+                + "OR EXISTS { MATCH (d)-[:HAS_FIELD]->(fFilter:Field) "
                 + "WHERE toLower(coalesce(fFilter.name,'')) CONTAINS toLower('" + escapedKeyword + "') "
                 + "OR toLower(coalesce(fFilter.norm,'')) CONTAINS toLower('" + escapedKeyword + "') }"
                 + ")");
@@ -98,9 +98,8 @@ public class MetadataKnowledgeService {
             + " WITH DISTINCT d "
             + "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
             + "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-            + "OPTIONAL MATCH (d)-[hf:HAS_FILED]->(f:Field) "
-            + "OPTIONAL MATCH (e)-[sr:SEMANTIC_RELATION]->(t:Entity) "
-            + "RETURN p,hd,d,m,e,hf,f,sr,t";
+            + "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
+            + "RETURN p,hd,d,m,e,hf,f";
 
         int queryLimit = resolveGraphLimit(0);
         String finalCypher = ensureLimit(cypher, queryLimit);
@@ -147,9 +146,8 @@ public class MetadataKnowledgeService {
             + "[关系类型与方向]\n"
             + "- (:LogicalPath)-[:CONTAINS]->(:LogicalPath)\n"
             + "- (:LogicalPath)-[:HAS_DATA]->(:DataAsset)\n"
-            + "- (:DataAsset)-[:HAS_FILED]->(:Field)\n"
+            + "- (:DataAsset)-[:HAS_FIELD]->(:Field)\n"
             + "- (:DataAsset)-[:MENTIONS]->(:Entity)\n"
-            + "- (:Entity)-[:SEMANTIC_RELATION {relation, sourcePath, updatedAt}]->(:Entity)\n"
             + "\n"
             + "[查询生成原则]\n"
             + "- 必须是只读 Cypher（MATCH/OPTIONAL MATCH/WITH/RETURN/LIMIT）。\n"
@@ -159,7 +157,7 @@ public class MetadataKnowledgeService {
             + "- 若用户未明确限制，默认 LIMIT 80。\n"
             + "\n"
             + "[推荐返回模板]\n"
-            + "RETURN p,hd,d,m,e,hf,f,sr,t";
+            + "RETURN p,hd,d,m,e,hf,f";
 
         String previousCypher = "";
         String previousError = "";
