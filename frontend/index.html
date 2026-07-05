@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -202,7 +202,7 @@
                   <option value="relational">relational</option>
                   <option value="keyvalue">keyvalue</option>
                   <option value="document">document</option>
-                  <option value="image">image</option>
+                  <option value="file">file</option>
                 </select>
                 <input type="text" id="metadata-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词（可空）">
               </div>
@@ -240,7 +240,7 @@
             <option value="relational">关系数据</option>
             <option value="timeseries">时序数据</option>
             <option value="document">文档数据</option>
-            <option value="image">图像数据</option>
+            <option value="file">文件数据</option>
             <option value="keyvalue">键值数据</option>
           </select>
         </div>
@@ -551,6 +551,8 @@
             <option value="mysql">mysql</option>
             <option value="postgres">postgres</option>
             <option value="iotdb">iotdb</option>
+            <option value="mongodb">mongodb</option>
+            <option value="redis">redis</option>
           </select>
         </div>
 
@@ -572,21 +574,6 @@
           <div class="form-group">
             <label class="form-label">iginx_port</label>
             <input type="number" id="storage-source-iginx-port-input" class="input" placeholder="6888">
-          </div>
-          <div class="form-group">
-            <div class="form-switch-row">
-              <span class="form-label">推理 schema 并构建图谱</span>
-              <label class="switch-control">
-                <input type="checkbox" id="storage-source-read-schema-input">
-                <span class="switch-slider"></span>
-              </label>
-            </div>
-          </div>
-          <div id="storage-source-description-document-fields" class="hidden">
-            <div class="form-group">
-              <label class="form-label">description document</label>
-              <input type="text" id="storage-source-description-document-input" class="input" placeholder="description.txt">
-            </div>
           </div>
           <div class="form-group">
             <label class="form-label">数据量计算策略</label>

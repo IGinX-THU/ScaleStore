@@ -27,8 +27,6 @@ SIZE_CALCULATION_STRATEGY = "ssh"
 SSH_USERNAME = "your_ssh_username"
 SSH_PASSWORD = "your_ssh_password"
 SSH_PORT = 22
-READ_SCHEMA = False
-DESCRIPTION_DOCUMENT = "description.txt"
 ```
 
 ### 3. 运行测试
@@ -53,8 +51,6 @@ python batch_add_datasource.py
 | `SSH_USERNAME` | SSH用户名 | 空（需配置） |
 | `SSH_PASSWORD` | SSH密码 | 空（需配置） |
 | `SSH_PORT` | SSH端口 | 22 |
-| `READ_SCHEMA` | 是否开启 filesystem schema 推理流程 | `False` |
-| `DESCRIPTION_DOCUMENT` | schema 推理描述文档路径，相对 `DUMMY_DIR` | `description.txt` |
 | `REQUEST_DELAY` | 请求间隔（秒） | 0.1 |
 | `TIMEOUT` | 请求超时（秒） | 60 |
 
@@ -104,23 +100,7 @@ API地址: http://localhost:8080/storage/sources
 
 ### Schema 推理配置
 
-如需走 filesystem schema 推理流程，只需要打开 `READ_SCHEMA`：
-
-```python
-READ_SCHEMA = True
-DESCRIPTION_DOCUMENT = "description.txt"
-```
-
-脚本发送给后端的 schema 推理参数只有：
-
-```json
-{
-  "readSchema": true,
-  "descriptionDocument": "description.txt"
-}
-```
-
-`DESCRIPTION_DOCUMENT` 是相对 `DUMMY_DIR` 的文件路径，例如默认值表示实际读取 `${DUMMY_DIR}/description.txt`。
+filesystem 添加后默认执行 schema 推理，脚本不再发送 `readSchema`。
 
 ### 性能优化
 

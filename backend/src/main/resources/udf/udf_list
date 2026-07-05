@@ -1,6 +1,10 @@
 # Each line represents a UDF or Transform function.
 # Format: <udf type>,<udf name in sql>,<class name>,<module name>.py
 
-TRANSFORM,MetadataExtractInfoTransformer,MetadataExtractInfoTransformer,metadata.transformers.MetadataExtractInfoTransformer.py
-TRANSFORM,MetadataExtractExeTransformer,MetadataExtractExeTransformer,metadata.transformers.MetadataExtractExeTransformer.py
-UDSF,SchemaKnowledgeExtract,SchemaKnowledgeExtract,metadata.SchemaKnowledgeExtract.py
+UDSF,metadata_tree_persist,MetadataTreePersist,metadata.MetadataTreePersist.py
+UDSF,relational_semantic_keywords,RelationalSemanticKeywordExtract,metadata.SemanticKeywordExtract.py
+UDSF,timeseries_semantic_keywords,TimeSeriesSemanticKeywordExtract,metadata.SemanticKeywordExtract.py
+UDSF,keyvalue_semantic_keywords,KeyValueSemanticKeywordExtract,metadata.SemanticKeywordExtract.py
+UDSF,document_semantic_keywords,DocumentSemanticKeywordExtract,metadata.SemanticKeywordExtract.py
+UDSF,file_semantic_keywords,FileSemanticKeywordExtract,metadata.SemanticKeywordExtract.py
+UDSF,directory_semantic_keywords,DirectorySemanticKeywordExtract,metadata.SemanticKeywordExtract.py

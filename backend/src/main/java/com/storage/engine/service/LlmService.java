@@ -136,6 +136,42 @@ public class LlmService {
         }
     }
 
+    public String inferAssetRelation(String leftName,
+                                     List<String> leftKeywords,
+                                     String rightName,
+                                     List<String> rightKeywords) {
+        if (!enabled || apiKey == null || apiKey.trim().isEmpty()) {
+            return "";
+        }
+        try {
+            Map<String, Object> payload = new LinkedHashMap<String, Object>();
+            payload.put("leftAsset", leftName == null ? "" : leftName);
+            payload.put("leftKeywords", leftKeywords == null ? Collections.emptyList() : leftKeywords);
+            payload.put("rightAsset", rightName == null ? "" : rightName);
+            payload.put("rightKeywords", rightKeywords == null ? Collections.emptyList() : rightKeywords);
+
+            List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
+            messages.add(msg("system", "你是数据资产关系判断助手。只输出严格JSON。"));
+            messages.add(msg("user",
+                    "判断两个数据资产是否存在非父子的业务/语义联系。"
+                            + "若无明确联系，返回 {\"relation\":\"\"}。"
+                            + "若有，返回 {\"relation\":\"简短中文关系\"}，relation 不超过 12 个汉字。"
+                            + "输入：" + objectMapper.writeValueAsString(payload)));
+
+            String content = chatCompletion(model, messages);
+            String raw = stripCodeFence(extractAfterThinkTag(extractPlainText(content))).trim();
+            JsonNode root = objectMapper.readTree(raw);
+            String relation = root.path("relation").asText("").trim();
+            if (relation.length() > 24) {
+                relation = relation.substring(0, 24).trim();
+            }
+            return relation;
+        } catch (Exception e) {
+            logger.debug("asset relation inference skipped: {}", e.getMessage());
+            return "";
+        }
+    }
+
     public String naturalLanguageToCypherWithFeedback(String nlQuery,
                                                       String schemaHint,
                                                       String previousCypher,

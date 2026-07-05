@@ -59,7 +59,6 @@ public class Neo4jDao {
 						+ "MERGE (d)-[r:HAS_FIELD]->(f) "
 						+ "SET r.updatedAt=coalesce(old.updatedAt,timestamp()) "
 						+ "DELETE old");
-				session.run("MATCH ()-[r:SEMANTIC_RELATION]->() DELETE r");
 				constraintsReady = true;
 			} finally {
 				session.close();
@@ -126,11 +125,14 @@ public class Neo4jDao {
 				+ "WITH assets[assetRank] AS d, assetRank "
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
+				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) "
+				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) "
+				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) "
 				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "WITH pathChain,p,hd,d,hf,f,m,e, assetRank, coalesce(m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
+				+ "WITH pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e, assetRank, coalesce(m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
 				+ "ORDER BY assetRank ASC, ord DESC "
-				+ "RETURN pathChain,p,hd,d,hf,f,m,e LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e LIMIT $limit";
 
 		Session session = getDriver().session();
 		try {
@@ -192,6 +194,7 @@ public class Neo4jDao {
 				+ "WHERE toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(n.path,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(n.logicalPath,'')) CONTAINS toLower($kw) "
+				+ "OR any(k IN coalesce(n.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
 				+ "RETURN n LIMIT $limit";
 
 		Session session = getDriver().session();
@@ -359,6 +362,135 @@ public class Neo4jDao {
 		}
 	}
 
+	public Map<String, Object> queryAssetsByKeyword(String logicalPath, String dataType, String keyword, int limit) {
+		if (!neo4jEnabled) {
+			return emptyGraph("Neo4j disabled");
+		}
+		ensureConstraints();
+		int safeLimit = Math.max(20, Math.min(limit, 500));
+		int assetWindow = Math.max(10, Math.min(120, safeLimit));
+		String path = logicalPath == null ? "" : logicalPath.trim();
+		String dt = dataType == null ? "" : dataType.trim().toLowerCase(Locale.ROOT);
+		String kw = keyword == null ? "" : keyword.trim();
+
+		String cypher = "MATCH (d:DataAsset) "
+				+ "WHERE ($path='' OR coalesce(d.logicalPath,'') STARTS WITH $path) "
+				+ "AND ($dt='' OR toLower(coalesce(d.dataType,'')) = $dt) "
+				+ "AND ($kw='' "
+				+ "OR toLower(coalesce(d.name,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(coalesce(d.fileName,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(coalesce(d.logicalPath,'')) CONTAINS toLower($kw) "
+				+ "OR any(k IN coalesce(d.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
+				+ "OR EXISTS { MATCH (d)-[:HAS_FIELD]->(f:Field) WHERE toLower(coalesce(f.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(f.norm,'')) CONTAINS toLower($kw) } "
+				+ "OR EXISTS { MATCH (d)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
+				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $assetWindow "
+				+ "WITH collect(d) AS assets "
+				+ "UNWIND assets AS d "
+				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
+				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
+				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) WHERE parent IN assets "
+				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) WHERE child IN assets "
+				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) WHERE related IN assets "
+				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
+				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
+				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e LIMIT $limit";
+
+		Session session = getDriver().session();
+		try {
+			List<Record> records = session.run(cypher, Values.parameters(
+					"path", path,
+					"dt", dt,
+					"kw", kw,
+					"limit", safeLimit,
+					"assetWindow", assetWindow)).list();
+			return buildGraph(records);
+		} finally {
+			session.close();
+		}
+	}
+
+	public List<Map<String, Object>> findUncomputedAssetRelationPairs(List<String> assetIds, int limit) {
+		List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
+		if (!neo4jEnabled || assetIds == null || assetIds.size() < 2) {
+			return out;
+		}
+		ensureConstraints();
+		List<Long> ids = new ArrayList<Long>();
+		for (String id : assetIds) {
+			try {
+				ids.add(Long.valueOf(id));
+			} catch (Exception ignore) {
+			}
+		}
+		if (ids.size() < 2) {
+			return out;
+		}
+		int safeLimit = Math.max(1, Math.min(limit, 30));
+		String cypher = "MATCH (a:DataAsset) WHERE id(a) IN $ids "
+				+ "MATCH (b:DataAsset) WHERE id(b) IN $ids AND id(a) < id(b) "
+				+ "WHERE NOT (a)-[:CONTAINS_ASSET]-(b) "
+				+ "AND NOT (a)-[:SEMANTIC_RELATION]-(b) "
+				+ "RETURN id(a) AS leftId, id(b) AS rightId, "
+				+ "coalesce(a.fileName, a.name, a.logicalPath, '') AS leftName, "
+				+ "coalesce(b.fileName, b.name, b.logicalPath, '') AS rightName, "
+				+ "coalesce(a.keywords, []) AS leftKeywords, coalesce(b.keywords, []) AS rightKeywords "
+				+ "LIMIT $limit";
+		Session session = getDriver().session();
+		try {
+			List<Record> records = session.run(cypher, Values.parameters("ids", ids, "limit", safeLimit)).list();
+			for (Record record : records) {
+				Map<String, Object> row = new LinkedHashMap<String, Object>();
+				row.put("leftId", record.get("leftId").asLong());
+				row.put("rightId", record.get("rightId").asLong());
+				row.put("leftName", record.get("leftName").asString(""));
+				row.put("rightName", record.get("rightName").asString(""));
+				row.put("leftKeywords", valueAsStringList(record.get("leftKeywords")));
+				row.put("rightKeywords", valueAsStringList(record.get("rightKeywords")));
+				out.add(row);
+			}
+			return out;
+		} finally {
+			session.close();
+		}
+	}
+
+	public void upsertSemanticRelation(long leftId, long rightId, String relation, String source) {
+		if (!neo4jEnabled || leftId == rightId || relation == null || relation.trim().isEmpty()) {
+			return;
+		}
+		ensureConstraints();
+		String cypher = "MATCH (a:DataAsset), (b:DataAsset) "
+				+ "WHERE id(a)=$leftId AND id(b)=$rightId "
+				+ "MERGE (a)-[r:SEMANTIC_RELATION]-(b) "
+				+ "SET r.relation=$relation, r.source=$source, r.updatedAt=timestamp()";
+		Session session = getDriver().session();
+		try {
+			session.run(cypher, Values.parameters(
+					"leftId", leftId,
+					"rightId", rightId,
+					"relation", relation.trim(),
+					"source", source == null ? "metadata-relation-batch" : source));
+		} finally {
+			session.close();
+		}
+	}
+
+	private List<String> valueAsStringList(org.neo4j.driver.Value value) {
+		List<String> out = new ArrayList<String>();
+		if (value == null || value.isNull()) {
+			return out;
+		}
+		for (Object item : value.asList()) {
+			if (item != null) {
+				String text = String.valueOf(item).trim();
+				if (!text.isEmpty()) {
+					out.add(text);
+				}
+			}
+		}
+		return out;
+	}
+
 	private Map<String, Object> buildGraph(List<Record> records) {
 		Map<String, Map<String, Object>> nodeMap = new LinkedHashMap<String, Map<String, Object>>();
 		Set<String> linkKeys = new LinkedHashSet<String>();
@@ -494,6 +626,10 @@ public class Neo4jDao {
 		link.put("target", tgt);
 		link.put("type", type);
 		link.put("label", type);
+		if (!semanticRelation.isEmpty()) {
+			link.put("relationText", semanticRelation);
+			link.put("label", semanticRelation);
+		}
 		links.add(link);
 		linkKeys.add(key);
 	}

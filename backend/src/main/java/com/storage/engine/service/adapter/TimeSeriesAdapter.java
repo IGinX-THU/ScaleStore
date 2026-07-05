@@ -238,7 +238,7 @@ public class TimeSeriesAdapter implements StorageAdapter {
         int startCol = firstPathIsKey ? 1 : 0;
         for (int p = startCol; p < paths.size(); p++) {
             sb.append(",");
-            sb.append(extractColumnName(paths.get(p)));
+            sb.append(StorageUtils.escapeCsvCell(extractColumnName(paths.get(p))));
         }
         sb.append("\n");
 
@@ -250,23 +250,23 @@ public class TimeSeriesAdapter implements StorageAdapter {
 
             int valueStart = 0;
             if (hasStandaloneKeys) {
-                sb.append(keys[i]);
+                sb.append(StorageUtils.escapeCsvCell(keys[i]));
                 if (firstPathIsKey) {
                     valueStart = 1;
                 }
             } else if (firstPathIsKey) {
-                sb.append(StorageUtils.convertValueToString(row.isEmpty() ? null : row.get(0)));
+                sb.append(StorageUtils.escapeCsvCell(StorageUtils.convertValueToString(row.isEmpty() ? null : row.get(0))));
                 valueStart = 1;
             } else if (row.size() == paths.size() + 1) {
-                sb.append(StorageUtils.convertValueToString(row.get(0)));
+                sb.append(StorageUtils.escapeCsvCell(StorageUtils.convertValueToString(row.get(0))));
                 valueStart = 1;
             } else {
-                sb.append(i);
+                sb.append(StorageUtils.escapeCsvCell(i));
             }
 
             for (int j = valueStart; j < row.size(); j++) {
                 sb.append(",");
-                sb.append(StorageUtils.convertValueToString(row.get(j)));
+                sb.append(StorageUtils.escapeCsvCell(StorageUtils.convertValueToString(row.get(j))));
             }
             sb.append("\n");
         }

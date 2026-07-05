@@ -72,13 +72,10 @@ public class AccessController {
                 return ResponseEntity.noContent().build();
             }
 
-            String downloadName = meta.getFileName();
-            if (downloadName == null || downloadName.isEmpty()) {
-                downloadName = "download." + (meta.getFileFormat() != null ? meta.getFileFormat() : "dat");
-            }
+            String downloadName = buildDownloadName(meta);
 
             HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(getMediaType(meta.getFileFormat(), meta.getDataType()));
+            headers.setContentType(getMediaType(getExtension(downloadName), meta.getDataType()));
             headers.setContentLength(data.length);
             headers.set(HttpHeaders.CONTENT_DISPOSITION,
                     "attachment; filename=\"" + URLEncoder.encode(downloadName, StandardCharsets.UTF_8.name()) + "\"");
@@ -107,6 +104,76 @@ public class AccessController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Response.error(500, "Failed to list data: " + e.getMessage()));
         }
+    }
+
+    private String buildDownloadName(DataItem meta) {
+        String baseName = meta.getFileName();
+        if (baseName == null || baseName.trim().isEmpty()) {
+            baseName = "download";
+        }
+
+        String extension = getDownloadExtension(meta);
+        if (extension.isEmpty()) {
+            return baseName;
+        }
+        if (isStructuredExport(meta.getDataType())) {
+            return replaceExtension(baseName, extension);
+        }
+        if (hasExtension(baseName)) {
+            return baseName;
+        }
+        return baseName + "." + extension;
+    }
+
+    private boolean isStructuredExport(String dataType) {
+        String normalized = dataType == null ? "" : dataType.toLowerCase();
+        return "relational".equals(normalized)
+                || "timeseries".equals(normalized)
+                || "document".equals(normalized)
+                || "keyvalue".equals(normalized);
+    }
+
+    private String getDownloadExtension(DataItem meta) {
+        String dataType = meta.getDataType() == null ? "" : meta.getDataType().toLowerCase();
+        String fileFormat = meta.getFileFormat() == null ? "" : meta.getFileFormat().toLowerCase();
+
+        if ("relational".equals(dataType) || "timeseries".equals(dataType)) {
+            return "csv";
+        }
+        if ("document".equals(dataType)) {
+            return "json";
+        }
+        if ("keyvalue".equals(dataType)) {
+            return "json";
+        }
+        if (!fileFormat.isEmpty()) {
+            return fileFormat;
+        }
+        return "dat";
+    }
+
+    private boolean hasExtension(String fileName) {
+        int slash = Math.max(fileName.lastIndexOf('/'), fileName.lastIndexOf('\\'));
+        int dot = fileName.lastIndexOf('.');
+        return dot > slash && dot < fileName.length() - 1;
+    }
+
+    private String getExtension(String fileName) {
+        if (!hasExtension(fileName)) {
+            return "";
+        }
+        return fileName.substring(fileName.lastIndexOf('.') + 1);
+    }
+
+    private String replaceExtension(String fileName, String extension) {
+        if (!hasExtension(fileName)) {
+            return fileName + "." + extension;
+        }
+        String current = getExtension(fileName);
+        if (extension.equalsIgnoreCase(current)) {
+            return fileName;
+        }
+        return fileName.substring(0, fileName.lastIndexOf('.')) + "." + extension;
     }
 
     private MediaType getMediaType(String fileFormat, String dataType) {

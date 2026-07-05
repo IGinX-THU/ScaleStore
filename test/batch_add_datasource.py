@@ -24,9 +24,6 @@ SSH_USERNAME = ""  # 必填
 SSH_PASSWORD = ""  # 必填
 SSH_PORT = 22
 
-READ_SCHEMA = False
-DESCRIPTION_DOCUMENT = "description.txt"
-
 REQUEST_DELAY = 0.1  # 请求间隔（秒）
 BATCH_SIZE = 10  # 每批请求数量
 BATCH_REQUEST_DELAY = 0  # 每批请求间隔（秒）
@@ -53,10 +50,6 @@ def build_payload(port):
         "iginxPort": IGINX_PORT,
         "sizeCalculationStrategy": SIZE_CALCULATION_STRATEGY,
     }
-
-    if READ_SCHEMA:
-        payload["readSchema"] = True
-        payload["descriptionDocument"] = DESCRIPTION_DOCUMENT
 
     if SIZE_CALCULATION_STRATEGY == "ssh":
         payload["sshUsername"] = SSH_USERNAME
@@ -92,10 +85,6 @@ def add_datasource(index):
         return False, str(e), port
 
 def validate_config():
-    if READ_SCHEMA and SOURCE_TYPE != "filesystem":
-        raise ValueError("READ_SCHEMA only supports filesystem")
-    if READ_SCHEMA and not DESCRIPTION_DOCUMENT.strip():
-        raise ValueError("DESCRIPTION_DOCUMENT cannot be empty when READ_SCHEMA=True")
     if SIZE_CALCULATION_STRATEGY == "ssh":
         if not SSH_USERNAME:
             raise ValueError("SSH_USERNAME 不能为空")
@@ -113,7 +102,7 @@ def main():
     print(f"API地址: {API_URL}")
     print(f"数据源类型: {SOURCE_TYPE}")
     print(f"大小计算方式: {SIZE_CALCULATION_STRATEGY}")
-    print(f"Schema推理: {READ_SCHEMA}, 描述文档: {DESCRIPTION_DOCUMENT}")
+    print("Schema推理: filesystem 默认开启")
     print("=" * 50)
     print()
     

@@ -39,7 +39,7 @@ class BaseMetadataExtractor(object):
 
     def extract_text_content(self):
         values = []
-        self.flatten_values(self.data, values)
+        self.flatten_values(self.data_rows(), values)
         chunks = []
         for value in values:
             text = self.to_text(value)
@@ -53,14 +53,103 @@ class BaseMetadataExtractor(object):
         return "\n".join(chunks)[:15000]
 
     def extract_first_binary_base64(self):
+        image_bytes = self.extract_binary_bytes()
+        if not image_bytes:
+            return ""
         import base64
+        return base64.b64encode(image_bytes).decode("utf-8")
+
+    def extract_binary_bytes(self, max_bytes=None):
+        if max_bytes is None:
+            max_bytes = self._to_int(self.params.get("maxRawImageBytes", 64 * 1024 * 1024), 64 * 1024 * 1024)
+        if max_bytes <= 0:
+            raise RuntimeError("maxRawImageBytes must be positive")
 
         values = []
-        self.flatten_values(self.data, values)
+        self.flatten_values(self.data_rows(), values)
+        chunks = []
+        total = 0
         for value in values:
             if isinstance(value, bytes) and len(value) > 32:
-                return base64.b64encode(value).decode("utf-8")
-        return ""
+                total += len(value)
+                if total > max_bytes:
+                    raise RuntimeError("image bytes exceed maxRawImageBytes: " + str(total) + " > " + str(max_bytes))
+                chunks.append(value)
+        if not chunks:
+            return b""
+        return b"".join(chunks)
+
+    def prepare_image_for_vlm(self):
+        import base64
+
+        image_bytes = self.extract_binary_bytes()
+        if not image_bytes:
+            return "", "", "image bytes not found"
+
+        max_vlm_bytes = self._to_int(self.params.get("maxVlmImageBytes", 4 * 1024 * 1024), 4 * 1024 * 1024)
+        if max_vlm_bytes <= 0:
+            raise RuntimeError("maxVlmImageBytes must be positive")
+
+        original_mime = self._image_mime_type()
+        if len(image_bytes) <= max_vlm_bytes:
+            return base64.b64encode(image_bytes).decode("utf-8"), original_mime, "original image sent to vlm"
+
+        compressed = self.compress_image_bytes(image_bytes, max_vlm_bytes)
+        return base64.b64encode(compressed).decode("utf-8"), "image/jpeg", (
+            "image compressed for vlm: " + str(len(image_bytes)) + " -> " + str(len(compressed)) + " bytes"
+        )
+
+    def compress_image_bytes(self, image_bytes, max_vlm_bytes):
+        import io
+
+        try:
+            from PIL import Image, ImageOps
+        except Exception as exc:
+            raise RuntimeError("Pillow is required to compress large images before VLM extraction") from exc
+
+        max_side = self._to_int(self.params.get("maxVlmImageSide", 1280), 1280)
+        min_side = self._to_int(self.params.get("minVlmImageSide", 512), 512)
+        quality = self._to_int(self.params.get("vlmImageJpegQuality", 85), 85)
+
+        with Image.open(io.BytesIO(image_bytes)) as image:
+            image = ImageOps.exif_transpose(image)
+            if getattr(image, "is_animated", False):
+                image.seek(0)
+            if image.mode not in ("RGB", "L"):
+                image = image.convert("RGB")
+
+            side = max_side
+            while side >= min_side:
+                candidate = image.copy()
+                candidate.thumbnail((side, side))
+                q = quality
+                while q >= 50:
+                    out = io.BytesIO()
+                    candidate.save(out, format="JPEG", quality=q, optimize=True)
+                    data = out.getvalue()
+                    if len(data) <= max_vlm_bytes:
+                        return data
+                    q -= 10
+                side = int(side * 0.75)
+
+        raise RuntimeError("compressed image still exceeds maxVlmImageBytes")
+
+    def _image_mime_type(self):
+        ext = self._safe(self.params.get("fileFormat", "")).lower().lstrip(".")
+        if not ext:
+            file_name = self._safe(self.params.get("fileName", "")).lower()
+            if "." in file_name:
+                ext = file_name.rsplit(".", 1)[-1]
+        if ext == "jpg":
+            ext = "jpeg"
+        if ext in ("jpeg", "png", "bmp", "gif", "webp"):
+            return "image/" + ext
+        return "image/png"
+
+    def data_rows(self):
+        if isinstance(self.data, list) and len(self.data) >= 2 and isinstance(self.data[0], list) and isinstance(self.data[1], list):
+            return self.data[2:]
+        return self.data
 
     def extract_keyvalue_keys(self, text_content):
         keys = []
@@ -152,7 +241,12 @@ class BaseMetadataExtractor(object):
                 return {"entities": [], "triples": []}
 
         entities = []
+        keywords = []
         triples = []
+
+        for keyword in node.get("keywords", []):
+            if isinstance(keyword, str) and keyword.strip():
+                keywords.append(keyword.strip())
 
         for ent in node.get("entities", []):
             if isinstance(ent, str) and ent.strip():
@@ -170,6 +264,7 @@ class BaseMetadataExtractor(object):
                     triples.append({"subject": subject, "predicate": predicate, "object": obj})
 
         return {
+            "keywords": self.dedup_strings(keywords, 80),
             "entities": self.dedup_strings(entities, 120),
             "triples": self.dedup_triples(triples, 180),
         }
@@ -214,6 +309,12 @@ class BaseMetadataExtractor(object):
             txt = txt.split(".")[-1]
         txt = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fa5]", "", txt)
         return txt
+
+    def _to_int(self, value, default_value):
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return default_value
 
     def flatten_values(self, node, out_values):
         if isinstance(node, dict):

@@ -1,40 +1,35 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.AgentMessageEvent;
 import com.storage.engine.model.DataItem;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
-import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class MetadataExtractionSchedulerService {
 
     private static final Logger logger = LoggerFactory.getLogger(MetadataExtractionSchedulerService.class);
-
     private static final int MAX_EVENT_CACHE = 300;
-    private static final int TRANSFORM_FETCH_LIMIT = 80;
-
-    private final Set<Long> seenTransformKeys = Collections.synchronizedSet(new HashSet<Long>());
 
     @Autowired
     private AccessService accessService;
@@ -42,18 +37,59 @@ public class MetadataExtractionSchedulerService {
     @Autowired
     private IGinxDao iginxDao;
 
+    @Value("${metadata.extraction.enabled:true}")
+    private boolean extractionEnabled;
+
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final AtomicBoolean extractionRunning = new AtomicBoolean(false);
 
     @PostConstruct
     public void init() {
-        publishEvent("info", "INIT", "Transform mode is enabled. Extraction event polling started.", "IGinX-Transform");
+        publishEvent("info", "INIT", "Metadata UDF extraction scheduler started.", "Metadata-UDF");
     }
 
-    @Scheduled(fixedDelay = 2000)
+    @Scheduled(fixedDelayString = "${metadata.extraction.scan-interval-ms:15000}")
     public void scanAndExtract() {
-        pollTransformAgentEvents();
+        if (!extractionEnabled || !extractionRunning.compareAndSet(false, true)) {
+            return;
+        }
+        try {
+            List<DataItem> all = accessService.getAllMeta();
+            DataItem candidate = selectCandidate(all);
+            if (candidate == null || candidate.getId() == null) {
+                return;
+            }
+            extractOne(candidate);
+        } catch (Exception e) {
+            logger.warn("Metadata UDF extraction scan failed: {}", e.getMessage());
+            publishEvent("warn", "FAILED", "Metadata extraction scan failed: " + safe(e.getMessage()), "Metadata-UDF");
+        } finally {
+            extractionRunning.set(false);
+        }
+    }
+
+    public void persistMetadataTreeAsync(DataItem item) {
+        if (item == null || item.getId() == null || isDirectory(item)) {
+            return;
+        }
+        final long key = item.getId().longValue();
+        final String assetPath = assetPath(item);
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_tree_persist(*) from " + IGinxConstants.STORAGE_META_PATH
+                            + " where key = " + key + ";";
+                    logger.info("[Metadata-UDF][TREE-SQL] path={}, sql={}", assetPath, sql);
+                    iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "TREE_DONE", "Metadata directory tree persisted to Neo4j: path=" + assetPath, "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Persist metadata tree failed: {}", e.getMessage());
+                    publishEvent("warn", "TREE_FAILED", "Metadata directory tree persist failed: path=" + assetPath + ", reason=" + safe(e.getMessage()), "Metadata-UDF");
+                }
+            }
+        });
     }
 
     public List<AgentMessageEvent> listEventsSince(long sinceSeq, int limit) {
@@ -81,120 +117,302 @@ public class MetadataExtractionSchedulerService {
         publishEvent(level, status, text, agentName);
     }
 
-    private void pollTransformAgentEvents() {
-        try {
-            SessionExecuteSqlResult result = iginxDao.getTransformMetaExtractRows(TRANSFORM_FETCH_LIMIT);
-            if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
-                return;
-            }
-
-            List<String> paths = result.getPaths() == null ? new ArrayList<String>() : result.getPaths();
-            int keyIdx = findColumnIndex(paths, "key");
-            int statusIdx = findColumnIndex(paths, "transform.metaExtract.status");
-            int messageIdx = findColumnIndex(paths, "transform.metaExtract.message");
-            int errorIdx = findColumnIndex(paths, "transform.metaExtract.error");
-            int entityCountIdx = findColumnIndex(paths, "transform.metaExtract.entityCount");
-            int relationCountIdx = findColumnIndex(paths, "transform.metaExtract.relationCount");
-            int detailsJsonIdx = findColumnIndex(paths, "transform.metaExtract.detailsJson");
-            int logicalPathIdx = findColumnIndex(paths, "transform.metaExtract.logicalPath");
-            int fileNameIdx = findColumnIndex(paths, "transform.metaExtract.fileName");
-            int metaKeyIdx = findAnyColumnIndex(paths,
-                    "transform.metaExtract.metaKey",
-                    "transform.metaExtract.key");
-
-            if (keyIdx < 0 || statusIdx < 0) {
-                return;
-            }
-
-            Map<Long, DataItem> metaById = null;
-            List<TransformMetaRow> items = new ArrayList<TransformMetaRow>();
-            List<List<Object>> rows = result.getValues();
-            for (List<Object> row : rows) {
-                if (row == null || keyIdx >= row.size()) {
-                    continue;
-                }
-
-                Long transformKey = asLong(row.get(keyIdx));
-                if (transformKey == null) {
-                    continue;
-                }
-                if (!seenTransformKeys.add(transformKey)) {
-                    continue;
-                }
-
-                String status = asString(row, statusIdx).toUpperCase(Locale.ROOT);
-                String message = asString(row, messageIdx);
-                String error = asString(row, errorIdx);
-                Long entityCount = asLong(row, entityCountIdx);
-                Long relationCount = asLong(row, relationCountIdx);
-                String detailsJson = asString(row, detailsJsonIdx);
-                String logicalPath = asString(row, logicalPathIdx);
-                String fileName = asString(row, fileNameIdx);
-                Long metaKey = asLong(row, metaKeyIdx);
-                Long fieldCount = extractCountFromDetails(detailsJson, "fieldCount");
-
-                Long entityFromDetails = extractCountFromDetails(detailsJson, "entityCount");
-                if ((entityCount == null || entityCount.longValue() <= 0L) && entityFromDetails != null) {
-                    entityCount = entityFromDetails;
-                }
-
-                Long relationFromDetails = extractCountFromDetails(detailsJson, "relationCount");
-                if ((relationCount == null || relationCount.longValue() <= 0L) && relationFromDetails != null) {
-                    relationCount = relationFromDetails;
-                }
-
-                if ((safe(logicalPath).isEmpty() || safe(fileName).isEmpty()) && metaKey != null) {
-                    if (metaById == null) {
-                        metaById = buildMetaByIdIndex();
-                    }
-                    DataItem meta = metaById.get(metaKey);
-                    if (meta != null) {
-                        if (safe(logicalPath).isEmpty()) {
-                            logicalPath = safe(meta.getLogicalPath());
-                        }
-                        if (safe(fileName).isEmpty()) {
-                            fileName = safe(meta.getFileName());
-                        }
-                    }
-                }
-
-                items.add(new TransformMetaRow(
-                        transformKey,
-                        status,
-                        message,
-                        error,
-                        entityCount,
-                        relationCount,
-                        fieldCount,
-                        logicalPath,
-                        fileName));
-            }
-
-            Collections.sort(items, new Comparator<TransformMetaRow>() {
-                @Override
-                public int compare(TransformMetaRow a, TransformMetaRow b) {
-                    return Long.compare(a.key, b.key);
-                }
-            });
-
-            for (TransformMetaRow item : items) {
-                if ("SUCCESS".equals(item.status)) {
-                    String text = buildTransformSuccessText(
-                            item.logicalPath,
-                            item.fileName,
-                            item.entityCount,
-                            item.relationCount,
-                            item.fieldCount,
-                            item.message);
-                    publishEvent("success", "DONE", text, "IGinX-Transform");
-                } else {
-                    String text = buildTransformFailText(item);
-                    publishEvent("warn", "FAILED", text, "IGinX-Transform");
-                }
-            }
-        } catch (Exception e) {
-            logger.debug("pollTransformAgentEvents skipped: {}", e.getMessage());
+    private DataItem selectCandidate(List<DataItem> all) {
+        if (all == null || all.isEmpty()) {
+            return null;
         }
+        List<DataItem> sorted = new ArrayList<DataItem>(all);
+        Collections.sort(sorted, new Comparator<DataItem>() {
+            @Override
+            public int compare(DataItem a, DataItem b) {
+                int depthCompare = Integer.compare(assetDepth(assetPath(b)), assetDepth(assetPath(a)));
+                if (depthCompare != 0) {
+                    return depthCompare;
+                }
+                int aid = a.getId() == null ? Integer.MAX_VALUE : a.getId().intValue();
+                int bid = b.getId() == null ? Integer.MAX_VALUE : b.getId().intValue();
+                return Integer.compare(aid, bid);
+            }
+        });
+
+        for (DataItem item : sorted) {
+            if (item == null || item.getId() == null || !isDirectory(item)) {
+                continue;
+            }
+            String status = status(item);
+            boolean missingKeywords = safe(item.getSemanticKeywords()).isEmpty();
+            if ((isPendingOrFailed(status) || ("SUCCESS".equals(status) && missingKeywords))
+                    && directoryChildrenReady(item, all)) {
+                return item;
+            }
+        }
+
+        for (DataItem item : sorted) {
+            if (item == null || item.getId() == null || isDirectory(item)) {
+                continue;
+            }
+            if (isPendingOrFailed(status(item))) {
+                return item;
+            }
+        }
+        return null;
+    }
+
+    private void extractOne(DataItem item) {
+        long key = item.getId().longValue();
+        String assetPath = assetPath(item);
+        String udfName = udfNameFor(item);
+        if (udfName.isEmpty()) {
+            iginxDao.updateMetaKnowledgeStatus(key, "FAILED");
+            publishEvent("warn", "FAILED", "Unsupported metadata dataType: path=" + assetPath + ", dataType=" + safe(item.getDataType()), "Metadata-UDF");
+            return;
+        }
+
+        publishEvent("running", "PROCESSING", "Metadata semantic extraction started: path=" + assetPath + ", udf=" + udfName, "Metadata-UDF");
+        iginxDao.updateMetaKnowledgeStatus(key, "PROCESSING");
+
+        try {
+            String sql = buildUdfSql(udfName, item);
+            logger.info("[Metadata-UDF][EXTRACT-SQL] path={}, udf={}, sql={}", assetPath, udfName, sql);
+            SessionExecuteSqlResult result = iginxDao.executeLongRunningSql(sql);
+            UdfResult udfResult = parseUdfResult(result);
+            if (!"SUCCESS".equals(udfResult.status)) {
+                iginxDao.updateMetaKnowledgeStatus(key, "FAILED");
+                publishEvent("warn", "FAILED", "Metadata semantic extraction failed: path=" + assetPath + ", reason=" + udfResult.message, "Metadata-UDF");
+                return;
+            }
+
+            iginxDao.updateMetaSemanticKeywords(key, "SUCCESS", udfResult.keywordsJson);
+            publishEvent("success", "DONE", "Metadata semantic extraction completed: path=" + assetPath + ", keywords=" + udfResult.keywordsJson, "Metadata-UDF");
+        } catch (Exception e) {
+            iginxDao.updateMetaKnowledgeStatus(key, "FAILED");
+            logger.warn("Metadata semantic extraction failed. path={}, error={}", assetPath, e.getMessage());
+            publishEvent("warn", "FAILED", "Metadata semantic extraction failed: path=" + assetPath + ", reason=" + safe(e.getMessage()), "Metadata-UDF");
+        }
+    }
+
+    private String buildUdfSql(String udfName, DataItem item) {
+        String kvargs = "logicalPath='" + escapeSql(item.getLogicalPath()) + "'"
+                + ", metaKey='" + item.getId().longValue() + "'"
+                + ", fileName='" + escapeSql(item.getFileName()) + "'"
+                + ", dataType='" + escapeSql(item.getDataType()) + "'"
+                + ", fileFormat='" + escapeSql(item.getFileFormat()) + "'";
+        if (isImageFile(item)) {
+            kvargs = kvargs
+                    + ", maxRawImageBytes='67108864'"
+                    + ", maxVlmImageBytes='4194304'"
+                    + ", maxVlmImageSide='1280'";
+        }
+
+        if (isDirectory(item)) {
+            return "select " + udfName + "(*, " + kvargs + ") from " + IGinxConstants.STORAGE_META_PATH
+                    + " where logicalPath = '" + escapeSql(assetPath(item)) + "';";
+        }
+
+        String contentPath = safe(item.getContentPath());
+        if (contentPath.isEmpty()) {
+            throw new IllegalArgumentException("leaf asset contentPath is empty");
+        }
+        return "select " + udfName + "(*, " + kvargs + ") from (SELECT VALUE2META(SELECT contentPath FROM "
+                + IGinxConstants.STORAGE_META_PATH + " where key = " + item.getId().longValue() + ") from "
+                + IGinxConstants.DATA_PATH_PREFIX + ");";
+    }
+
+    private UdfResult parseUdfResult(SessionExecuteSqlResult result) {
+        UdfResult out = new UdfResult();
+        out.status = "FAILED";
+        out.keywordsJson = "[]";
+        out.message = "empty udf result";
+        if (isEmptyResult(result)) {
+            return out;
+        }
+
+        List<String> paths = result.getPaths() == null ? new ArrayList<String>() : result.getPaths();
+        int statusIdx = findColumnIndex(paths, "status");
+        int keywordsIdx = findColumnIndex(paths, "keywords");
+        int messageIdx = findColumnIndex(paths, "message");
+        List<Object> row = findUdfPayloadRow(result.getValues());
+
+        if (statusIdx < 0 && row.size() >= 1) {
+            statusIdx = 0;
+        }
+        if (keywordsIdx < 0 && row.size() >= 2) {
+            keywordsIdx = 1;
+        }
+        if (messageIdx < 0 && row.size() >= 5) {
+            messageIdx = 4;
+        }
+
+        out.status = asString(row, statusIdx).toUpperCase(Locale.ROOT);
+        if (out.status.isEmpty()) {
+            out.status = "FAILED";
+        }
+        out.keywordsJson = asString(row, keywordsIdx);
+        if (out.keywordsJson.isEmpty()) {
+            out.keywordsJson = "[]";
+        }
+        out.message = asString(row, messageIdx);
+        return out;
+    }
+
+    private boolean isEmptyResult(SessionExecuteSqlResult result) {
+        return result == null || result.getValues() == null || result.getValues().isEmpty();
+    }
+
+    private List<Object> findUdfPayloadRow(List<List<Object>> rows) {
+        if (rows == null || rows.isEmpty()) {
+            return Collections.emptyList();
+        }
+        for (int i = rows.size() - 1; i >= 0; i--) {
+            List<Object> row = rows.get(i);
+            if (row == null || row.isEmpty()) {
+                continue;
+            }
+            String first = asString(row, 0);
+            if ("BINARY".equalsIgnoreCase(first) || "status".equalsIgnoreCase(first)) {
+                continue;
+            }
+            if ("SUCCESS".equalsIgnoreCase(first) || "FAILED".equalsIgnoreCase(first)) {
+                return row;
+            }
+        }
+        return rows.get(rows.size() - 1);
+    }
+
+    private boolean directoryChildrenReady(DataItem directory, List<DataItem> all) {
+        String dirPath = assetPath(directory);
+        boolean hasChild = false;
+        for (DataItem item : all) {
+            if (item == null || item == directory) {
+                continue;
+            }
+            String childPath = assetPath(item);
+            if (!dirPath.equals(parentPath(childPath))) {
+                continue;
+            }
+            hasChild = true;
+            if (!"SUCCESS".equals(status(item)) || safe(item.getSemanticKeywords()).isEmpty()) {
+                return false;
+            }
+        }
+        return hasChild;
+    }
+
+    private String udfNameFor(DataItem item) {
+        String type = safe(item.getDataType()).toLowerCase(Locale.ROOT);
+        switch (type) {
+            case IGinxConstants.TYPE_DIRECTORY:
+                return "directory_semantic_keywords";
+            case IGinxConstants.TYPE_RELATIONAL:
+                return "relational_semantic_keywords";
+            case IGinxConstants.TYPE_TIMESERIES:
+                return "timeseries_semantic_keywords";
+            case IGinxConstants.TYPE_KEYVALUE:
+                return "keyvalue_semantic_keywords";
+            case IGinxConstants.TYPE_DOCUMENT:
+                return "document_semantic_keywords";
+            case IGinxConstants.TYPE_FILE:
+                return "file_semantic_keywords";
+        }
+        return "";
+    }
+
+    private String assetPath(DataItem item) {
+        if (item == null) {
+            return "/";
+        }
+        String logicalPath = normalizePath(item.getLogicalPath());
+        String fileName = safe(item.getFileName());
+        if (fileName.isEmpty()) {
+            return logicalPath;
+        }
+        if (logicalPath.endsWith("/" + fileName)) {
+            return logicalPath;
+        }
+        return normalizePath(logicalPath + "/" + fileName);
+    }
+
+    private String parentPath(String path) {
+        String p = normalizePath(path);
+        if ("/".equals(p)) {
+            return "";
+        }
+        int idx = p.lastIndexOf('/');
+        if (idx <= 0) {
+            return "/";
+        }
+        return p.substring(0, idx);
+    }
+
+    private int assetDepth(String path) {
+        String p = normalizePath(path);
+        if ("/".equals(p)) {
+            return 0;
+        }
+        int depth = 0;
+        for (int i = 0; i < p.length(); i++) {
+            if (p.charAt(i) == '/') {
+                depth++;
+            }
+        }
+        return depth;
+    }
+
+    private boolean isDirectory(DataItem item) {
+        return item != null && IGinxConstants.TYPE_DIRECTORY.equals(safe(item.getDataType()).toLowerCase(Locale.ROOT));
+    }
+
+    private boolean isImageFile(DataItem item) {
+        String type = safe(item == null ? "" : item.getDataType()).toLowerCase(Locale.ROOT);
+        String format = safe(item == null ? "" : item.getFileFormat()).toLowerCase(Locale.ROOT);
+        return IGinxConstants.TYPE_FILE.equals(type)
+                && ("jpg".equals(format)
+                || "jpeg".equals(format)
+                || "png".equals(format)
+                || "bmp".equals(format)
+                || "gif".equals(format)
+                || "webp".equals(format));
+    }
+
+    private boolean isPendingOrFailed(String status) {
+        return "PENDING".equals(status) || "FAILED".equals(status);
+    }
+
+    private String status(DataItem item) {
+        String status = safe(item == null ? "" : item.getKnowledgeExtractStatus()).toUpperCase(Locale.ROOT);
+        return status.isEmpty() ? "PENDING" : status;
+    }
+
+    private int findColumnIndex(List<String> paths, String tail) {
+        if (paths == null || tail == null) {
+            return -1;
+        }
+        String normalizedTail = tail.toLowerCase(Locale.ROOT);
+        for (int i = 0; i < paths.size(); i++) {
+            String path = paths.get(i);
+            if (path == null) {
+                continue;
+            }
+            String normalizedPath = path.trim().toLowerCase(Locale.ROOT).replace("(", "").replace(")", "");
+            if (normalizedPath.equals(normalizedTail) || normalizedPath.endsWith("." + normalizedTail) || normalizedPath.endsWith(normalizedTail)) {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    private String asString(List<Object> row, int idx) {
+        if (row == null || idx < 0 || idx >= row.size()) {
+            return "";
+        }
+        Object value = row.get(idx);
+        if (value == null) {
+            return "";
+        }
+        if (value instanceof byte[]) {
+            return new String((byte[]) value, StandardCharsets.UTF_8).trim();
+        }
+        return String.valueOf(value).trim();
     }
 
     private void publishEvent(String level, String status, String text, String agentName) {
@@ -233,201 +451,31 @@ public class MetadataExtractionSchedulerService {
         return "info";
     }
 
-    private String buildTransformSuccessText(
-            String logicalPath,
-            String fileName,
-            Long entityCount,
-            Long relationCount,
-            Long fieldCount,
-            String message) {
-        long safeEntityCount = entityCount == null ? 0L : entityCount.longValue();
-        long safeRelationCount = relationCount == null ? 0L : relationCount.longValue();
-        long safeFieldCount = fieldCount == null ? 0L : fieldCount.longValue();
-
-        String pathPart = safe(logicalPath).isEmpty() ? "(unknown)" : safe(logicalPath);
-        String filePart = safe(fileName).isEmpty() ? "(unknown)" : safe(fileName);
-        String text;
-        if (safeEntityCount <= 0L && safeRelationCount <= 0L && safeFieldCount > 0L) {
-            text = "Transform extraction completed: path=" + pathPart + ", file=" + filePart
-                + ", fields=" + safeFieldCount + ".";
-        } else {
-            text = "Transform extraction completed: path=" + pathPart + ", file=" + filePart
-                + ", entities=" + safeEntityCount + ", relations=" + safeRelationCount + ".";
+    private String normalizePath(String path) {
+        String p = safe(path);
+        if (p.isEmpty()) {
+            return "/";
         }
-
-        String clean = sanitizeUdfMessage(message);
-        if (!clean.isEmpty()) {
-            text = text + " " + clean;
+        if (!p.startsWith("/")) {
+            p = "/" + p;
         }
-        return text;
+        while (p.length() > 1 && p.endsWith("/")) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p;
     }
 
-    private String buildTransformFailText(TransformMetaRow item) {
-        String pathPart = safe(item.logicalPath).isEmpty() ? "(unknown)" : safe(item.logicalPath);
-        String filePart = safe(item.fileName).isEmpty() ? "(unknown)" : safe(item.fileName);
-        String reason = item.error.isEmpty() ? item.message : item.error;
-        return "Transform extraction failed: path=" + pathPart + ", file=" + filePart + ", reason=" + safe(reason);
-    }
-
-    private String sanitizeUdfMessage(String message) {
-        return safe(message)
-                .replaceAll("(?i)[a-z]+(?:\\s+[a-z]+)*\\s+extraction by udf;\\s*neo4j persisted\\.?", "")
-                .replaceAll("\\s{2,}", " ")
-                .trim();
-    }
-
-    private int findAnyColumnIndex(List<String> paths, String... tails) {
-        if (tails == null) {
-            return -1;
-        }
-        for (String tail : tails) {
-            int idx = findColumnIndex(paths, tail);
-            if (idx >= 0) {
-                return idx;
-            }
-        }
-        return -1;
-    }
-
-    private int findColumnIndex(List<String> paths, String tail) {
-        if (paths == null || tail == null) {
-            return -1;
-        }
-        String normalizedTail = tail.toLowerCase(Locale.ROOT);
-        for (int i = 0; i < paths.size(); i++) {
-            String path = paths.get(i);
-            if (path == null) {
-                continue;
-            }
-            String normalizedPath = path.trim().toLowerCase(Locale.ROOT);
-            if (normalizedPath.equals(normalizedTail) || normalizedPath.endsWith(normalizedTail)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private String asString(List<Object> row, int idx) {
-        if (row == null || idx < 0 || idx >= row.size()) {
-            return "";
-        }
-        Object value = row.get(idx);
-        if (value == null) {
-            return "";
-        }
-        if (value instanceof byte[]) {
-            return new String((byte[]) value).trim();
-        }
-        return String.valueOf(value).trim();
-    }
-
-    private Long asLong(List<Object> row, int idx) {
-        if (row == null || idx < 0 || idx >= row.size()) {
-            return null;
-        }
-        return asLong(row.get(idx));
-    }
-
-    private Long asLong(Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-        if (value instanceof byte[]) {
-            try {
-                return Long.parseLong(new String((byte[]) value).trim());
-            } catch (Exception ignore) {
-                return null;
-            }
-        }
-        try {
-            return Long.parseLong(String.valueOf(value).trim());
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private Long extractCountFromDetails(String detailsJson, String countName) {
-        String raw = safe(detailsJson);
-        if (raw.isEmpty() || safe(countName).isEmpty()) {
-            return null;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(raw);
-
-            JsonNode counts = root.get("counts");
-            if (counts != null) {
-                JsonNode direct = counts.get(countName);
-                if (direct != null && direct.isNumber()) {
-                    return Long.valueOf(direct.longValue());
-                }
-            }
-
-            JsonNode fallback = root.get(countName);
-            if (fallback != null && fallback.isNumber()) {
-                return Long.valueOf(fallback.longValue());
-            }
-        } catch (Exception ignore) {
-            return null;
-        }
-        return null;
-    }
-
-    private Map<Long, DataItem> buildMetaByIdIndex() {
-        Map<Long, DataItem> out = new LinkedHashMap<Long, DataItem>();
-        try {
-            List<DataItem> all = accessService.getAllMeta();
-            if (all == null) {
-                return out;
-            }
-            for (DataItem item : all) {
-                if (item == null || item.getId() == null) {
-                    continue;
-                }
-                out.put(Long.valueOf(item.getId().longValue()), item);
-            }
-        } catch (Exception e) {
-            logger.debug("buildMetaByIdIndex skipped: {}", e.getMessage());
-        }
-        return out;
+    private String escapeSql(String value) {
+        return safe(value).replace("\\", "\\\\").replace("'", "''");
     }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
     }
 
-    private static class TransformMetaRow {
-        private final long key;
-        private final String status;
-        private final String message;
-        private final String error;
-        private final Long entityCount;
-        private final Long relationCount;
-        private final Long fieldCount;
-        private final String logicalPath;
-        private final String fileName;
-
-        private TransformMetaRow(
-                long key,
-                String status,
-                String message,
-                String error,
-                Long entityCount,
-                Long relationCount,
-                Long fieldCount,
-                String logicalPath,
-                String fileName) {
-            this.key = key;
-            this.status = status;
-            this.message = message;
-            this.error = error;
-            this.entityCount = entityCount;
-            this.relationCount = relationCount;
-            this.fieldCount = fieldCount;
-            this.logicalPath = logicalPath;
-            this.fileName = fileName;
-        }
+    private static class UdfResult {
+        private String status;
+        private String keywordsJson;
+        private String message;
     }
 }

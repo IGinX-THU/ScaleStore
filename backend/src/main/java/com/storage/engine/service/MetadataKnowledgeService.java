@@ -8,10 +8,14 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -23,6 +27,7 @@ public class MetadataKnowledgeService {
 
     private static final Logger logger = LoggerFactory.getLogger(MetadataKnowledgeService.class);
     private static final int LLM_CYPHER_MAX_ATTEMPTS = 2;
+    private static final int RELATION_BATCH_SIZE = 12;
     private static final Pattern PATH_PATTERN = Pattern.compile("(/[a-zA-Z0-9_./-]*)");
     private static final Pattern KEYWORD_PATTERN_1 = Pattern.compile("有关(.+?)的");
     private static final Pattern KEYWORD_PATTERN_2 = Pattern.compile("关于(.+?)的");
@@ -37,6 +42,9 @@ public class MetadataKnowledgeService {
 
     @Autowired
     private LlmService llmService;
+
+    @Autowired
+    private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
 
     public Map<String, Object> getGraph(String logicalPath, int limit) {
         if (!neo4jDao.isEnabled()) {
@@ -74,43 +82,135 @@ public class MetadataKnowledgeService {
         String dt = safe(dataType).toLowerCase(Locale.ROOT);
         String kw = safe(keyword);
 
-        List<String> where = new ArrayList<String>();
-        if (!path.isEmpty()) {
-            where.add("coalesce(d.logicalPath,'') STARTS WITH '" + escapeLiteral(path) + "'");
-        }
-        if (!dt.isEmpty()) {
-            where.add("toLower(coalesce(d.dataType,'')) = '" + escapeLiteral(dt) + "'");
-        }
-        if (!kw.isEmpty()) {
-            String escapedKeyword = escapeLiteral(kw);
-            where.add("("
-                + "EXISTS { MATCH (d)-[:MENTIONS]->(eFilter:Entity) "
-                + "WHERE toLower(coalesce(eFilter.name,'')) CONTAINS toLower('" + escapedKeyword + "') "
-                + "OR toLower(coalesce(eFilter.norm,'')) CONTAINS toLower('" + escapedKeyword + "') } "
-                + "OR EXISTS { MATCH (d)-[:HAS_FIELD]->(fFilter:Field) "
-                + "WHERE toLower(coalesce(fFilter.name,'')) CONTAINS toLower('" + escapedKeyword + "') "
-                + "OR toLower(coalesce(fFilter.norm,'')) CONTAINS toLower('" + escapedKeyword + "') }"
-                + ")");
-        }
-
-        String cypher = "MATCH (d:DataAsset)"
-            + appendWhere(where)
-            + " WITH DISTINCT d "
-            + "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
-            + "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-            + "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
-            + "RETURN p,hd,d,m,e,hf,f";
-
         int queryLimit = resolveGraphLimit(0);
-        String finalCypher = ensureLimit(cypher, queryLimit);
+        String finalCypher = "MATCH (d:DataAsset) WHERE path/type/keyword filters RETURN assets,parent edges,cached semantic relations LIMIT " + queryLimit;
         logger.info("系统参数化查询: logicalPath={}, dataType={}, keyword={}, cypher={}",
                 path, dt, kw, finalCypher);
-        Map<String, Object> graph = neo4jDao.queryByCypher(finalCypher);
+        Map<String, Object> graph = neo4jDao.queryAssetsByKeyword(path, dt, kw, queryLimit);
         graph.put("cypher", finalCypher);
         graph.put("strategy", "system");
-        graph.put("strategyReason", "structured_filters");
+        graph.put("strategyReason", "asset_keyword_filters");
         graph.put("strategyConfidence", 1.0);
+        scheduleSpecialRelationBatch(graph, kw);
         return graph;
+    }
+
+    private void scheduleSpecialRelationBatch(Map<String, Object> graph, String keyword) {
+        final List<String> assetIds = extractAssetNodeIds(graph);
+        if (assetIds.size() < 2) {
+            return;
+        }
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                computeSpecialRelations(assetIds, keyword);
+            }
+        });
+    }
+
+    @SuppressWarnings("unchecked")
+    private List<String> extractAssetNodeIds(Map<String, Object> graph) {
+        if (graph == null || !(graph.get("nodes") instanceof List)) {
+            return Collections.emptyList();
+        }
+        List<String> ids = new ArrayList<String>();
+        Set<String> seen = new HashSet<String>();
+        for (Object obj : (List<Object>) graph.get("nodes")) {
+            if (!(obj instanceof Map)) {
+                continue;
+            }
+            Map<String, Object> node = (Map<String, Object>) obj;
+            if (!"DataAsset".equals(String.valueOf(node.get("categoryName")))) {
+                continue;
+            }
+            String id = String.valueOf(node.get("id"));
+            if (!id.isEmpty() && seen.add(id)) {
+                ids.add(id);
+            }
+        }
+        return ids;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void computeSpecialRelations(List<String> assetIds, String keyword) {
+        try {
+            List<Map<String, Object>> pairs = neo4jDao.findUncomputedAssetRelationPairs(assetIds, RELATION_BATCH_SIZE);
+            if (pairs.isEmpty()) {
+                return;
+            }
+            metadataExtractionSchedulerService.publishExternalSourceEvent(
+                    "running",
+                    "RELATION_BATCH",
+                    "Special relation batch started: pairs=" + pairs.size() + ", keyword=" + safe(keyword),
+                    "Metadata-Agent");
+            int persisted = 0;
+            for (Map<String, Object> pair : pairs) {
+                long leftId = asLong(pair.get("leftId"));
+                long rightId = asLong(pair.get("rightId"));
+                List<String> leftKeywords = pair.get("leftKeywords") instanceof List
+                        ? (List<String>) pair.get("leftKeywords")
+                        : Collections.<String>emptyList();
+                List<String> rightKeywords = pair.get("rightKeywords") instanceof List
+                        ? (List<String>) pair.get("rightKeywords")
+                        : Collections.<String>emptyList();
+                String relation = inferRelationByOverlap(leftKeywords, rightKeywords);
+                if (relation.isEmpty()) {
+                    relation = llmService.inferAssetRelation(
+                            String.valueOf(pair.get("leftName")),
+                            leftKeywords,
+                            String.valueOf(pair.get("rightName")),
+                            rightKeywords);
+                }
+                if (!relation.isEmpty()) {
+                    neo4jDao.upsertSemanticRelation(leftId, rightId, relation, "metadata-agent");
+                    persisted++;
+                }
+            }
+            metadataExtractionSchedulerService.publishExternalSourceEvent(
+                    "success",
+                    "RELATION_DONE",
+                    "Special relation batch completed: persisted=" + persisted + "/" + pairs.size(),
+                    "Metadata-Agent");
+        } catch (Exception e) {
+            logger.debug("Special relation batch skipped: {}", e.getMessage());
+            metadataExtractionSchedulerService.publishExternalSourceEvent(
+                    "warn",
+                    "RELATION_FAILED",
+                    "Special relation batch failed: " + safe(e.getMessage()),
+                    "Metadata-Agent");
+        }
+    }
+
+    private String inferRelationByOverlap(List<String> left, List<String> right) {
+        Set<String> a = normalizeKeywordSet(left);
+        Set<String> b = normalizeKeywordSet(right);
+        a.retainAll(b);
+        return a.size() >= 2 ? "关键词相关" : "";
+    }
+
+    private Set<String> normalizeKeywordSet(List<String> values) {
+        Set<String> out = new HashSet<String>();
+        if (values == null) {
+            return out;
+        }
+        for (String value : values) {
+            String text = safe(value).toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\\u4e00-\\u9fa5]", "");
+            if (!text.isEmpty()) {
+                out.add(text);
+            }
+        }
+        return out;
+    }
+
+    private long asLong(Object value) {
+        if (value instanceof Number) {
+            return ((Number) value).longValue();
+        }
+        try {
+            return Long.parseLong(String.valueOf(value));
+        } catch (Exception e) {
+            return 0L;
+        }
     }
 
     public Map<String, Object> queryByLlmNaturalLanguage(String query) {
@@ -274,8 +374,8 @@ public class MetadataKnowledgeService {
         if (q.contains("document") || q.contains("文档")) {
             return "document";
         }
-        if (q.contains("image") || q.contains("图片") || q.contains("图像")) {
-            return "image";
+        if (q.contains("file") || q.contains("image") || q.contains("图片") || q.contains("图像") || q.contains("文件")) {
+            return "file";
         }
         if (q.contains("timeseries") || q.contains("时序")) {
             return "timeseries";

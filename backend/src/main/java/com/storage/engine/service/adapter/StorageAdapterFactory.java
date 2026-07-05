@@ -19,13 +19,13 @@ public class StorageAdapterFactory {
     public StorageAdapterFactory(
             TimeSeriesAdapter timeSeriesAdapter,
             RelationalAdapter relationalAdapter,
-            ImageAdapter imageAdapter,
+            FileAdapter fileAdapter,
             DocumentAdapter documentAdapter,
             KeyValueAdapter keyValueAdapter) {
 
         adapterMap.put(IGinxConstants.TYPE_TIMESERIES, timeSeriesAdapter);
         adapterMap.put(IGinxConstants.TYPE_RELATIONAL, relationalAdapter);
-        adapterMap.put(IGinxConstants.TYPE_IMAGE, imageAdapter);
+        adapterMap.put(IGinxConstants.TYPE_FILE, fileAdapter);
         adapterMap.put(IGinxConstants.TYPE_DOCUMENT, documentAdapter);
         adapterMap.put(IGinxConstants.TYPE_KEYVALUE, keyValueAdapter);
     }
@@ -33,7 +33,7 @@ public class StorageAdapterFactory {
     /**
      * Get the adapter for the given data type.
      *
-     * @param dataType e.g., "timeseries", "relational", "image", "document", "keyvalue"
+     * @param dataType e.g., "timeseries", "relational", "file", "document", "keyvalue"
      * @return the matching StorageAdapter
      * @throws IllegalArgumentException if the data type is not supported
      */

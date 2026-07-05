@@ -504,6 +504,15 @@ public class IGinxDao {
       executeSql(sql);
   }
 
+  public void updateMetaSemanticKeywords(long key, String status, String semanticKeywords) {
+      String safeStatus = status == null ? "" : escapeSql(status.trim().toUpperCase(Locale.ROOT));
+      String safeKeywords = semanticKeywords == null ? "[]" : escapeSql(semanticKeywords.trim());
+      String sql = String.format(Locale.ROOT,
+          "insert into %s(key, knowledgeExtractStatus, semanticKeywords) values (%d, '%s', '%s');",
+          IGinxConstants.STORAGE_META_PATH, key, safeStatus, safeKeywords);
+      executeSql(sql);
+  }
+
   public SessionExecuteSqlResult getAllMeta() {
       return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + ";");
   }

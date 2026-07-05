@@ -2,32 +2,35 @@ from .base_extractor import BaseMetadataExtractor
 
 
 class ImageMetadataExtractor(BaseMetadataExtractor):
-    SYSTEM_PROMPT = "你是一个多模态信息抽取助手。仅输出 JSON。"
+    SYSTEM_PROMPT = "You are a multimodal metadata extraction assistant. Return strict JSON only."
 
     USER_PROMPT_TEXT = (
-        "请从图像中抽取语义三元组。 "
-        "请严格只返回 JSON，不要输出 Markdown 或解释。 "
-        "返回格式要求："
-        "{\"entities\":[\"entity\"],\"triples\":[{\"subject\":\"entityA\",\"predicate\":\"relation\",\"object\":\"entityB\"}]}. "
-        "如果关系抽取失败，请返回空的 triples 数组。"
+        "Extract metadata semantics from this image. Return strict JSON only. "
+        "All keywords, entities, and predicates must be concise Chinese. "
+        "Required shape: "
+        "{\"keywords\":[\"中文关键词\"],\"entities\":[\"中文实体\"],"
+        "\"triples\":[{\"subject\":\"实体A\",\"predicate\":\"关系\",\"object\":\"实体B\"}]}. "
+        "If no relation is supported, return an empty triples array."
     )
 
     USER_RETRY_PROMPT_TEXT = (
-        "你上一轮可能没有返回可用三元组。请再次检查图像内容并尽量抽取核心语义关系；若确实无关系，triples 返回空数组。 "
-        "请严格只返回 JSON，不要输出 Markdown 或解释。 "
-        "返回格式要求："
-        "{\"entities\":[\"entity\"],\"triples\":[{\"subject\":\"entityA\",\"predicate\":\"relation\",\"object\":\"entityB\"}]}."
+        "Re-check the image and return Chinese metadata keywords plus any supported semantic triples. "
+        "If no relation is supported, return an empty triples array. "
+        "Return strict JSON only: "
+        "{\"keywords\":[\"中文关键词\"],\"entities\":[\"中文实体\"],"
+        "\"triples\":[{\"subject\":\"实体A\",\"predicate\":\"关系\",\"object\":\"实体B\"}]}."
     )
 
     def extract(self):
         if str(self.params.get("llmEnabled", "true")).strip().lower() != "true":
             raise RuntimeError("image extraction requires llmEnabled=true")
 
-        image_base64 = self.extract_first_binary_base64()
+        image_base64, image_mime, image_prepare_message = self.prepare_image_for_vlm()
         if not image_base64:
             return {
                 "fieldKind": "field",
                 "fields": [],
+                "keywords": [],
                 "entities": [],
                 "triples": [],
                 "message": "image bytes not found",
@@ -37,13 +40,14 @@ class ImageMetadataExtractor(BaseMetadataExtractor):
         if not model:
             raise RuntimeError("llmVisionModel/llmModel is empty")
 
+        image_url = "data:" + image_mime + ";base64," + image_base64
         messages = [
             {"role": "system", "content": self.SYSTEM_PROMPT},
             {
                 "role": "user",
                 "content": [
                     {"type": "text", "text": self.USER_PROMPT_TEXT + " logicalPath=" + self.logical_path},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + image_base64}},
+                    {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             },
         ]
@@ -54,18 +58,22 @@ class ImageMetadataExtractor(BaseMetadataExtractor):
                 "role": "user",
                 "content": [
                     {"type": "text", "text": self.USER_RETRY_PROMPT_TEXT + " logicalPath=" + self.logical_path},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64," + image_base64}},
+                    {"type": "image_url", "image_url": {"url": image_url}},
                 ],
             },
         ]
 
         parsed, _ = self.llm_extract_with_retry(model, messages, retry_messages, max_retry=1)
 
+        keywords = parsed.get("keywords", [])
+        if not keywords:
+            keywords = parsed.get("entities", [])
+
         return {
             "fieldKind": "field",
-            # Legacy behavior for document/image only keeps semantic entities/triples.
             "fields": [],
+            "keywords": keywords,
             "entities": parsed.get("entities", []),
             "triples": parsed.get("triples", []),
-            "message": "image llm extraction completed",
+            "message": "image llm extraction completed; " + image_prepare_message,
         }

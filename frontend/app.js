@@ -1790,7 +1790,9 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     CONTAINS: 'rgba(104, 176, 233, 0.75)',
     HAS_DATA: '#00c389',
     HAS_FIELD: '#57d6b2',
-    MENTIONS: '#ffb347'
+    MENTIONS: '#ffb347',
+    CONTAINS_ASSET: '#7aa7ff',
+    SEMANTIC_RELATION: '#ff6f91'
   };
 
   if (nodes.length === 0) {
@@ -2215,6 +2217,8 @@ const storageSourceDefaultPorts = {
   mysql: '3306',
   postgres: '5432',
   iotdb: '6667',
+  mongodb: '27017',
+  redis: '6379',
 };
 
 function getStorageSourceLabel(sourceType) {
@@ -2223,6 +2227,8 @@ function getStorageSourceLabel(sourceType) {
     mysql: 'MySQL',
     postgres: 'PostgreSQL',
     iotdb: 'IoTDB',
+    mongodb: 'MongoDB',
+    redis: 'Redis',
   };
   return labels[sourceType] || sourceType;
 }
@@ -2234,7 +2240,7 @@ function syncStorageSourceFormOptions(resetPort = false) {
   const portInput = $('storage-source-port-input');
 
   fsFields.classList.toggle('hidden', sourceType !== 'filesystem');
-  authFields.classList.toggle('hidden', sourceType === 'filesystem');
+  authFields.classList.toggle('hidden', sourceType === 'filesystem' || sourceType === 'mongodb' || sourceType === 'redis');
 
   const defaultPort = storageSourceDefaultPorts[sourceType] || '';
   if (resetPort || !portInput.value.trim()) {
@@ -2245,21 +2251,12 @@ function syncStorageSourceFormOptions(resetPort = false) {
     $('storage-source-iginx-port-input').value = '6888';
   }
 
-  syncStorageSourceReadSchemaOptions();
 }
 
 function syncStorageSourceSizeStrategyOptions() {
   const strategy = $('storage-source-size-strategy-input').value;
   const sshFields = $('storage-source-ssh-fields');
   sshFields.classList.toggle('hidden', strategy !== 'ssh');
-}
-
-function syncStorageSourceReadSchemaOptions() {
-  const sourceType = $('storage-source-type-input').value;
-  const readSchemaInput = $('storage-source-read-schema-input');
-  const descriptionFields = $('storage-source-description-document-fields');
-  const showDescription = sourceType === 'filesystem' && readSchemaInput.checked;
-  descriptionFields.classList.toggle('hidden', !showDescription);
 }
 
 function openStorageSourceModal() {
@@ -2271,8 +2268,6 @@ function openStorageSourceModal() {
   $('storage-source-dummy-dir-input').value = '';
   $('storage-source-iginx-port-input').value = '6888';
   $('storage-source-size-strategy-input').value = 'system';
-  $('storage-source-read-schema-input').checked = false;
-  $('storage-source-description-document-input').value = '';
   $('storage-source-ssh-username-input').value = '';
   $('storage-source-ssh-password-input').value = '';
   $('storage-source-ssh-port-input').value = '22';
@@ -2318,12 +2313,6 @@ function buildStorageSourcePayload() {
     payload.dummyDir = dummyDir;
     payload.iginxPort = iginxPort;
     payload.sizeCalculationStrategy = sizeStrategy;
-
-    const readSchema = $('storage-source-read-schema-input').checked;
-    payload.readSchema = readSchema;
-    if (readSchema) {
-      payload.descriptionDocument = $('storage-source-description-document-input').value.trim() || 'description.txt';
-    }
     
     if (sizeStrategy === 'ssh') {
       const sshUsername = $('storage-source-ssh-username-input').value.trim();
@@ -2344,7 +2333,7 @@ function buildStorageSourcePayload() {
       payload.sshPassword = sshPassword;
       payload.sshPort = sshPort;
     }
-  } else {
+  } else if (sourceType !== 'mongodb' && sourceType !== 'redis') {
     const username = $('storage-source-username-input').value.trim();
     const password = $('storage-source-password-input').value;
     if (!username || !password) {
@@ -2362,7 +2351,6 @@ $('storage-source-modal-cancel').addEventListener('click', closeStorageSourceMod
 $('storage-source-modal-close-x').addEventListener('click', closeStorageSourceModal);
 $('storage-source-type-input').addEventListener('change', () => syncStorageSourceFormOptions(true));
 $('storage-source-size-strategy-input').addEventListener('change', () => syncStorageSourceSizeStrategyOptions());
-$('storage-source-read-schema-input').addEventListener('change', () => syncStorageSourceReadSchemaOptions());
 
 $('storage-source-modal-save').addEventListener('click', async () => {
   const saveBtn = $('storage-source-modal-save');
@@ -2421,8 +2409,8 @@ const acceptMap = {
   relational: '.csv,.txt',
   timeseries: '.csv,.txt',
   document:   '.json,.xml',
-  image:      '.jpg,.jpeg,.png,.bmp',
-  keyvalue:   '.json,.yaml,.yml',
+  file:       '',
+  keyvalue:   '.properties,.env',
 };
 
 function updateFileAccept() {
@@ -2522,7 +2510,7 @@ $('storage-save-btn').addEventListener('click', async () => {
       relational: '关系数据',
       timeseries: '时序数据',
       document: '文档数据',
-      image: '图像数据',
+      file: '文件数据',
       keyvalue: '键值数据',
     };
     const typeLabel = typeLabelMap[type] || type;
@@ -2611,7 +2599,7 @@ function renderAccessItem(item) {
   const previewData = item?.previewData;
 
   const typeLabels = {
-    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    timeseries: '时序数据', relational: '关系数据', file: '文件数据',
     document: '文档数据', keyvalue: '键值数据', directory: '目录'
   };
 
@@ -2631,12 +2619,16 @@ function renderAccessItem(item) {
     return;
   }
 
-  if (dataType === 'image') {
-    renderImagePreview(preview, previewData, item);
+  if (dataType === 'file') {
+    renderFilePreview(preview, previewData, item);
   } else if (dataType === 'timeseries' || dataType === 'relational') {
     renderTablePreview(preview, previewData, dataType);
   } else if (dataType === 'document') {
-    renderDocumentPreview(preview, previewData, item);
+    if (previewData && previewData.columns && previewData.rows) {
+      renderTablePreview(preview, previewData, dataType);
+    } else {
+      renderDocumentPreview(preview, previewData, item);
+    }
   } else if (dataType === 'keyvalue') {
     renderKeyValuePreview(preview, previewData);
   } else {
@@ -2828,26 +2820,41 @@ $('access-back-btn').addEventListener('click', async () => {
 
 updateAccessBackButtonState();
 
-function renderImagePreview(container, previewData, meta) {
+function renderFilePreview(container, previewData, meta) {
   if (!previewData || !previewData.base64) {
-    container.innerHTML = '<div class="preview-placeholder">无法加载图像数据</div>';
+    container.innerHTML = '<div class="preview-placeholder">无法加载文件数据</div>';
     return;
   }
-  const format = (meta.fileFormat || 'png').toLowerCase();
-  const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp' };
-  const mime = mimeMap[format] || 'image/png';
+  const format = (meta.fileFormat || '').toLowerCase();
+  const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp', gif: 'image/gif', webp: 'image/webp', txt: 'text/plain', json: 'application/json', xml: 'application/xml', pdf: 'application/pdf' };
+  const mime = mimeMap[format] || 'application/octet-stream';
+  const isImage = mime.startsWith('image/');
+  if (!isImage && typeof previewData.textPreview === 'string') {
+    const previewLimitText = previewData.previewLimit || 'file preview reads up to 1MB';
+    container.innerHTML = `<div style="text-align:left;padding:12px;overflow:auto;max-height:100%;">
+      <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
+        ${escapeHtml(previewLimitText)}
+      </div>
+      <pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:280px;margin:0;padding:8px;">${escapeHtml(previewData.textPreview)}</pre>
+      <p style="color:var(--text-dim);margin-top:8px;font-size:11px;text-align:center;">${escapeHtml(meta.fileName || 'file preview')}</p>
+    </div>`;
+    return;
+  }
   
-  // 显示预览限制提示
-  const previewLimitText = previewData.previewLimit || '图像数据最多预览前5MB数据';
+  const previewLimitText = previewData.previewLimit
+    || (isImage ? '图片文件最多预览前5MB数据' : '文件数据最多预览前1MB字节流');
+  const body = isImage
+    ? `<img src="data:${mime};base64,${previewData.base64}" 
+         style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
+         alt="${escapeHtml(meta.fileName || 'file')}">`
+    : `<div class="preview-placeholder">文件已存储，可通过下载访问完整内容</div>`;
   
   container.innerHTML = `<div style="text-align:center;padding:12px;overflow:auto;max-height:100%;">
     <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
-      ℹ️ ${escapeHtml(previewLimitText)}
+      ${escapeHtml(previewLimitText)}
     </div>
-    <img src="data:${mime};base64,${previewData.base64}" 
-         style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
-         alt="${meta.fileName || 'image'}">
-    <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${meta.fileName || '图像预览'}</p>
+    ${body}
+    <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${escapeHtml(meta.fileName || '文件预览')}</p>
   </div>`;
 }
 
@@ -2869,7 +2876,7 @@ function renderTablePreview(container, previewData, dataType) {
     const row = rows[i];
     for (let j = 0; j < cols.length; j++) {
       const val = j < row.length ? row[j] : '';
-      html += `<td>${escapeHtml(String(val != null ? val : ''))}</td>`;
+      html += `<td>${escapeHtml(formatPreviewCell(val))}</td>`;
     }
     html += '</tr>';
   }
@@ -2879,6 +2886,26 @@ function renderTablePreview(container, previewData, dataType) {
   }
   html += '</div>';
   container.innerHTML = html;
+}
+
+function formatPreviewCell(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(formatPreviewCell).join(', ');
+  if (typeof value === 'object') {
+    if (typeof value.value === 'string' || typeof value.value === 'number' || typeof value.value === 'boolean') {
+      return String(value.value);
+    }
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.base64 === 'string') return value.base64;
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+  return String(value);
 }
 
 function renderDocumentPreview(container, content, meta) {
@@ -2900,7 +2927,7 @@ function renderDocumentPreview(container, content, meta) {
 
   container.innerHTML = `
     <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin:8px;font-size:11px;color:#ffb347;">
-      ℹ️ ${escapeHtml(previewLimitText)}
+      ${escapeHtml(previewLimitText)}
     </div>
     <pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:100%;margin:0;padding:8px;">${escapeHtml(displayContent)}</pre>`;
 }
@@ -2912,7 +2939,7 @@ function renderKeyValuePreview(container, kvData) {
   }
   let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr><th>键 (Key)</th><th>值 (Value)</th></tr></thead><tbody>';
   for (const [key, value] of Object.entries(kvData)) {
-    html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(String(value))}</td></tr>`;
+    html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(formatPreviewCell(value))}</td></tr>`;
   }
   html += '</tbody></table></div>';
   container.innerHTML = html;
@@ -2928,12 +2955,12 @@ function renderDirectoryListing(container, children, parentPath) {
     return;
   }
   const typeLabels = {
-    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    timeseries: '时序数据', relational: '关系数据', file: '文件数据',
     document: '文档数据', keyvalue: '键值数据', directory: '📁 子目录'
   };
   const typeColors = {
-    timeseries: '#00cfff', relational: '#00e68a', image: '#ff6b9d',
-    document: '#ffa800', keyvalue: '#a78bfa', directory: '#8cb8d0'
+    timeseries: '#00cfff', relational: '#00e68a', file: '#ffb347',
+    document: '#a78bfa', keyvalue: '#7dd3fc', directory: '#8cb8d0'
   };
 
   let html = '<div style="padding:8px;overflow:auto;max-height:100%;">';
@@ -3007,6 +3034,10 @@ $('access-download-btn').addEventListener('click', async () => {
 
   try {
     const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(folderPath)}&fileName=${encodeURIComponent(fileName)}`);
+    if (response.status === 204) {
+      alert('当前资产没有可下载内容');
+      return;
+    }
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(errorText || 'HTTP ' + response.status);
@@ -3023,6 +3054,10 @@ $('access-download-btn').addEventListener('click', async () => {
     }
 
     const blob = await response.blob();
+    if (!blob || blob.size === 0) {
+      alert('当前资产没有可下载内容');
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

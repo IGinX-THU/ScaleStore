@@ -7,7 +7,7 @@ import java.util.List;
 
 /**
  * Adapter interface for heterogeneous data operations.
- * Each data type (timeseries, relational, image, document, keyvalue)
+ * Each data type (timeseries, relational, file, document, keyvalue)
  * provides one implementation for:
  * 1) store
  * 2) access preview/download

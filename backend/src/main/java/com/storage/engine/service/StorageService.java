@@ -36,11 +36,7 @@ public class StorageService {
     private static final int STRUCTURED_SAMPLE_ROW_COUNT = 100;
     private static final long FULL_ROW_BYTES = 1024L * 1024L;
     private static final String DEFAULT_FILESYSTEM_STRUCT = "FileTree";
-    private static final String DEFAULT_DESCRIPTION_DOCUMENT = "description.txt";
-    private static final String SCHEMA_KNOWLEDGE_UDF = "SchemaKnowledgeExtract";
-    private static final String STATUS_SCHEMA_PROCESSING = "SCHEMA_PROCESSING";
-    private static final String STATUS_SCHEMA_SUCCESS = "SCHEMA_SUCCESS";
-    private static final String STATUS_SCHEMA_FAILED = "SCHEMA_FAILED";
+    private static final String STATUS_PENDING = "PENDING";
 
     @Autowired
     private IGinxDao iginxDao;
@@ -87,7 +83,7 @@ public class StorageService {
             throw new RuntimeException("数据源注册失败: " + e.getMessage(), e);
         }
 
-        if (context.readSchema && isFilesystemExternalSource(context)) {
+        if (isFilesystemExternalSource(context)) {
             triggerExternalSchemaMetadataSyncAsync(context);
         } else {
             triggerExternalMetadataSyncAsync(context);
@@ -98,7 +94,6 @@ public class StorageService {
         payload.put("sourceType", context.sourceType);
         payload.put("schemaPrefix", context.schemaPrefix);
         payload.put("mappedDataType", context.mappedDataType);
-        payload.put("readSchema", Boolean.valueOf(context.readSchema));
         payload.put("syncStatus", "REGISTERED");
         payload.put("message", "添加数据源成功，数据源已注册，后台将持续进行解析");
         return payload;
@@ -115,6 +110,7 @@ public class StorageService {
                         "External-Source");
 
                 ExternalMetaSyncResult syncResult = syncExternalMetadata(asyncContext);
+                persistImportedTrees(syncResult);
                 logger.info(
                     "[ExternalSource] Async metadata sync finished. sourceType={}, schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
                     asyncContext.sourceType,
@@ -154,11 +150,12 @@ public class StorageService {
             try {
                 metadataExtractionSchedulerService.publishExternalSourceEvent(
                         "running",
-                        "SCHEMA_STARTED",
+                        "STARTED",
                         "Filesystem schema extraction started: schemaPrefix=" + safe(asyncContext.schemaPrefix),
                         "External-Source");
 
                 ExternalMetaSyncResult syncResult = syncExternalSchemaMetadata(asyncContext);
+                persistImportedTrees(syncResult);
                 logger.info(
                     "[ExternalSource] Async schema metadata sync finished. schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
                     asyncContext.schemaPrefix,
@@ -169,7 +166,7 @@ public class StorageService {
 
                 metadataExtractionSchedulerService.publishExternalSourceEvent(
                         "success",
-                        "SCHEMA_DONE",
+                        "DONE",
                         "Filesystem schema extraction completed: schemaPrefix=" + safe(asyncContext.schemaPrefix)
                                 + ", imported=" + syncResult.importedCount
                                 + ", skipped=" + syncResult.skippedCount,
@@ -178,7 +175,7 @@ public class StorageService {
                 logger.error("[ExternalSource] Async schema metadata sync failed. schemaPrefix={}", asyncContext.schemaPrefix, ex);
                 metadataExtractionSchedulerService.publishExternalSourceEvent(
                         "warn",
-                        "SCHEMA_FAILED",
+                        "FAILED",
                         "Filesystem schema extraction failed: schemaPrefix=" + safe(asyncContext.schemaPrefix)
                                 + ", reason=" + safe(ex.getMessage()),
                         "External-Source");
@@ -206,8 +203,6 @@ public class StorageService {
         copy.sshPassword = src.sshPassword;
         copy.sshPort = src.sshPort;
         copy.sshFileSizeCache = src.sshFileSizeCache;
-        copy.readSchema = src.readSchema;
-        copy.descriptionDocument = src.descriptionDocument;
         return copy;
     }
 
@@ -218,6 +213,7 @@ public class StorageService {
     public synchronized DataItem storeData(MultipartFile file, String logicalPath, String dataType) throws Exception {
         // Normalize logical path
         logicalPath = normalizePath(logicalPath);
+        dataType = canonicalDataType(dataType);
 
         // Reject root path
         if ("/".equals(logicalPath)) {
@@ -252,6 +248,7 @@ public class StorageService {
         String contentPath = buildContentPath(iginxPath, dataType);
 
         // Store metadata
+        ensureDirectoryAssetsInMeta(logicalPath, createTime, accessService.getAllMeta());
         iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime);
 
         // Delegate to adapter for actual data storage
@@ -270,7 +267,17 @@ public class StorageService {
         item.setContentPath(contentPath);
 
         dataSourceService.increaseDefaultDataSourceSize(fileSize);
+        metadataExtractionSchedulerService.persistMetadataTreeAsync(item);
         return item;
+    }
+
+    private void persistImportedTrees(ExternalMetaSyncResult syncResult) {
+        if (syncResult == null) {
+            return;
+        }
+        for (DataItem item : syncResult.importedItems) {
+            metadataExtractionSchedulerService.persistMetadataTreeAsync(item);
+        }
     }
 
     private long allocateMetaId() {
@@ -313,7 +320,114 @@ public class StorageService {
         String type = safe(dataType).toLowerCase(Locale.ROOT);
         return IGinxConstants.TYPE_RELATIONAL.equals(type)
                 || IGinxConstants.TYPE_TIMESERIES.equals(type)
-                || IGinxConstants.TYPE_KEYVALUE.equals(type);
+                || IGinxConstants.TYPE_KEYVALUE.equals(type)
+                || IGinxConstants.TYPE_DOCUMENT.equals(type);
+    }
+
+    private int ensureDirectoryAssetsInMeta(String leafParentLogicalPath,
+                                            String createTime,
+                                            List<DataItem> existingMeta) {
+        List<String> directories = buildDirectoryAssetPaths(leafParentLogicalPath);
+        if (directories.isEmpty()) {
+            return 0;
+        }
+        List<DataItem> metaIndex = existingMeta == null ? new ArrayList<DataItem>() : existingMeta;
+        int inserted = 0;
+        for (String dirPath : directories) {
+            String dirName = getFileNameFromLogicalPath(dirPath);
+            String parentPath = parentLogicalPath(dirPath);
+            DataItem existing = findDirectoryMetaByPathAndFile(metaIndex, parentPath, dirName);
+            DataItem legacy = findDirectoryMetaByPathAndFile(metaIndex, dirPath, dirName);
+            if (legacy != null && legacy.getId() != null) {
+                iginxDao.deleteMeta(legacy.getId().longValue());
+                legacy.setIsValid(false);
+            }
+            if (existing != null) {
+                continue;
+            }
+            long metaId = allocateMetaId();
+            iginxDao.insertMeta(
+                    metaId,
+                    parentPath,
+                    IGinxConstants.TYPE_DIRECTORY,
+                    dirName,
+                    "",
+                    0L,
+                    "",
+                    createTime,
+                    STATUS_PENDING);
+
+            DataItem added = new DataItem();
+            added.setId((int) metaId);
+            added.setLogicalPath(parentPath);
+            added.setFileName(dirName);
+            added.setDataType(IGinxConstants.TYPE_DIRECTORY);
+            added.setContentPath("");
+            added.setFileSize(0L);
+            added.setIsValid(true);
+            added.setKnowledgeExtractStatus(STATUS_PENDING);
+            metaIndex.add(added);
+            inserted++;
+        }
+        return inserted;
+    }
+
+    private List<String> buildDirectoryAssetPaths(String leafParentLogicalPath) {
+        List<String> out = new ArrayList<String>();
+        String normalized = normalizePath(leafParentLogicalPath);
+        if ("/".equals(normalized)) {
+            return out;
+        }
+        String[] parts = normalized.substring(1).split("/");
+        StringBuilder current = new StringBuilder();
+        for (String part : parts) {
+            String seg = safe(part);
+            if (seg.isEmpty()) {
+                continue;
+            }
+            current.append('/').append(seg);
+            out.add(current.toString());
+        }
+        return out;
+    }
+
+    private String parentLogicalPath(String path) {
+        String normalized = normalizePath(path);
+        if ("/".equals(normalized)) {
+            return "/";
+        }
+        int idx = normalized.lastIndexOf('/');
+        if (idx <= 0) {
+            return "/";
+        }
+        return normalized.substring(0, idx);
+    }
+
+    private DataItem findDirectoryMetaByPathAndFile(List<DataItem> items, String logicalPath, String fileName) {
+        if (items == null) {
+            return null;
+        }
+        String targetPath = normalizePath(logicalPath);
+        String targetFile = normalizeFileName(fileName);
+        DataItem picked = null;
+        for (DataItem item : items) {
+            if (item == null || Boolean.FALSE.equals(item.getIsValid())) {
+                continue;
+            }
+            if (!IGinxConstants.TYPE_DIRECTORY.equals(safe(item.getDataType()).toLowerCase(Locale.ROOT))) {
+                continue;
+            }
+            if (!targetPath.equals(normalizePath(item.getLogicalPath()))) {
+                continue;
+            }
+            if (!targetFile.equals(normalizeFileName(item.getFileName()))) {
+                continue;
+            }
+            if (picked == null || compareItemId(item, picked) > 0) {
+                picked = item;
+            }
+        }
+        return picked;
     }
 
     // ==================== Utility Methods ====================
@@ -338,6 +452,7 @@ public class StorageService {
         for (String assetPath : assetPaths) {
             String logicalPath = toExternalLogicalPath(assetPath, context);
             String fileName = deriveExternalFileName(assetPath, context, logicalPath);
+            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta);
             DataItem existing = findMetaByPathAndFile(existingMeta, logicalPath, fileName);
             if (existing != null) {
                 result.skippedCount++;
@@ -380,6 +495,7 @@ public class StorageService {
             added.setContentPath(contentPath);
             added.setFileSize(estimatedFileSize);
             existingMeta.add(added);
+            result.importedItems.add(added);
 
             pendingSizeDelta += Math.max(0L, estimatedFileSize);
             pendingFlushFiles++;
@@ -429,8 +545,6 @@ public class StorageService {
 
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
         List<DataItem> existingMeta = accessService.getAllMeta();
-        List<Long> importedMetaIds = new ArrayList<Long>();
-
         long pendingSizeDelta = 0L;
         int pendingFlushFiles = 0;
 
@@ -438,6 +552,7 @@ public class StorageService {
             String assetPath = asset.assetPath;
             String logicalPath = toFilesystemFolderLogicalPath(assetPath, context);
             String fileName = deriveExternalFileName(assetPath, context, logicalPath);
+            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta);
 
             int removedColumnMetas = deleteLegacySchemaColumnMetas(existingMeta, logicalPath, fileName);
             if (removedColumnMetas > 0) {
@@ -476,13 +591,11 @@ public class StorageService {
                     estimatedFileSize,
                     fileFormat,
                     createTime,
-                    STATUS_SCHEMA_PROCESSING);
+                    STATUS_PENDING);
 
             result.importedCount++;
             result.totalEstimatedSize += Math.max(0L, estimatedFileSize);
             result.importedLogicalPaths.add(normalizePath(logicalPath + "/" + fileName));
-            importedMetaIds.add(Long.valueOf(metaId));
-
             DataItem added = new DataItem();
             added.setId((int) metaId);
             added.setLogicalPath(logicalPath);
@@ -490,8 +603,9 @@ public class StorageService {
             added.setDataType(inferredDataType);
             added.setContentPath(contentPath);
             added.setFileSize(estimatedFileSize);
-            added.setKnowledgeExtractStatus(STATUS_SCHEMA_PROCESSING);
+            added.setKnowledgeExtractStatus(STATUS_PENDING);
             existingMeta.add(added);
+            result.importedItems.add(added);
 
             pendingSizeDelta += Math.max(0L, estimatedFileSize);
             pendingFlushFiles++;
@@ -509,71 +623,7 @@ public class StorageService {
             dataSourceService.increaseExternalDataSourceSize(context.schemaPrefix, pendingSizeDelta);
         }
 
-        if (!importedMetaIds.isEmpty()) {
-            triggerSchemaKnowledgeExtractionAsync(context, columnSchemas, importedMetaIds);
-        }
-
         return result;
-    }
-
-    private void triggerSchemaKnowledgeExtractionAsync(
-            AddSourceContext context,
-            List<ColumnSchema> columnSchemas,
-            List<Long> metaIds) {
-        final AddSourceContext asyncContext = copyContext(context);
-        final List<ColumnSchema> asyncColumnSchemas = columnSchemas == null
-                ? Collections.emptyList()
-                : new ArrayList<ColumnSchema>(columnSchemas);
-        final List<Long> asyncMetaIds = metaIds == null
-                ? Collections.emptyList()
-                : new ArrayList<Long>(metaIds);
-
-        if (asyncMetaIds.isEmpty()) {
-            return;
-        }
-
-        CompletableFuture.runAsync(() -> {
-            boolean udfSuccess = false;
-            SchemaKnowledgeUdfResult udfResult = null;
-            try {
-                metadataExtractionSchedulerService.publishExternalSourceEvent(
-                        "running",
-                        "SCHEMA_UDF_STARTED",
-                        "SchemaKnowledgeExtract started: schemaPrefix=" + safe(asyncContext.schemaPrefix),
-                        "External-Source");
-
-                String description = readFilesystemDescription(asyncContext, asyncColumnSchemas);
-                udfResult = executeSchemaKnowledgeExtractUdf(asyncContext, description);
-                udfSuccess = udfResult.success;
-                if (!udfSuccess) {
-                    throw new IllegalStateException(udfResult.message);
-                }
-                metadataExtractionSchedulerService.publishExternalSourceEvent(
-                        "success",
-                        "SCHEMA_UDF_DONE",
-                        "SchemaKnowledgeExtract completed: assets=" + udfResult.assetCount
-                                + ", entities=" + udfResult.entityCount
-                                + ", relations=" + udfResult.relationCount,
-                        "External-Source");
-            } catch (Exception ex) {
-                logger.error("[ExternalSource] Async schema knowledge extraction failed. schemaPrefix={}",
-                        asyncContext.schemaPrefix,
-                        ex);
-                udfResult = new SchemaKnowledgeUdfResult();
-                udfResult.success = false;
-                udfResult.message = ex.getMessage();
-            } finally {
-                updateMetaKnowledgeStatuses(asyncMetaIds, udfSuccess ? STATUS_SCHEMA_SUCCESS : STATUS_SCHEMA_FAILED);
-                if (!udfSuccess) {
-                    String reason = udfResult == null ? "SchemaKnowledgeExtract failed" : udfResult.message;
-                    metadataExtractionSchedulerService.publishExternalSourceEvent(
-                            "warn",
-                            "SCHEMA_UDF_FAILED",
-                            "SchemaKnowledgeExtract failed: " + safe(reason),
-                            "External-Source");
-                }
-            }
-        });
     }
 
     private boolean shouldRefreshSchemaMeta(DataItem existing, String expectedDataType, String expectedContentPath) {
@@ -661,22 +711,7 @@ public class StorageService {
         if (ext.isEmpty()) {
             return false;
         }
-        return isImageExtension(ext)
-                || isStructuredTextExtension(ext)
-                || isKeyValueExtension(ext)
-                || isDocumentExtension(ext)
-                || "log".equals(ext)
-                || "text".equals(ext)
-                || "xlsx".equals(ext)
-                || "xls".equals(ext);
-    }
-
-    private boolean isDescriptionDocumentFile(String fileName, AddSourceContext context) {
-        String target = normalizeFileName(context == null ? DEFAULT_DESCRIPTION_DOCUMENT : context.descriptionDocument);
-        if (target.isEmpty()) {
-            target = DEFAULT_DESCRIPTION_DOCUMENT;
-        }
-        return target.equalsIgnoreCase(normalizeFileName(fileName));
+        return true;
     }
 
     private String joinEscapedPathSegments(List<String> segments) {
@@ -704,16 +739,13 @@ public class StorageService {
     private String inferSchemaFilesystemDataType(String fileName, String fileFormat, List<ColumnSchema> columns) {
         String ext = safe(fileFormat).toLowerCase(Locale.ROOT);
         String lowerName = safe(fileName).toLowerCase(Locale.ROOT);
-        if (isImageExtension(ext)) {
-            return IGinxConstants.TYPE_IMAGE;
-        }
-        if ("csv".equals(ext) || "tsv".equals(ext)) {
+        if ("csv".equals(ext)) {
             if (looksLikeTimeseriesName(lowerName) || hasTimeLikeColumn(columns)) {
                 return IGinxConstants.TYPE_TIMESERIES;
             }
             return IGinxConstants.TYPE_RELATIONAL;
         }
-        return IGinxConstants.TYPE_DOCUMENT;
+        return IGinxConstants.TYPE_FILE;
     }
 
     private boolean hasTimeLikeColumn(List<ColumnSchema> columns) {
@@ -1022,253 +1054,6 @@ public class StorageService {
         }
         sb.append("]");
         return sb.toString();
-    }
-
-    private void updateMetaKnowledgeStatuses(List<Long> metaIds, String status) {
-        if (metaIds == null) {
-            return;
-        }
-        for (Long metaId : metaIds) {
-            if (metaId == null) {
-                continue;
-            }
-            iginxDao.updateMetaKnowledgeStatus(metaId.longValue(), status);
-        }
-    }
-
-    private String readFilesystemDescription(AddSourceContext context, List<ColumnSchema> schemas) {
-        String document = normalizeDescriptionDocument(context == null ? "" : context.descriptionDocument);
-        String parentPath = deriveFilesystemDescriptionParentPath(context, schemas, document);
-        String leafName = getDescriptionDocumentLeaf(document);
-        String sql = "select " + StorageUtils.quoteIdentifierSegment(escapePathSegment(leafName))
-                + " from " + StorageUtils.quoteIdentifierPath(parentPath)
-                + " limit 1;";
-        try {
-            SessionExecuteSqlResult result = iginxDao.executeSql(sql);
-            return firstResultValueAsText(result);
-        } catch (Exception e) {
-            logger.warn("[ExternalSource] Failed to read {}, continue with empty description. parentPath={}",
-                    document, parentPath, e);
-            return "";
-        }
-    }
-
-    private String normalizeDescriptionDocument(String document) {
-        String text = safe(document).replace('\\', '/');
-        while (text.startsWith("/")) {
-            text = text.substring(1);
-        }
-        if (text.isEmpty()) {
-            return DEFAULT_DESCRIPTION_DOCUMENT;
-        }
-        return text;
-    }
-
-    private String getDescriptionDocumentLeaf(String document) {
-        String text = normalizeDescriptionDocument(document);
-        int slash = text.lastIndexOf('/');
-        if (slash >= 0 && slash < text.length() - 1) {
-            return text.substring(slash + 1);
-        }
-        return text;
-    }
-
-    private List<String> getDescriptionDocumentParentSegments(String document) {
-        String text = normalizeDescriptionDocument(document);
-        int slash = text.lastIndexOf('/');
-        if (slash <= 0) {
-            return Collections.emptyList();
-        }
-        String parent = text.substring(0, slash);
-        List<String> segments = new ArrayList<String>();
-        for (String part : parent.split("/+")) {
-            String seg = safe(part);
-            if (!seg.isEmpty()) {
-                segments.add(seg);
-            }
-        }
-        return segments;
-    }
-
-    private String deriveFilesystemDescriptionParentPath(AddSourceContext context, List<ColumnSchema> schemas, String document) {
-        if (context == null) {
-            return "";
-        }
-        int prefixSize = splitUnescapedSegments(context.schemaPrefix).size();
-        List<String> relativeParent = getDescriptionDocumentParentSegments(document);
-        if (schemas != null) {
-            for (ColumnSchema schema : schemas) {
-                if (schema == null || schema.path.isEmpty()) {
-                    continue;
-                }
-                List<String> segments = splitUnescapedSegments(schema.path);
-                if (segments.size() > prefixSize) {
-                    List<String> parentSegments = new ArrayList<String>();
-                    parentSegments.addAll(splitUnescapedSegments(context.schemaPrefix));
-                    parentSegments.add(segments.get(prefixSize));
-                    parentSegments.addAll(relativeParent);
-                    return joinEscapedPathSegments(parentSegments);
-                }
-            }
-        }
-        if (relativeParent.isEmpty()) {
-            return context.schemaPrefix;
-        }
-        List<String> parentSegments = new ArrayList<String>();
-        parentSegments.addAll(splitUnescapedSegments(context.schemaPrefix));
-        parentSegments.addAll(relativeParent);
-        return joinEscapedPathSegments(parentSegments);
-    }
-
-    private String firstResultValueAsText(SessionExecuteSqlResult result) {
-        if (result == null || result.getValues() == null) {
-            return "";
-        }
-        for (List<Object> row : result.getValues()) {
-            if (row == null) {
-                continue;
-            }
-            for (Object value : row) {
-                String text = valueAsString(value);
-                if (!text.isEmpty()) {
-                    return text;
-                }
-            }
-        }
-        return "";
-    }
-
-    private SchemaKnowledgeUdfResult executeSchemaKnowledgeExtractUdf(AddSourceContext context, String description) {
-        String showColumnsSql = buildShowColumnsSql(context.schemaPrefix);
-        String sql = "select " + SCHEMA_KNOWLEDGE_UDF
-                + "(*, description='" + escapeSqlLiteral(description) + "'"
-                + ", descriptionDocument='" + escapeSqlLiteral(context.descriptionDocument) + "'"
-                + ", logicalPath='" + escapeSqlLiteral(EXTERN_LOGICAL_PREFIX + "/" + context.logicalSourceKey) + "'"
-                + ", schemaPrefix='" + escapeSqlLiteral(context.schemaPrefix) + "'"
-                + ", sourceType='" + escapeSqlLiteral(context.sourceType) + "')"
-                + " from (" + trimTrailingSemicolon(showColumnsSql) + ");";
-        logger.info("[ExternalSource] Schema knowledge UDF SQL: {}", sql);
-        SessionExecuteSqlResult result = iginxDao.executeLongRunningSql(sql);
-        return parseSchemaKnowledgeUdfResult(result);
-    }
-
-    private SchemaKnowledgeUdfResult parseSchemaKnowledgeUdfResult(SessionExecuteSqlResult result) {
-        SchemaKnowledgeUdfResult out = new SchemaKnowledgeUdfResult();
-        if (result == null || result.getValues() == null) {
-            out.success = true;
-            out.message = "SchemaKnowledgeExtract returned empty result";
-            return out;
-        }
-
-        Map<String, Integer> indexes = buildSchemaKnowledgeResultIndexes(result.getPaths());
-        for (List<Object> row : result.getValues()) {
-            if (row == null) {
-                continue;
-            }
-            SchemaKnowledgeUdfResult named = parseSchemaKnowledgeNamedRow(row, indexes);
-            if (named != null) {
-                return named;
-            }
-            if (row.size() >= 5) {
-                String status = valueAsString(row.get(0));
-                if ("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status)) {
-                    out.success = "SUCCESS".equalsIgnoreCase(status);
-                    out.assetCount = valueAsInt(row.get(1));
-                    out.entityCount = valueAsInt(row.get(2));
-                    out.relationCount = valueAsInt(row.get(3));
-                    out.message = valueAsString(row.get(4));
-                    return out;
-                }
-                status = valueAsString(row.get(4));
-                if ("SUCCESS".equalsIgnoreCase(status) || "FAILED".equalsIgnoreCase(status)) {
-                    out.success = "SUCCESS".equalsIgnoreCase(status);
-                    out.assetCount = valueAsInt(row.get(0));
-                    out.entityCount = valueAsInt(row.get(1));
-                    out.message = valueAsString(row.get(2));
-                    out.relationCount = valueAsInt(row.get(3));
-                    return out;
-                }
-            }
-            for (int i = 0; i < row.size(); i++) {
-                String text = valueAsString(row.get(i));
-                if ("FAILED".equalsIgnoreCase(text)) {
-                    out.success = false;
-                    out.message = "SchemaKnowledgeExtract returned FAILED";
-                    return out;
-                }
-            }
-        }
-        out.success = true;
-        out.message = "SchemaKnowledgeExtract completed";
-        return out;
-    }
-
-    private Map<String, Integer> buildSchemaKnowledgeResultIndexes(List<String> paths) {
-        Map<String, Integer> indexes = new HashMap<String, Integer>();
-        if (paths == null) {
-            return indexes;
-        }
-        for (int i = 0; i < paths.size(); i++) {
-            String name = normalizeResultColumnName(paths.get(i));
-            if (!name.isEmpty() && !indexes.containsKey(name)) {
-                indexes.put(name, Integer.valueOf(i));
-            }
-        }
-        return indexes;
-    }
-
-    private String normalizeResultColumnName(String path) {
-        String text = safe(path);
-        if (text.isEmpty()) {
-            return "";
-        }
-        List<String> segments = splitUnescapedSegments(text);
-        if (!segments.isEmpty()) {
-            text = segments.get(segments.size() - 1);
-        }
-        return text.replace("_", "").replace("-", "").toLowerCase(Locale.ROOT);
-    }
-
-    private SchemaKnowledgeUdfResult parseSchemaKnowledgeNamedRow(List<Object> row, Map<String, Integer> indexes) {
-        if (indexes == null || indexes.isEmpty()) {
-            return null;
-        }
-        Integer statusIdx = indexes.get("status");
-        if (!isValidRowIndex(row, statusIdx)) {
-            return null;
-        }
-        String status = valueAsString(row.get(statusIdx.intValue()));
-        if (!"SUCCESS".equalsIgnoreCase(status) && !"FAILED".equalsIgnoreCase(status)) {
-            return null;
-        }
-
-        SchemaKnowledgeUdfResult out = new SchemaKnowledgeUdfResult();
-        out.success = "SUCCESS".equalsIgnoreCase(status);
-        out.assetCount = valueAsInt(rowValue(row, indexes.get("assetcount")));
-        out.entityCount = valueAsInt(rowValue(row, indexes.get("entitycount")));
-        out.relationCount = valueAsInt(rowValue(row, indexes.get("relationcount")));
-        out.message = valueAsString(rowValue(row, indexes.get("message")));
-        return out;
-    }
-
-    private Object rowValue(List<Object> row, Integer idx) {
-        return isValidRowIndex(row, idx) ? row.get(idx.intValue()) : null;
-    }
-
-    private boolean isValidRowIndex(List<Object> row, Integer idx) {
-        return row != null && idx != null && idx.intValue() >= 0 && idx.intValue() < row.size();
-    }
-
-    private String trimTrailingSemicolon(String sql) {
-        String text = safe(sql);
-        while (text.endsWith(";")) {
-            text = text.substring(0, text.length() - 1).trim();
-        }
-        return text;
-    }
-
-    private String escapeSqlLiteral(String value) {
-        return value == null ? "" : value.replace("'", "''");
     }
 
     private List<ColumnSchema> parseShowColumnsSchemas(SessionExecuteSqlResult result) {
@@ -1643,7 +1428,11 @@ public class StorageService {
             }
 
             String assetPath = path;
-            if (collapseByLastSegment && countPathSegments(path) > 3) {
+            if ("redis".equals(context.sourceType)) {
+                assetPath = context.schemaPrefix;
+            } else if ("mongodb".equals(context.sourceType)) {
+                assetPath = deriveMongoCollectionAssetPath(path, context);
+            } else if (collapseByLastSegment && countPathSegments(path) > 3) {
                 int splitIdx = findLastUnescapedDot(path);
                 if (splitIdx > 0) {
                     assetPath = path.substring(0, splitIdx);
@@ -1656,6 +1445,19 @@ public class StorageService {
         }
 
         return assets;
+    }
+
+    private String deriveMongoCollectionAssetPath(String columnPath, AddSourceContext context) {
+        List<String> segments = splitUnescapedSegments(columnPath);
+        int startIndex = splitUnescapedSegments(context.schemaPrefix).size();
+        if (segments.size() >= startIndex + 2) {
+            List<String> assetSegments = new ArrayList<String>();
+            for (int i = 0; i < startIndex + 2; i++) {
+                assetSegments.add(segments.get(i));
+            }
+            return joinEscapedPathSegments(assetSegments);
+        }
+        return columnPath;
     }
 
     private String toExternalLogicalPath(String assetPath, AddSourceContext context) {
@@ -1753,7 +1555,7 @@ public class StorageService {
             return false;
         }
         String t = safe(context.sourceType).toLowerCase(Locale.ROOT);
-        return "mysql".equals(t) || "postgres".equals(t) || "iotdb".equals(t);
+        return "mysql".equals(t) || "postgres".equals(t) || "iotdb".equals(t) || "mongodb".equals(t) || "redis".equals(t);
     }
 
     private boolean isFilesystemExternalSource(AddSourceContext context) {
@@ -1915,14 +1717,14 @@ public class StorageService {
         context.sshUsername = safe(request.getSshUsername());
         context.sshPassword = safe(request.getSshPassword());
         context.sshPort = request.getSshPort() == null ? 22 : request.getSshPort().intValue();
-        context.readSchema = Boolean.TRUE.equals(request.getReadSchema());
-        context.descriptionDocument = normalizeDescriptionDocument(request.getDescriptionDocument());
 
         if (!("filesystem".equals(context.sourceType)
                 || "mysql".equals(context.sourceType)
                 || "postgres".equals(context.sourceType)
-                || "iotdb".equals(context.sourceType))) {
-            throw new IllegalArgumentException("sourceType 仅支持 filesystem/mysql/postgres/iotdb");
+                || "iotdb".equals(context.sourceType)
+                || "mongodb".equals(context.sourceType)
+                || "redis".equals(context.sourceType))) {
+            throw new IllegalArgumentException("sourceType only supports filesystem/mysql/postgres/iotdb/mongodb/redis");
         }
 
         if (context.ip.isEmpty()) {
@@ -1953,13 +1755,15 @@ public class StorageService {
             }
             
             context.mappedDataType = IGinxConstants.TYPE_DOCUMENT;
-        } else if (context.readSchema) {
-            throw new IllegalArgumentException("readSchema only supports filesystem");
         } else if ("iotdb".equals(context.sourceType)) {
             if (context.username.isEmpty() || context.password.isEmpty()) {
                 throw new IllegalArgumentException("iotdb 类型必须填写 username 和 password");
             }
             context.mappedDataType = IGinxConstants.TYPE_TIMESERIES;
+        } else if ("mongodb".equals(context.sourceType)) {
+            context.mappedDataType = IGinxConstants.TYPE_DOCUMENT;
+        } else if ("redis".equals(context.sourceType)) {
+            context.mappedDataType = IGinxConstants.TYPE_KEYVALUE;
         } else {
             if (context.username.isEmpty() || context.password.isEmpty()) {
                 throw new IllegalArgumentException("mysql/postgres 类型必须填写 username 和 password");
@@ -1984,10 +1788,8 @@ public class StorageService {
             options.add("schema_prefix \"" + escapeOption(schemaPrefix) + "\"");
             options.add("dummy_dir \"" + escapeOption(context.dummyDir) + "\"");
             options.add("iginx_port \"" + context.iginxPort + "\"");
-            if (context.readSchema) {
-                options.add("dummy.struct \"" + DEFAULT_FILESYSTEM_STRUCT + "\"");
-                options.add("dummy.config.formats.CSV.inferSchema \"true\"");
-            }
+            options.add("dummy.struct \"" + DEFAULT_FILESYSTEM_STRUCT + "\"");
+            options.add("dummy.config.formats.CSV.inferSchema \"true\"");
             return String.format(
                     Locale.ROOT,
                     "ADD STORAGEENGINE (\"%s\", %d, \"filesystem\", OPTIONS (%s));",
@@ -2007,6 +1809,16 @@ public class StorageService {
                     escapeOption(context.username),
                     escapeOption(context.password),
                     schemaPrefix);
+        }
+
+        if ("mongodb".equals(context.sourceType) || "redis".equals(context.sourceType)) {
+            return String.format(
+                    Locale.ROOT,
+                    "ADD STORAGEENGINE (\"%s\", %d, \"%s\", OPTIONS (schema_prefix \"%s\"));",
+                    ip,
+                    context.port,
+                    context.sourceType,
+                    escapeOption(schemaPrefix));
         }
 
         return String.format(
@@ -2127,6 +1939,10 @@ public class StorageService {
         return name.replaceAll("[\r\n]", "").trim();
     }
 
+    private String canonicalDataType(String dataType) {
+        return safe(dataType).toLowerCase(Locale.ROOT);
+    }
+
     private String inferExternalDataType(AddSourceContext context, String fileName, String fileFormat) {
         if (context == null) {
             return IGinxConstants.TYPE_DOCUMENT;
@@ -2138,17 +1954,12 @@ public class StorageService {
         String ext = safe(fileFormat).toLowerCase(Locale.ROOT);
         String lowerName = safe(fileName).toLowerCase(Locale.ROOT);
 
-        if (isImageExtension(ext)) {
-            return IGinxConstants.TYPE_IMAGE;
+        if ("csv".equals(ext)) {
+            return looksLikeTimeseriesName(lowerName)
+                    ? IGinxConstants.TYPE_TIMESERIES
+                    : IGinxConstants.TYPE_RELATIONAL;
         }
-
-        if (lowerName.endsWith(".jpg") || lowerName.endsWith(".jpeg")
-                || lowerName.endsWith(".png") || lowerName.endsWith(".bmp")
-                || lowerName.endsWith(".gif") || lowerName.endsWith(".webp")) {
-            return IGinxConstants.TYPE_IMAGE;
-        }
-
-        return IGinxConstants.TYPE_DOCUMENT;
+        return IGinxConstants.TYPE_FILE;
     }
 
     private boolean isImageExtension(String ext) {
@@ -2161,7 +1972,8 @@ public class StorageService {
     }
 
     private boolean isKeyValueExtension(String ext) {
-        return "json".equals(ext)
+        return "properties".equals(ext)
+                || "env".equals(ext)
                 || "yaml".equals(ext)
                 || "yml".equals(ext);
     }
@@ -2174,6 +1986,7 @@ public class StorageService {
 
     private boolean isDocumentExtension(String ext) {
         return "xml".equals(ext)
+                || "json".equals(ext)
                 || "md".equals(ext)
                 || "rst".equals(ext)
                 || "html".equals(ext)
@@ -2181,6 +1994,11 @@ public class StorageService {
                 || "pdf".equals(ext)
                 || "doc".equals(ext)
                 || "docx".equals(ext);
+    }
+
+    private boolean isExpandedDocumentExtension(String ext) {
+        return "json".equals(ext)
+                || "xml".equals(ext);
     }
 
     private boolean looksLikeTimeseriesName(String lowerName) {
@@ -2227,20 +2045,6 @@ public class StorageService {
         }
     }
 
-    private int valueAsInt(Object value) {
-        Long parsed = valueAsLong(value);
-        if (parsed == null) {
-            return 0;
-        }
-        if (parsed > Integer.MAX_VALUE) {
-            return Integer.MAX_VALUE;
-        }
-        if (parsed < Integer.MIN_VALUE) {
-            return Integer.MIN_VALUE;
-        }
-        return parsed.intValue();
-    }
-
     private long estimateFilesystemSizeBySSH(String assetPath, AddSourceContext context) {
         try {
             String relativePath = extractRelativePathFromAsset(assetPath, context);
@@ -2276,10 +2080,10 @@ public class StorageService {
             
             logger.warn("[ExternalSource] SSH cache did not contain size for file '{}'. Available files: {}", 
                     relativePath, context.sshFileSizeCache.keySet());
-            return estimateFilesystemExternalAssetSize(assetPath);
+            return estimateFilesystemExternalAssetActualSize(assetPath);
         } catch (Exception e) {
             logger.error("[ExternalSource] Failed to estimate filesystem size by SSH, fallback to system calculation", e);
-            return estimateFilesystemExternalAssetSize(assetPath);
+            return estimateFilesystemExternalAssetActualSize(assetPath);
         }
     }
 
@@ -2382,8 +2186,6 @@ public class StorageService {
         private String sshPassword;
         private int sshPort;
         private Map<String, Long> sshFileSizeCache;
-        private boolean readSchema;
-        private String descriptionDocument;
     }
 
     private static class ExternalMetaSyncResult {
@@ -2393,6 +2195,7 @@ public class StorageService {
         private int replacedCount;
         private long totalEstimatedSize;
         private final List<String> importedLogicalPaths = new ArrayList<String>();
+        private final List<DataItem> importedItems = new ArrayList<DataItem>();
     }
 
     private static class ColumnSchema {
@@ -2412,13 +2215,5 @@ public class StorageService {
         private FilesystemSchemaAsset(String assetPath) {
             this.assetPath = assetPath == null ? "" : assetPath.trim();
         }
-    }
-
-    private static class SchemaKnowledgeUdfResult {
-        private boolean success;
-        private int assetCount;
-        private int entityCount;
-        private int relationCount;
-        private String message;
     }
 }
