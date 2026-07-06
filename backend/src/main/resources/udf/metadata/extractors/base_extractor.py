@@ -5,6 +5,11 @@ import re
 
 class BaseMetadataExtractor(object):
     __metaclass__ = abc.ABCMeta
+    DEFAULT_MAX_RAW_IMAGE_BYTES = 64 * 1024 * 1024
+    DEFAULT_MAX_VLM_IMAGE_BYTES = 4 * 1024 * 1024
+    DEFAULT_MAX_VLM_IMAGE_SIDE = 1280
+    DEFAULT_MIN_VLM_IMAGE_SIDE = 512
+    DEFAULT_VLM_IMAGE_JPEG_QUALITY = 85
 
     def __init__(self, data, args, params):
         self.data = data
@@ -61,7 +66,10 @@ class BaseMetadataExtractor(object):
 
     def extract_binary_bytes(self, max_bytes=None):
         if max_bytes is None:
-            max_bytes = self._to_int(self.params.get("maxRawImageBytes", 64 * 1024 * 1024), 64 * 1024 * 1024)
+            max_bytes = self._to_int(
+                self.params.get("maxRawImageBytes", self.DEFAULT_MAX_RAW_IMAGE_BYTES),
+                self.DEFAULT_MAX_RAW_IMAGE_BYTES,
+            )
         if max_bytes <= 0:
             raise RuntimeError("maxRawImageBytes must be positive")
 
@@ -86,7 +94,10 @@ class BaseMetadataExtractor(object):
         if not image_bytes:
             return "", "", "image bytes not found"
 
-        max_vlm_bytes = self._to_int(self.params.get("maxVlmImageBytes", 4 * 1024 * 1024), 4 * 1024 * 1024)
+        max_vlm_bytes = self._to_int(
+            self.params.get("maxVlmImageBytes", self.DEFAULT_MAX_VLM_IMAGE_BYTES),
+            self.DEFAULT_MAX_VLM_IMAGE_BYTES,
+        )
         if max_vlm_bytes <= 0:
             raise RuntimeError("maxVlmImageBytes must be positive")
 
@@ -107,9 +118,18 @@ class BaseMetadataExtractor(object):
         except Exception as exc:
             raise RuntimeError("Pillow is required to compress large images before VLM extraction") from exc
 
-        max_side = self._to_int(self.params.get("maxVlmImageSide", 1280), 1280)
-        min_side = self._to_int(self.params.get("minVlmImageSide", 512), 512)
-        quality = self._to_int(self.params.get("vlmImageJpegQuality", 85), 85)
+        max_side = self._to_int(
+            self.params.get("maxVlmImageSide", self.DEFAULT_MAX_VLM_IMAGE_SIDE),
+            self.DEFAULT_MAX_VLM_IMAGE_SIDE,
+        )
+        min_side = self._to_int(
+            self.params.get("minVlmImageSide", self.DEFAULT_MIN_VLM_IMAGE_SIDE),
+            self.DEFAULT_MIN_VLM_IMAGE_SIDE,
+        )
+        quality = self._to_int(
+            self.params.get("vlmImageJpegQuality", self.DEFAULT_VLM_IMAGE_JPEG_QUALITY),
+            self.DEFAULT_VLM_IMAGE_JPEG_QUALITY,
+        )
 
         with Image.open(io.BytesIO(image_bytes)) as image:
             image = ImageOps.exif_transpose(image)

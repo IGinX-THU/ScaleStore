@@ -197,12 +197,6 @@ public class MetadataExtractionSchedulerService {
                 + ", fileName='" + escapeSql(item.getFileName()) + "'"
                 + ", dataType='" + escapeSql(item.getDataType()) + "'"
                 + ", fileFormat='" + escapeSql(item.getFileFormat()) + "'";
-        if (isImageFile(item)) {
-            kvargs = kvargs
-                    + ", maxRawImageBytes='67108864'"
-                    + ", maxVlmImageBytes='4194304'"
-                    + ", maxVlmImageSide='1280'";
-        }
 
         if (isDirectory(item)) {
             return "select " + udfName + "(*, " + kvargs + ") from " + IGinxConstants.STORAGE_META_PATH
@@ -360,18 +354,6 @@ public class MetadataExtractionSchedulerService {
 
     private boolean isDirectory(DataItem item) {
         return item != null && IGinxConstants.TYPE_DIRECTORY.equals(safe(item.getDataType()).toLowerCase(Locale.ROOT));
-    }
-
-    private boolean isImageFile(DataItem item) {
-        String type = safe(item == null ? "" : item.getDataType()).toLowerCase(Locale.ROOT);
-        String format = safe(item == null ? "" : item.getFileFormat()).toLowerCase(Locale.ROOT);
-        return IGinxConstants.TYPE_FILE.equals(type)
-                && ("jpg".equals(format)
-                || "jpeg".equals(format)
-                || "png".equals(format)
-                || "bmp".equals(format)
-                || "gif".equals(format)
-                || "webp".equals(format));
     }
 
     private boolean isPendingOrFailed(String status) {
