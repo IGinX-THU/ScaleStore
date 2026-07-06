@@ -343,6 +343,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             raw_keywords = dedup_strings(extracted.get("keywords", []) or [], 80)
             field_kind = self._safe(extracted.get("fieldKind", self.FIELD_KIND)) or self.FIELD_KIND
             fallback = raw_keywords or fields or entities
+            skip_keyword_normalization = bool(extracted.get("skipKeywordNormalization", False))
 
             asset = {
                 "logicalPath": self._safe(params.get("logicalPath", "")),
@@ -354,7 +355,9 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 "entities": entities,
                 "keywords": raw_keywords,
             }
-            keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
+            keywords = []
+            if not skip_keyword_normalization:
+                keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
 
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(
