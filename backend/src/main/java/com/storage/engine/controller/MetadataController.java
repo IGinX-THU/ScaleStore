@@ -2,6 +2,7 @@ package com.storage.engine.controller;
 
 import com.storage.engine.model.Response;
 import com.storage.engine.model.AgentMessageEvent;
+import com.storage.engine.model.MetadataSemanticLeafCallbackRequest;
 import com.storage.engine.service.MetadataExtractionSchedulerService;
 import com.storage.engine.service.MetadataKnowledgeService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -71,5 +72,17 @@ public class MetadataController {
         payload.put("serverTime", System.currentTimeMillis());
 
         return Response.success(payload);
+    }
+
+    @PostMapping("/metadata/extraction/semantic/leaf-callback")
+    public Response<Void> leafSemanticCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleLeafSemanticCallback(request);
+        return Response.success();
+    }
+
+    @PostMapping("/metadata/extraction/semantic/directory-callback")
+    public Response<Void> directorySemanticCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleDirectorySemanticCallback(request);
+        return Response.success();
     }
 }

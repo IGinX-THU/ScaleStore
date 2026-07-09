@@ -1,6 +1,7 @@
 import json
 import os
 import re
+import time
 
 from metadata.extractors.document_extractor import DocumentMetadataExtractor
 from metadata.extractors.file_extractor import FileMetadataExtractor
@@ -8,6 +9,15 @@ from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
 from metadata.extractors.relational_extractor import RelationalMetadataExtractor
 from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
 from metadata.neo4j_writer import Neo4jGraphWriter
+
+
+def _trace(message, **fields):
+    payload = []
+    for key in sorted(fields.keys()):
+        value = fields.get(key)
+        payload.append(str(key) + "=" + _safe(value))
+    suffix = " " + " ".join(payload) if payload else ""
+    print("[SemanticKeywordExtract] " + message + suffix, flush=True)
 
 
 def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
@@ -41,14 +51,22 @@ def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
     }, ensure_ascii=False)
 
     try:
+        started = time.time()
         node = _parse_json_object(_llm_chat(params, _safe(params.get("llmModel", "")), [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ]))
         keywords = node.get("keywords", []) if isinstance(node, dict) else []
         normalized = dedup_strings([v for v in keywords if isinstance(v, str)], max_count)
+        _trace(
+            "keyword_normalization_done",
+            metaKey=params.get("metaKey", ""),
+            keywordCount=len(normalized),
+            elapsedMs=int((time.time() - started) * 1000),
+        )
         return normalized or fallback_keywords
-    except Exception:
+    except Exception as exc:
+        _trace("keyword_normalization_failed", metaKey=params.get("metaKey", ""), error=str(exc))
         return fallback_keywords
 
 
@@ -74,14 +92,22 @@ def summarize_directory_keywords(params, path, child_keywords, max_count=12):
     }, ensure_ascii=False)
 
     try:
+        started = time.time()
         node = _parse_json_object(_llm_chat(params, _safe(params.get("llmModel", "")), [
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ]))
         keywords = node.get("keywords", []) if isinstance(node, dict) else []
         normalized = dedup_strings([v for v in keywords if isinstance(v, str)], max_count)
+        _trace(
+            "directory_summary_done",
+            metaKey=params.get("metaKey", ""),
+            keywordCount=len(normalized),
+            elapsedMs=int((time.time() - started) * 1000),
+        )
         return normalized or fallback_keywords
-    except Exception:
+    except Exception as exc:
+        _trace("directory_summary_failed", metaKey=params.get("metaKey", ""), path=path, error=str(exc))
         return fallback_keywords
 
 
@@ -124,7 +150,19 @@ def _llm_chat(params, model, messages):
     api_key = _safe(params.get("llmApiKey", ""))
     base_url = _normalize_openai_base_url(_safe(params.get("llmBaseUrl", "")))
     client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
+    started = time.time()
+    _trace(
+        "llm_chat_start",
+        metaKey=params.get("metaKey", ""),
+        model=model,
+    )
     response = client.chat.completions.create(model=model, temperature=0.1, messages=messages)
+    _trace(
+        "llm_chat_done",
+        metaKey=params.get("metaKey", ""),
+        model=model,
+        elapsedMs=int((time.time() - started) * 1000),
+    )
     if response and response.choices and response.choices[0].message:
         return _extract_text(response.choices[0].message.content)
     return ""
@@ -266,63 +304,6 @@ class _RuntimeConfigMixin(object):
             ],
         ]
 
-    def _log_data_summary(self, udf_name, data, kvargs):
-        try:
-            print(
-                "SemanticKeywordExtract data summary:",
-                json.dumps(
-                    {
-                        "udf": udf_name,
-                        "dataType": type(data).__name__,
-                        "rows": len(data) if isinstance(data, list) else None,
-                        "rowColumnCounts": self._row_column_counts(data, 8),
-                        "header": self._preview_row(data, 0, 12, 80),
-                        "typeRow": self._preview_row(data, 1, 12, 80),
-                        "firstDataRow": self._preview_row(data, 2, 12, 120),
-                        "kvargs": self._preview_kvargs(kvargs),
-                    },
-                    ensure_ascii=False,
-                ),
-            )
-        except Exception as exc:
-            print("SemanticKeywordExtract data summary failed:", str(exc))
-
-    def _row_column_counts(self, data, max_rows):
-        if not isinstance(data, list):
-            return []
-        out = []
-        for row in data[:max_rows]:
-            out.append(len(row) if isinstance(row, list) else None)
-        return out
-
-    def _preview_row(self, data, row_idx, max_cols, max_len):
-        if not isinstance(data, list) or row_idx >= len(data) or not isinstance(data[row_idx], list):
-            return []
-        return [self._preview_value(v, max_len) for v in data[row_idx][:max_cols]]
-
-    def _preview_kvargs(self, kvargs):
-        out = {}
-        if not kvargs:
-            return out
-        for key, value in kvargs.items():
-            k = key.decode("utf-8", errors="ignore") if isinstance(key, bytes) else str(key)
-            out[k] = self._preview_value(value, 120)
-        return out
-
-    def _preview_value(self, value, max_len):
-        if value is None:
-            return None
-        if isinstance(value, bytes):
-            text = value.decode("utf-8", errors="ignore")
-            prefix = "bytes:"
-        else:
-            text = str(value)
-            prefix = ""
-        text = text.replace("\r", "\\r").replace("\n", "\\n")
-        if len(text) > max_len:
-            text = text[:max_len] + "...(len=" + str(len(text)) + ")"
-        return prefix + text
-
 
 class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
     DATA_TYPE = ""
@@ -330,7 +311,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
     FIELD_KIND = "field"
 
     def transform(self, data, args, kvargs):
-        self._log_data_summary(self.__class__.__name__, data, kvargs)
+        started = time.time()
         try:
             params = self._params(kvargs)
             data_type = self.DATA_TYPE or self._safe(params.get("dataType", "")).lower()
@@ -376,8 +357,21 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             message = self._safe(extracted.get("message", ""))
             if persist_message:
                 message = (message + "; " + persist_message) if message else persist_message
+            _trace(
+                "leaf_extract_done",
+                metaKey=params.get("metaKey", ""),
+                status="SUCCESS",
+                keywordCount=len(keywords),
+                totalElapsedMs=int((time.time() - started) * 1000),
+            )
             return self._result("SUCCESS", keywords, fields, field_kind, message)
         except Exception as exc:
+            _trace(
+                "leaf_extract_failed",
+                udf=self.__class__.__name__,
+                elapsedMs=int((time.time() - started) * 1000),
+                error=str(exc),
+            )
             return self._result("FAILED", [], [], self.FIELD_KIND, str(exc))
 
 
@@ -413,7 +407,7 @@ class FileSemanticKeywordExtract(_LeafSemanticKeywordUDF):
 
 class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
     def transform(self, data, args, kvargs):
-        self._log_data_summary(self.__class__.__name__, data, kvargs)
+        started = time.time()
         try:
             params = self._params(kvargs)
             target_path = self._asset_path({
@@ -440,8 +434,20 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
                 triples=[],
                 keywords=keywords,
             )
+            _trace(
+                "directory_extract_done",
+                metaKey=params.get("metaKey", ""),
+                status="SUCCESS",
+                keywordCount=len(keywords),
+                totalElapsedMs=int((time.time() - started) * 1000),
+            )
             return self._result("SUCCESS", keywords, [], "field", message)
         except Exception as exc:
+            _trace(
+                "directory_extract_failed",
+                elapsedMs=int((time.time() - started) * 1000),
+                error=str(exc),
+            )
             return self._result("FAILED", [], [], "field", str(exc))
 
     def _read_immediate_child_keywords(self, data, target_path):
@@ -470,7 +476,9 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
             candidate = [self._column_name(v) for v in data[0]]
             if any(v in ("logicalPath", "fileName", "dataType", "semanticKeywords") for v in candidate):
                 headers = candidate
-                start = 2 if len(data) > 1 and isinstance(data[1], list) else 1
+                start = 1
+                if len(data) > 1 and isinstance(data[1], list) and self._is_type_row(candidate, data[1]):
+                    start = 2
         if not headers:
             headers = ["key", "logicalPath", "dataType", "fileName", "contentPath", "fileSize", "fileFormat", "createTime", "isValid", "knowledgeExtractStatus", "semanticKeywords"]
         rows = []
@@ -489,6 +497,30 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
         if "." in text:
             text = text.split(".")[-1]
         return text.strip("()")
+
+    def _is_type_row(self, headers, row):
+        if not isinstance(headers, list) or not isinstance(row, list):
+            return False
+        if len(headers) != len(row):
+            return False
+        known_types = set([
+            "BINARY",
+            "BOOLEAN",
+            "INTEGER",
+            "LONG",
+            "FLOAT",
+            "DOUBLE",
+            "STRING",
+            "DATE",
+            "TIME",
+            "TIMESTAMP",
+        ])
+        matched = 0
+        for value in row:
+            text = self._decode(value).strip().upper()
+            if text in known_types:
+                matched += 1
+        return matched > 0 and matched == len(row)
 
     def _asset_path(self, row):
         logical_path = self._normalize_path(row.get("logicalPath", ""))
@@ -518,6 +550,8 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
             return "/"
         if not path.startswith("/"):
             path = "/" + path
+        while "//" in path:
+            path = path.replace("//", "/")
         while len(path) > 1 and path.endswith("/"):
             path = path[:-1]
         return path

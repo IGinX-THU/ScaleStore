@@ -11,5 +11,8 @@
     "uri": "bolt://127.0.0.1:7687",
     "username": "neo4j",
     "password": "password"
+  },
+  "webserver": {
+    "baseUrl": "http://127.0.0.1:8080"
   }
 }

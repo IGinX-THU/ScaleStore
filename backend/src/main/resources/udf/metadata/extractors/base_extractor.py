@@ -1,6 +1,7 @@
 import abc
 import json
 import re
+import time
 
 
 class BaseMetadataExtractor(object):
@@ -167,9 +168,41 @@ class BaseMetadataExtractor(object):
         return "image/png"
 
     def data_rows(self):
-        if isinstance(self.data, list) and len(self.data) >= 2 and isinstance(self.data[0], list) and isinstance(self.data[1], list):
-            return self.data[2:]
+        if (
+            isinstance(self.data, list)
+            and len(self.data) >= 2
+            and isinstance(self.data[0], list)
+            and isinstance(self.data[1], list)
+        ):
+            start = 2 if self.has_type_row(self.data[0], self.data[1]) else 1
+            return self.data[start:]
         return self.data
+
+    def has_type_row(self, headers, candidate_row):
+        if not isinstance(headers, list) or not isinstance(candidate_row, list):
+            return False
+        if len(candidate_row) != len(headers):
+            return False
+
+        known_types = set([
+            "BINARY",
+            "BOOLEAN",
+            "INTEGER",
+            "LONG",
+            "FLOAT",
+            "DOUBLE",
+            "STRING",
+            "DATE",
+            "TIME",
+            "TIMESTAMP",
+        ])
+
+        matched = 0
+        for value in candidate_row:
+            text = self.to_text(value).strip().upper()
+            if text in known_types:
+                matched += 1
+        return matched > 0 and matched == len(candidate_row)
 
     def extract_keyvalue_keys(self, text_content):
         keys = []
@@ -216,10 +249,30 @@ class BaseMetadataExtractor(object):
         else:
             client = OpenAI(api_key=api_key)
 
+        started = time.time()
+        print(
+            "[SemanticKeywordExtract][extractor] llm_chat_start metaKey=%s dataType=%s model=%s"
+            % (
+                self._safe(self.params.get("metaKey", "")),
+                self.data_type,
+                model,
+            ),
+            flush=True,
+        )
         response = client.chat.completions.create(
             model=model,
             temperature=0.1,
             messages=messages,
+        )
+        print(
+            "[SemanticKeywordExtract][extractor] llm_chat_done metaKey=%s dataType=%s model=%s elapsedMs=%s"
+            % (
+                self._safe(self.params.get("metaKey", "")),
+                self.data_type,
+                model,
+                int((time.time() - started) * 1000),
+            ),
+            flush=True,
         )
 
         content = ""
