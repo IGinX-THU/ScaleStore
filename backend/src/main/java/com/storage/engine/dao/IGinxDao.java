@@ -517,6 +517,10 @@ public class IGinxDao {
       return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + ";");
   }
 
+  public SessionExecuteSqlResult getMetaById(long key) {
+      return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + " where key = " + key + ";");
+  }
+
   public long getMaxMetaId() {
       SessionExecuteSqlResult result = executeSql(
               "select last(logicalPath) from " + IGinxConstants.STORAGE_META_PATH + ";");

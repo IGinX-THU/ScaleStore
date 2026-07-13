@@ -189,11 +189,6 @@
             <input type="text" id="metadata-quick-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词">
 
             <div id="metadata-fullscreen-controls" class="metadata-fullscreen-controls hidden">
-              <div class="metadata-mode-switch" role="tablist" aria-label="元数据查询模式">
-                <button id="metadata-mode-system-btn" type="button" class="metadata-mode-btn active" data-mode="system">参数化查询</button>
-                <button id="metadata-mode-llm-btn" type="button" class="metadata-mode-btn" data-mode="llm">LLM自然语言</button>
-              </div>
-
               <div id="metadata-system-filters" class="metadata-query-inline-panel">
                 <input type="text" id="metadata-path-input" class="input input-sm metadata-inline-input" placeholder="逻辑路径（可空，如 /test）">
                 <select id="metadata-type-input" class="input input-sm metadata-inline-input metadata-type-select">
@@ -205,10 +200,6 @@
                   <option value="file">file</option>
                 </select>
                 <input type="text" id="metadata-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词（可空）">
-              </div>
-
-              <div id="metadata-llm-panel" class="metadata-query-inline-panel hidden">
-                <input type="text" id="metadata-llm-input" class="input input-sm metadata-inline-input metadata-llm-input" placeholder="输入自然语言问题，例如：查找document类型里与合同相关的实体关系">
               </div>
             </div>
           </div>

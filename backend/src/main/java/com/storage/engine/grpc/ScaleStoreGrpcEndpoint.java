@@ -313,15 +313,10 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
     @Override
     public void queryMetadata(MetadataQueryRequest request, StreamObserver<JsonResponse> responseObserver) {
         try {
-            Map<String, Object> graph;
-            if ("llm".equalsIgnoreCase(request.getMode())) {
-                graph = metadataKnowledgeService.queryByLlmNaturalLanguage(request.getQ());
-            } else {
-                graph = metadataKnowledgeService.queryBySystemFilters(
-                        emptyToNull(request.getLogicalPath()),
-                        emptyToNull(request.getDataType()),
-                        emptyToNull(request.getKeyword()));
-            }
+            Map<String, Object> graph = metadataKnowledgeService.queryBySystemFilters(
+                    emptyToNull(request.getLogicalPath()),
+                    emptyToNull(request.getDataType()),
+                    emptyToNull(request.getKeyword()));
             sendJson(responseObserver, 200, "Success", graph);
         } catch (Exception e) {
             sendError(responseObserver, 500, "Query metadata failed: " + safeMessage(e));

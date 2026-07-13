@@ -43,17 +43,18 @@ public class MetadataExtractionSchedulerService {
     }
 
     public void persistMetadataTreeAsync(DataItem item) {
-        if (item == null || item.getId() == null || isDirectory(item)) {
+        if (item == null || item.getId() == null) {
             return;
         }
         final long key = item.getId().longValue();
         final String assetPath = assetPath(item);
+        final String whereClause = buildTreePersistWhereClause(item);
         CompletableFuture.runAsync(new Runnable() {
             @Override
             public void run() {
                 try {
                     String sql = "select metadata_tree_persist(*) from " + IGinxConstants.STORAGE_META_PATH
-                            + " where key = " + key + ";";
+                            + " where " + whereClause + ";";
                     logger.info("[Metadata-UDF][TREE-SQL] path={}, sql={}", assetPath, sql);
                     iginxDao.executeLongRunningSql(sql);
                     publishEvent("success", "TREE_DONE", "Metadata directory tree persisted to Neo4j: path=" + assetPath, "Metadata-UDF");
@@ -63,6 +64,70 @@ public class MetadataExtractionSchedulerService {
                 }
             }
         });
+    }
+
+    private String buildTreePersistWhereClause(DataItem item) {
+        StringBuilder where = new StringBuilder();
+        where.append("key = ").append(item.getId().longValue());
+
+        String directoryRoot = isDirectory(item) ? assetPath(item) : normalizePath(item.getLogicalPath());
+        List<String> directories = buildDirectoryAssetPaths(directoryRoot);
+        for (String dirPath : directories) {
+            String parentPath = parentPath(dirPath);
+            String dirName = leafName(dirPath);
+            where.append(" OR (dataType = '")
+                    .append(IGinxConstants.TYPE_DIRECTORY)
+                    .append("' AND logicalPath = '")
+                    .append(escapeSql(parentPath))
+                    .append("' AND fileName = '")
+                    .append(escapeSql(dirName))
+                    .append("')");
+        }
+        return where.toString();
+    }
+
+    private List<String> buildDirectoryAssetPaths(String assetPath) {
+        List<String> out = new ArrayList<String>();
+        String normalized = normalizePath(assetPath);
+        if ("/".equals(normalized)) {
+            return out;
+        }
+        String[] parts = normalized.substring(1).split("/");
+        StringBuilder current = new StringBuilder();
+        for (String part : parts) {
+            String seg = safe(part);
+            if (seg.isEmpty()) {
+                continue;
+            }
+            current.append('/').append(seg);
+            out.add(current.toString());
+        }
+        return out;
+    }
+
+    private String parentPath(String path) {
+        String normalized = normalizePath(path);
+        if ("/".equals(normalized)) {
+            return "/";
+        }
+        int idx = normalized.lastIndexOf('/');
+        if (idx <= 0) {
+            return "/";
+        }
+        return normalized.substring(0, idx);
+    }
+
+    private String leafName(String path) {
+        String normalized = normalizePath(path);
+        if ("/".equals(normalized)) {
+            return "/";
+        }
+        int idx = normalized.lastIndexOf('/');
+        return idx >= 0 ? normalized.substring(idx + 1) : normalized;
+    }
+
+    private String escapeSql(String value) {
+        return safe(value).replace("\\", "\\\\").replace("'", "''");
     }
 
     public List<AgentMessageEvent> listEventsSince(long sinceSeq, int limit) {

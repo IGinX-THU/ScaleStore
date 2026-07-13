@@ -92,6 +92,15 @@ public class AccessService {
         }
     }
 
+    public DataItem getMetaByKey(long key) {
+        try {
+            SessionExecuteSqlResult result = iginxDao.getMetaById(key);
+            List<DataItem> items = parseMeta(result);
+            return items.isEmpty() ? null : items.get(0);
+        } catch (Exception e) {
+            throw new RuntimeException("Query storage.meta by key failed: " + e.getMessage(), e);
+        }
+    }
     /**
      * Access data by logical path.
      * - Exact match → returns metadata + preview from the adapter.

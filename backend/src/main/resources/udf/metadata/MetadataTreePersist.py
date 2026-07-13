@@ -7,6 +7,7 @@ class MetadataTreePersist(_RuntimeConfigMixin):
         try:
             params = self._params(kvargs)
             params["skipAncestorKeywordRefresh"] = "true"
+            params["skipSemanticEntities"] = "true"
             writer = Neo4jGraphWriter(params)
             count = 0
             for row in self._rows(data):
@@ -15,8 +16,6 @@ class MetadataTreePersist(_RuntimeConfigMixin):
                 logical_path = self._normalize_path(row.get("logicalPath", ""))
                 data_type = self._safe(row.get("dataType", "")).lower()
                 file_name = self._safe(row.get("fileName", ""))
-                if data_type == "directory":
-                    continue
                 if not logical_path or not data_type:
                     continue
                 params["metaKey"] = self._safe(row.get("key", ""))
@@ -34,7 +33,7 @@ class MetadataTreePersist(_RuntimeConfigMixin):
                     keywords=self._parse_keywords(row.get("semanticKeywords", "")),
                 )
                 count += 1
-            return self._result("SUCCESS", [], [], "field", "metadata tree persisted: assets=" + str(count))
+            return self._result("SUCCESS", [], [], "field", "metadata tree persisted: nodes=" + str(count))
         except Exception as exc:
             return self._result("FAILED", [], [], "field", str(exc))
 

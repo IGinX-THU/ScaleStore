@@ -6,19 +6,32 @@ import com.storage.engine.model.MetadataExtractResult;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.http.*;
+import org.springframework.http.HttpEntity;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
 
 import java.nio.charset.StandardCharsets;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Base64;
+import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 @Service
 public class LlmService {
 
+    private static final Logger logger = LoggerFactory.getLogger(LlmService.class);
     private static final int DEFAULT_MAX_TEXT_LENGTH = 8000;
     private static final int STRICT_EXTRACTION_MAX_RETRY = 1;
-    private static final Logger logger = LoggerFactory.getLogger(LlmService.class);
 
     private final RestTemplate restTemplate = new RestTemplate();
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -38,12 +51,9 @@ public class LlmService {
     @Value("${metadata.llm.vision-model:}")
     private String visionModel;
 
-    /**
-     * 文档类语义抽取：必须调用LLM并严格校验输出JSON结构，但不强制三元组数量。
-     */
     public ExtractResult extractSemanticTriplesFromTextStrict(String dataType, String text) {
         if (text == null || text.trim().isEmpty()) {
-            throw new IllegalArgumentException("文档内容为空，无法进行 LLM 实体抽取");
+            throw new IllegalArgumentException("Text content is empty, cannot extract metadata semantics");
         }
         ensureLlmConfigured();
 
@@ -54,19 +64,16 @@ public class LlmService {
                     model,
                     buildTextExtractionMessages(normalPrompt),
                     buildTextExtractionMessages(retryPrompt),
-                    "文档");
+                    "text");
         } catch (Exception e) {
-            logger.error("文档LLM三元组抽取失败: {}", e.getMessage());
-            throw new RuntimeException("文档LLM三元组抽取失败: " + e.getMessage(), e);
+            logger.error("Text semantic extraction failed: {}", e.getMessage(), e);
+            throw new RuntimeException("Text semantic extraction failed: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * 图像类语义抽取：必须调用LLM并严格校验输出JSON结构，但不强制三元组数量。
-     */
     public ExtractResult extractSemanticTriplesFromImageStrict(String mimeType, byte[] imageBytes) {
         if (imageBytes == null || imageBytes.length == 0) {
-            throw new IllegalArgumentException("图像内容为空，无法进行 LLM 实体抽取");
+            throw new IllegalArgumentException("Image content is empty, cannot extract metadata semantics");
         }
         ensureLlmConfigured();
 
@@ -76,64 +83,21 @@ public class LlmService {
                     modelToUse,
                     buildImageExtractionMessages(mimeType, imageBytes, false),
                     buildImageExtractionMessages(mimeType, imageBytes, true),
-                    "图像");
+                    "image");
         } catch (Exception e) {
-            logger.error("图像LLM三元组抽取失败: {}", e.getMessage());
-            throw new RuntimeException("图像LLM三元组抽取失败: " + e.getMessage(), e);
+            logger.error("Image semantic extraction failed: {}", e.getMessage(), e);
+            throw new RuntimeException("Image semantic extraction failed: " + e.getMessage(), e);
         }
     }
 
-    /**
-     * 兼容旧调用命名。
-     */
     @Deprecated
     public ExtractResult extractEntitiesFromTextStrict(String dataType, String text) {
         return extractSemanticTriplesFromTextStrict(dataType, text);
     }
 
-    /**
-     * 兼容旧调用命名。
-     */
     @Deprecated
     public ExtractResult extractEntitiesFromImageStrict(String mimeType, byte[] imageBytes) {
         return extractSemanticTriplesFromImageStrict(mimeType, imageBytes);
-    }
-
-    public String naturalLanguageToCypher(String nlQuery, String schemaHint) {
-        if (nlQuery == null || nlQuery.trim().isEmpty()) {
-            return "";
-        }
-        if (!enabled || apiKey == null || apiKey.trim().isEmpty()) {
-            logger.warn("自然语言转Cypher未执行：LLM未启用或API Key为空");
-            return "";
-        }
-        try {
-            String system = "你是Neo4j Cypher专家。"
-                    + "你的唯一输出必须是一条可执行的只读Cypher语句。"
-                    + "不要返回解释、不要返回Markdown、不要返回注释、不要返回多个语句。";
-            String user = "图谱模式提示:\n" + schemaHint + "\n\n用户问题:\n" + nlQuery
-                    + "\n\n要求:\n"
-                    + "1) 只读查询，不允许写操作。\n"
-                    + "2) 优先返回节点与关系本身（如 n,r,m / p,hd,d,m,e），不要只返回计数或字符串。\n"
-                    + "3) 实体相关问题必须尽量把来源数据文件带出来：优先包含 DataAsset-[:MENTIONS]->Entity 和 LogicalPath-[:HAS_DATA]->DataAsset。\n"
-                    + "4) 仅使用以下关系名: CONTAINS, HAS_DATA, HAS_FIELD, MENTIONS。\n"
-                    + "5) 仅使用以下标签名: LogicalPath, DataAsset, Field, Entity。\n"
-                    + "6) 不要使用CALL/APOC。\n"
-                    + "7) 如果无特殊要求，加 LIMIT 80。";
-
-            List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
-            messages.add(msg("system", system));
-            messages.add(msg("user", user));
-
-            String content = chatCompletion(model, messages);
-            String raw = extractAfterThinkTag(extractPlainText(content));
-            String cypher = sanitizeCypher(raw);
-            cypher = extractReadOnlyCypher(cypher);
-            return cypher;
-        } catch (Exception e) {
-            logger.error("自然语言转Cypher失败: {}", e.getMessage(), e);
-            return "";
-        }
     }
 
     public String inferAssetRelation(String leftName,
@@ -151,12 +115,12 @@ public class LlmService {
             payload.put("rightKeywords", rightKeywords == null ? Collections.emptyList() : rightKeywords);
 
             List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
-            messages.add(msg("system", "你是数据资产关系判断助手。只输出严格JSON。"));
+            messages.add(msg("system", "You infer business or semantic relations between data assets. Return strict JSON only."));
             messages.add(msg("user",
-                    "判断两个数据资产是否存在非父子的业务/语义联系。"
-                            + "若无明确联系，返回 {\"relation\":\"\"}。"
-                            + "若有，返回 {\"relation\":\"简短中文关系\"}，relation 不超过 12 个汉字。"
-                            + "输入：" + objectMapper.writeValueAsString(payload)));
+                    "Given two data assets and their semantic keywords, decide whether there is a non-parent-child relation. "
+                            + "Return {\"relation\":\"\"} if there is no clear relation. "
+                            + "If there is one, return {\"relation\":\"short relation\"}; keep it within 24 characters. "
+                            + "Input: " + objectMapper.writeValueAsString(payload)));
 
             String content = chatCompletion(model, messages);
             String raw = stripCodeFence(extractAfterThinkTag(extractPlainText(content))).trim();
@@ -167,54 +131,7 @@ public class LlmService {
             }
             return relation;
         } catch (Exception e) {
-            logger.debug("asset relation inference skipped: {}", e.getMessage());
-            return "";
-        }
-    }
-
-    public String naturalLanguageToCypherWithFeedback(String nlQuery,
-                                                      String schemaHint,
-                                                      String previousCypher,
-                                                      String previousError,
-                                                      int attempt) {
-        if (nlQuery == null || nlQuery.trim().isEmpty()) {
-            return "";
-        }
-        if (!enabled || apiKey == null || apiKey.trim().isEmpty()) {
-            logger.warn("Cypher纠错重试未执行：LLM未启用或API Key为空");
-            return "";
-        }
-
-        try {
-            String system = "你是Neo4j Cypher修复专家。"
-                    + "你将基于上一条错误Cypher和错误信息，输出一条可执行的只读Cypher。"
-                    + "只输出最终Cypher语句，不要解释。";
-
-            String user = "图谱模式提示:\n" + schemaHint
-                    + "\n\n用户问题:\n" + nlQuery
-                    + "\n\n上一轮失败Cypher:\n" + safeJson(previousCypher)
-                    + "\n\n上一轮错误信息:\n" + safeJson(previousError)
-                    + "\n\n当前是第" + attempt + "次生成，请严格修复以上错误。"
-                    + "\n要求:\n"
-                    + "1) 只读查询，不允许写操作。\n"
-                    + "2) 严禁引用未定义变量；WITH/RETURN 中变量必须全部已定义。\n"
-                    + "3) 能不用 WITH 就不要用 WITH；若使用 WITH，必须显式传递后续会使用的变量。\n"
-                    + "4) 仅使用关系: CONTAINS, HAS_DATA, HAS_FIELD, MENTIONS。\n"
-                    + "5) 仅使用标签: LogicalPath, DataAsset, Field, Entity。\n"
-                    + "6) 优先返回可绘图子图变量（例如 p,hd,d,m,e,hf,f），不要只返回 count。\n"
-                    + "7) 无特殊要求时加 LIMIT 80。\n"
-                    + "8) 只输出一条Cypher，不要Markdown和解释文本。";
-
-            List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
-            messages.add(msg("system", system));
-            messages.add(msg("user", user));
-
-            String content = chatCompletion(model, messages);
-            String raw = extractAfterThinkTag(extractPlainText(content));
-            String cypher = sanitizeCypher(raw);
-            return extractReadOnlyCypher(cypher);
-        } catch (Exception e) {
-            logger.error("Cypher纠错重试失败: {}", e.getMessage(), e);
+            logger.debug("Asset relation inference skipped: {}", e.getMessage());
             return "";
         }
     }
@@ -228,7 +145,7 @@ public class LlmService {
             if (retryMessages == null || retryMessages.isEmpty()) {
                 break;
             }
-            logger.info("{}语义抽取首次三元组为空，触发重试", sourceLabel);
+            logger.info("{} semantic extraction returned no triples, retrying once", sourceLabel);
             parsed = parseStrictExtractResult(chatCompletion(modelName, retryMessages), true);
         }
         return parsed;
@@ -237,7 +154,7 @@ public class LlmService {
     private ExtractResult parseStrictExtractResult(String llmText, boolean llmUsed) throws Exception {
         String raw = extractAfterThinkTag(extractPlainText(llmText)).trim();
         if (raw.isEmpty()) {
-            throw new RuntimeException("LLM返回为空");
+            throw new RuntimeException("LLM returned empty content");
         }
 
         String json = stripCodeFence(raw);
@@ -257,14 +174,14 @@ public class LlmService {
         if (!arr.isArray() && root.isArray()) {
             arr = root;
         }
-            if (arr.isArray()) {
-                for (JsonNode node : arr) {
-                    String v = node.asText("").trim();
-                    if (!v.isEmpty()) {
-                        entities.add(v);
-                    }
+        if (arr.isArray()) {
+            for (JsonNode node : arr) {
+                String value = node.asText("").trim();
+                if (!value.isEmpty()) {
+                    entities.add(value);
                 }
             }
+        }
         return entities;
     }
 
@@ -320,11 +237,6 @@ public class LlmService {
         return content.isTextual() ? content.asText() : content.toString();
     }
 
-    /**
-     * 兼容两种配置方式：
-     * 1) base URL，如 http://localhost:8000/v1
-     * 2) 完整 endpoint，如 http://localhost:8000/v1/chat/completions
-     */
     private String resolveChatCompletionsEndpoint(String configuredBaseUrl) {
         String endpoint = configuredBaseUrl == null ? "" : configuredBaseUrl.trim();
         while (endpoint.endsWith("/")) {
@@ -334,31 +246,26 @@ public class LlmService {
         String lower = endpoint.toLowerCase(Locale.ROOT);
         if (lower.endsWith("/chat/completions")) {
             return endpoint;
-        } else {
-            return endpoint + "/chat/completions";
         }
+        return endpoint + "/chat/completions";
     }
 
     private String buildTextExtractionPrompt(String dataType, String text, boolean retry) {
         String clipped = text.length() > DEFAULT_MAX_TEXT_LENGTH ? text.substring(0, DEFAULT_MAX_TEXT_LENGTH) : text;
         String instruction = retry
-                ? "你上一轮可能没有返回可用三元组。请再次检查内容并尽量抽取核心语义关系；若确实无关系，triples返回空数组。"
-                : "请从输入内容抽取语义三元组（实体-关系-实体）。";
+                ? "The previous extraction may have returned no usable triples. Re-check the content and extract core semantic triples when possible. "
+                : "Extract semantic triples from the input content. ";
         return instruction
-                + "返回JSON，格式必须是: "
-                + "{\"triples\":[{\"subject\":\"实体A\",\"predicate\":\"关系\",\"object\":\"实体B\"}],\"entities\":[\"实体A\",\"实体B\"]}。"
-                + "要求:\n"
-                + "1) 数据类型: " + dataType + "；\n"
-                + "2) triples按实际语义抽取，不强制最小数量，可为空；\n"
-                + "3) 每对实体只保留一个最有代表性的关系，不要同时输出语义相同的反向关系；\n"
-                + "4) predicate使用简短中文短语；\n"
-                + "5) entities可由triples推导并去重。\n"
-                + "只输出JSON对象，不要输出任何其他内容。\n内容:\n" + clipped;
+                + "Return strict JSON only in this shape: "
+                + "{\"triples\":[{\"subject\":\"entity A\",\"predicate\":\"relation\",\"object\":\"entity B\"}],\"entities\":[\"entity A\",\"entity B\"]}. "
+                + "Data type: " + safeJson(dataType) + ". "
+                + "Triples should reflect actual semantics and may be empty. Use concise predicates. "
+                + "Content:\n" + clipped;
     }
 
     private List<Map<String, Object>> buildTextExtractionMessages(String prompt) {
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
-        messages.add(msg("system", "你是信息抽取助手，只输出JSON对象。"));
+        messages.add(msg("system", "You are an information extraction assistant. Return strict JSON only."));
         messages.add(msg("user", prompt));
         return messages;
     }
@@ -370,11 +277,11 @@ public class LlmService {
         Map<String, Object> textItem = new LinkedHashMap<String, Object>();
         textItem.put("type", "text");
         textItem.put("text", (retry
-                ? "请再次检查图像内容，并尽量补充关键语义关系；若确实无关系，triples返回空数组。"
-                : "请从图像中抽取语义三元组（实体-关系-实体）。")
-            + "只输出JSON: "
-            + "{\"triples\":[{\"subject\":\"实体A\",\"predicate\":\"关系\",\"object\":\"实体B\"}],\"entities\":[\"实体A\",\"实体B\"]}，"
-            + "按实际内容抽取，可为空；每对实体仅保留一个最有代表性的关系，不要输出语义重复的反向关系。不要输出任何其他内容。");
+                ? "Re-check the image and extract semantic triples when possible. "
+                : "Extract semantic triples from the image. ")
+                + "Return strict JSON only: "
+                + "{\"triples\":[{\"subject\":\"entity A\",\"predicate\":\"relation\",\"object\":\"entity B\"}],\"entities\":[\"entity A\",\"entity B\"]}. "
+                + "Triples may be empty if no clear relation exists.");
 
         Map<String, Object> imageUrl = new LinkedHashMap<String, Object>();
         imageUrl.put("url", "data:" + mt + ";base64," + base64);
@@ -388,12 +295,12 @@ public class LlmService {
         user.put("content", Arrays.asList(textItem, imageItem));
 
         List<Map<String, Object>> messages = new ArrayList<Map<String, Object>>();
-        messages.add(msg("system", "你是图像内容理解助手，只输出JSON对象。"));
+        messages.add(msg("system", "You are an image understanding assistant. Return strict JSON only."));
         messages.add(user);
         return messages;
     }
 
-    private Map<String, Object> msg(String role, String content) {
+    private Map<String, Object> msg(String role, Object content) {
         Map<String, Object> m = new LinkedHashMap<String, Object>();
         m.put("role", role);
         m.put("content", content);
@@ -407,9 +314,6 @@ public class LlmService {
         return new String(content.getBytes(StandardCharsets.UTF_8), StandardCharsets.UTF_8);
     }
 
-    /**
-     * 一些本地模型会返回 <think>...</think> + JSON，本方法仅保留最后一个 </think> 之后的内容。
-     */
     private String extractAfterThinkTag(String text) {
         if (text == null) {
             return "";
@@ -439,8 +343,8 @@ public class LlmService {
 
     private List<String> deduplicate(List<String> values, int max) {
         Set<String> set = new LinkedHashSet<String>();
-        for (String v : values) {
-            String s = v == null ? "" : v.trim();
+        for (String value : values) {
+            String s = value == null ? "" : value.trim();
             if (!s.isEmpty()) {
                 set.add(s);
             }
@@ -470,7 +374,6 @@ public class LlmService {
                 continue;
             }
 
-            // 每对实体只保留一个关系，避免“熊猫吃竹子/竹子被熊猫吃”这种反向重复。
             String normSubject = normalizeForPair(subject);
             String normObject = normalizeForPair(object);
             if (normSubject.isEmpty() || normObject.isEmpty()) {
@@ -529,58 +432,12 @@ public class LlmService {
         return value.trim().replaceAll("\\s+", " ");
     }
 
-    private String sanitizeCypher(String raw) {
-        if (raw == null) {
-            return "";
-        }
-        String cypher = stripCodeFence(raw).trim();
-        if (cypher.endsWith(";")) {
-            cypher = cypher.substring(0, cypher.length() - 1);
-        }
-        return cypher;
-    }
-
-    /**
-     * 从混合输出中提取首条只读Cypher语句。
-     */
-    private String extractReadOnlyCypher(String text) {
-        if (text == null || text.trim().isEmpty()) {
-            return "";
-        }
-        String t = text.trim();
-
-        String upper = t.toUpperCase(Locale.ROOT);
-        int start = indexOfFirstCypherClause(upper);
-        if (start < 0) {
-            return "";
-        }
-
-        String candidate = t.substring(start).trim();
-        int semicolon = candidate.indexOf(';');
-        if (semicolon >= 0) {
-            candidate = candidate.substring(0, semicolon).trim();
-        }
-        return candidate;
-    }
-
-    private int indexOfFirstCypherClause(String upperText) {
-        int idx = -1;
-        String[] clauses = new String[]{"MATCH", "OPTIONAL MATCH", "WITH", "UNWIND"};
-        for (String clause : clauses) {
-            int i = upperText.indexOf(clause);
-            if (i >= 0 && (idx < 0 || i < idx)) {
-                idx = i;
-            }
-        }
-        return idx;
-    }
-
     private void ensureLlmConfigured() {
         if (!enabled) {
-            throw new IllegalStateException("metadata.llm.enabled=false，LLM未启用");
+            throw new IllegalStateException("metadata.llm.enabled=false, LLM is disabled");
         }
         if (apiKey == null || apiKey.trim().isEmpty()) {
-            throw new IllegalStateException("metadata.llm.api-key为空，无法调用LLM");
+            throw new IllegalStateException("metadata.llm.api-key is empty");
         }
     }
 

@@ -73,7 +73,9 @@ class Neo4jGraphWriter(object):
         self._delete_legacy_directory_assets_tx(tx, payload)
 
         if payload.get("data_type", "") == "directory":
-            self._write_semantic_entities_tx(tx, "LogicalPath", "path", payload.get("asset_path", ""), payload)
+            self._write_directory_meta_key_tx(tx, payload)
+            if not str(self.params.get("skipSemanticEntities", "")).strip().lower() == "true":
+                self._write_semantic_entities_tx(tx, "LogicalPath", "path", payload.get("asset_path", ""), payload)
             return
 
         meta_key = payload.get("meta_key", "")
@@ -139,6 +141,21 @@ class Neo4jGraphWriter(object):
                     parent_path=path_chain[idx - 1],
                     child_path=path,
                 )
+
+    def _write_directory_meta_key_tx(self, tx, payload):
+        meta_key = payload.get("meta_key", "")
+        asset_path = payload.get("asset_path", "")
+        if not meta_key or not asset_path:
+            return
+        tx.run(
+            """
+            MATCH (p:LogicalPath {path: $asset_path})
+            SET p.metaKey = $meta_key,
+                p.updatedAt = timestamp()
+            """,
+            asset_path=asset_path,
+            meta_key=meta_key,
+        )
 
     def _write_semantic_entities_tx(self, tx, label, key_name, key_value, payload):
         tx.run(

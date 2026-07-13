@@ -2,7 +2,9 @@ package com.storage.engine.controller;
 
 import com.storage.engine.model.Response;
 import com.storage.engine.model.AgentMessageEvent;
+import com.storage.engine.model.DataItem;
 import com.storage.engine.model.MetadataSemanticLeafCallbackRequest;
+import com.storage.engine.service.AccessService;
 import com.storage.engine.service.MetadataExtractionSchedulerService;
 import com.storage.engine.service.MetadataKnowledgeService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -17,6 +19,9 @@ public class MetadataController {
 
     @Autowired
     private MetadataKnowledgeService metadataKnowledgeService;
+
+    @Autowired
+    private AccessService accessService;
 
     @Autowired
     private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
@@ -35,24 +40,26 @@ public class MetadataController {
 
     /**
      * Metadata query endpoint.
-     * mode=system: structured query by logicalPath/dataType/keyword.
-     * mode=llm: natural language query by q.
+     * Structured query by logicalPath/dataType/keyword.
      */
     @GetMapping("/metadata/query")
     public Response<Map<String, Object>> query(
-            @RequestParam(value = "mode", required = false, defaultValue = "system") String mode,
-            @RequestParam(value = "q", required = false) String q,
             @RequestParam(value = "logicalPath", required = false) String logicalPath,
             @RequestParam(value = "dataType", required = false) String dataType,
             @RequestParam(value = "keyword", required = false) String keyword) {
 
-        Map<String, Object> result;
-        if ("llm".equalsIgnoreCase(mode)) {
-            result = metadataKnowledgeService.queryByLlmNaturalLanguage(q);
-        } else {
-            result = metadataKnowledgeService.queryBySystemFilters(logicalPath, dataType, keyword);
-        }
+        Map<String, Object> result = metadataKnowledgeService.queryBySystemFilters(logicalPath, dataType, keyword);
         return Response.success(result);
+    }
+
+    /**
+     * Query one storage.meta row by key.
+     * GET /metadata/meta?key=123
+     */
+    @GetMapping("/metadata/meta")
+    public Response<DataItem> getMetaByKey(@RequestParam("key") Long key) {
+        DataItem item = accessService.getMetaByKey(key == null ? -1L : key.longValue());
+        return Response.success(item);
     }
 
     /**

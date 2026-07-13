@@ -369,41 +369,85 @@ public class Neo4jDao {
 		ensureConstraints();
 		int safeLimit = Math.max(20, Math.min(limit, 500));
 		int assetWindow = Math.max(10, Math.min(120, safeLimit));
+		int directoryWindow = Math.max(10, Math.min(120, safeLimit));
 		String path = logicalPath == null ? "" : logicalPath.trim();
 		String dt = dataType == null ? "" : dataType.trim().toLowerCase(Locale.ROOT);
 		String kw = keyword == null ? "" : keyword.trim();
 
-		String cypher = "MATCH (d:DataAsset) "
-				+ "WHERE ($path='' OR coalesce(d.logicalPath,'') STARTS WITH $path) "
+		String matchedAssetCypher = "MATCH (d:DataAsset) "
+				+ "OPTIONAL MATCH (pd:LogicalPath)-[:HAS_DATA]->(d) "
+				+ "WITH d, pd, coalesce(d.logicalPath, "
+				+ "CASE WHEN pd.path IS NULL THEN '' WHEN pd.path = '/' THEN '/' + coalesce(d.name, d.fileName, '') ELSE pd.path + '/' + coalesce(d.name, d.fileName, '') END) AS assetPath "
+				+ "WHERE ($path='' OR assetPath STARTS WITH $path OR coalesce(pd.path,'') STARTS WITH $path) "
 				+ "AND ($dt='' OR toLower(coalesce(d.dataType,'')) = $dt) "
 				+ "AND ($kw='' "
 				+ "OR toLower(coalesce(d.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(d.fileName,'')) CONTAINS toLower($kw) "
-				+ "OR toLower(coalesce(d.logicalPath,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(assetPath) CONTAINS toLower($kw) "
 				+ "OR any(k IN coalesce(d.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
 				+ "OR EXISTS { MATCH (d)-[:HAS_FIELD]->(f:Field) WHERE toLower(coalesce(f.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(f.norm,'')) CONTAINS toLower($kw) } "
 				+ "OR EXISTS { MATCH (d)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
 				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $assetWindow "
-				+ "WITH collect(d) AS assets "
-				+ "UNWIND assets AS d "
+				+ "RETURN id(d) AS id";
+
+		String matchedDirectoryCypher = "MATCH (p:LogicalPath) "
+				+ "WHERE $dt='' "
+				+ "AND ($path='' OR coalesce(p.path,'') STARTS WITH $path) "
+				+ "AND ($kw='' "
+				+ "OR toLower(coalesce(p.name,'')) CONTAINS toLower($kw) "
+				+ "OR toLower(coalesce(p.path,'')) CONTAINS toLower($kw) "
+				+ "OR any(k IN coalesce(p.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
+				+ "OR EXISTS { MATCH (p)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
+				+ "WITH p ORDER BY coalesce(p.updatedAt, id(p)) DESC LIMIT $directoryWindow "
+				+ "RETURN id(p) AS id";
+
+		String assetGraphCypher = "MATCH (d:DataAsset) WHERE id(d) IN $assetIds "
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
-				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) WHERE parent IN assets "
-				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) WHERE child IN assets "
-				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) WHERE related IN assets "
+				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) WHERE id(parent) IN $assetIds "
+				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) WHERE id(child) IN $assetIds "
+				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) WHERE id(related) IN $assetIds "
 				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
 				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e LIMIT $limit";
 
+		String directoryGraphCypher = "MATCH (p:LogicalPath) WHERE id(p) IN $directoryIds "
+				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
+				+ "OPTIONAL MATCH (p)-[m:MENTIONS]->(e:Entity) "
+				+ "RETURN pathChain,p,m,e LIMIT $limit";
+
 		Session session = getDriver().session();
 		try {
-			List<Record> records = session.run(cypher, Values.parameters(
+			List<Long> assetIds = queryIdList(session, matchedAssetCypher, Values.parameters(
 					"path", path,
 					"dt", dt,
 					"kw", kw,
 					"limit", safeLimit,
-					"assetWindow", assetWindow)).list();
-			return buildGraph(records);
+					"assetWindow", assetWindow));
+			List<Long> directoryIds = queryIdList(session, matchedDirectoryCypher, Values.parameters(
+					"path", path,
+					"dt", dt,
+					"kw", kw,
+					"limit", safeLimit,
+					"directoryWindow", directoryWindow));
+			Set<Long> matchedIdSet = new LinkedHashSet<Long>();
+			matchedIdSet.addAll(assetIds);
+			matchedIdSet.addAll(directoryIds);
+
+			List<Record> records = new ArrayList<Record>();
+			if (!assetIds.isEmpty()) {
+				records.addAll(session.run(assetGraphCypher, Values.parameters(
+						"assetIds", assetIds,
+						"limit", safeLimit)).list());
+			}
+			if (!directoryIds.isEmpty()) {
+				records.addAll(session.run(directoryGraphCypher, Values.parameters(
+						"directoryIds", directoryIds,
+						"limit", safeLimit)).list());
+			}
+			Map<String, Object> graph = buildGraph(records, matchedIdSet);
+			graph.put("matchedNodeIds", new ArrayList<Long>(matchedIdSet));
+			return graph;
 		} finally {
 			session.close();
 		}
@@ -454,6 +498,18 @@ public class Neo4jDao {
 		}
 	}
 
+	private List<Long> queryIdList(Session session, String cypher, org.neo4j.driver.Value parameters) {
+		List<Long> ids = new ArrayList<Long>();
+		List<Record> records = session.run(cypher, parameters).list();
+		for (Record record : records) {
+			org.neo4j.driver.Value value = record.get("id");
+			if (value != null && !value.isNull()) {
+				ids.add(value.asLong());
+			}
+		}
+		return ids;
+	}
+
 	public void upsertSemanticRelation(long leftId, long rightId, String relation, String source) {
 		if (!neo4jEnabled || leftId == rightId || relation == null || relation.trim().isEmpty()) {
 			return;
@@ -492,10 +548,15 @@ public class Neo4jDao {
 	}
 
 	private Map<String, Object> buildGraph(List<Record> records) {
+		return buildGraph(records, Collections.<Long>emptySet());
+	}
+
+	private Map<String, Object> buildGraph(List<Record> records, Set<Long> matchedNodeIds) {
 		Map<String, Map<String, Object>> nodeMap = new LinkedHashMap<String, Map<String, Object>>();
 		Set<String> linkKeys = new LinkedHashSet<String>();
 		List<Map<String, Object>> links = new ArrayList<Map<String, Object>>();
 		Map<String, Integer> categoryMap = new LinkedHashMap<String, Integer>();
+		Set<Long> matchedIds = matchedNodeIds == null ? Collections.<Long>emptySet() : matchedNodeIds;
 
 		for (Record record : records) {
 			for (String key : record.keys()) {
@@ -521,6 +582,13 @@ public class Neo4jDao {
 		}
 
 		List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>(nodeMap.values());
+		for (Map<String, Object> node : nodes) {
+			try {
+				node.put("matched", matchedIds.contains(Long.valueOf(String.valueOf(node.get("id")))));
+			} catch (Exception ignore) {
+				node.put("matched", false);
+			}
+		}
 		List<Map<String, Object>> categories = new ArrayList<Map<String, Object>>();
 		for (Map.Entry<String, Integer> entry : categoryMap.entrySet()) {
 			Map<String, Object> c = new LinkedHashMap<String, Object>();

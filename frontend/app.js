@@ -30,7 +30,6 @@ let dataSourceSummary = { totalDataSize: 0, dataSources: [] };
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
-let metadataQueryMode = 'system';
 let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
@@ -40,6 +39,7 @@ let metadataCurrentLogicalPath = '';
 let metadataActiveSearchKeyword = '';
 let metadataAutoRefreshInFlight = false;
 let metadataAutoRefreshPending = false;
+const metadataMetaCache = new Map();
 
 const DEFAULT_GRAPH_MAX_TRIPLES = 200;
 const MIN_GRAPH_MAX_TRIPLES = 20;
@@ -1718,7 +1718,6 @@ async function fetchMetadataGraph(logicalPath = '') {
 
 async function queryMetadataBySystem(filters) {
   const params = new URLSearchParams();
-  params.set('mode', 'system');
   if (filters?.logicalPath) params.set('logicalPath', filters.logicalPath);
   if (filters?.dataType) params.set('dataType', filters.dataType);
   if (filters?.keyword) params.set('keyword', filters.keyword);
@@ -1732,19 +1731,157 @@ async function queryMetadataBySystem(filters) {
   return result.data;
 }
 
-async function queryMetadataByLLM(question) {
-  const params = new URLSearchParams();
-  params.set('mode', 'llm');
-  params.set('q', question || '');
-  const url = `${API_BASE}/metadata/query?${params.toString()}`;
-  const response = await fetch(url);
-  const result = await response.json();
-  if (!response.ok || result.code !== 200 || !result.data) {
-    throw new Error(result?.message || 'LLM查询失败');
+async function fetchMetadataMetaByKey(metaKey) {
+  const key = String(metaKey || '').trim();
+  if (!key) return null;
+  if (metadataMetaCache.has(key)) {
+    return metadataMetaCache.get(key);
   }
-  return result.data;
+
+  const promise = fetch(`${API_BASE}/metadata/meta?key=${encodeURIComponent(key)}`)
+    .then(async response => {
+      const result = await response.json();
+      if (!response.ok || result.code !== 200) {
+        throw new Error(result?.message || 'metadata meta query failed');
+      }
+      return result.data || null;
+    })
+    .catch(error => ({ __error: error.message || String(error) }));
+
+  metadataMetaCache.set(key, promise);
+  const value = await promise;
+  metadataMetaCache.set(key, value);
+  return value;
 }
 
+function getNodeMetaKey(node) {
+  const props = node?.properties || {};
+  const candidates = [props.metaKey, props.meta_key, node?.metaKey];
+  for (const value of candidates) {
+    if (value != null && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function getNodeLogicalPath(node) {
+  const props = node?.properties || {};
+  const candidates = [props.path, props.logicalPath, node?.path, node?.logicalPath, node?.name];
+  for (const value of candidates) {
+    if (value != null && String(value).trim()) {
+      return normalizeAccessPath(String(value).trim());
+    }
+  }
+  return '';
+}
+
+function isRootLogicalPathNode(node) {
+  return String(node?.categoryName || '') === 'LogicalPath' && getNodeLogicalPath(node) === '/';
+}
+
+function joinLogicalPath(basePath, childName) {
+  const base = normalizeAccessPath(basePath || '/');
+  const child = String(childName || '').trim();
+  if (!child) return base;
+  if (base.endsWith('/' + child)) return base;
+  return normalizeAccessPath(base === '/' ? '/' + child : base + '/' + child);
+}
+
+function buildMetadataNodeTooltip(data, metaItem, options = {}) {
+  const props = data?.properties || {};
+  const metaKey = getNodeMetaKey(data);
+  const rows = [];
+  const add = (label, value) => {
+    if (value == null || String(value).trim() === '') return;
+    rows.push(`<tr><td style="color:#83a6be;padding:2px 10px 2px 0;">${escapeHtml(label)}</td><td style="color:#dce8f5;padding:2px 0;">${escapeHtml(String(value))}</td></tr>`);
+  };
+
+  add('metaKey', metaKey);
+  add('nodeType', data?.categoryName);
+  if (metaItem && !metaItem.__error) {
+    add('logicalPath', metaItem.logicalPath);
+    add('dataType', metaItem.dataType);
+    add('fileName', metaItem.fileName);
+    add('fileFormat', metaItem.fileFormat);
+    add('fileSize', metaItem.fileSize);
+    add('createTime', metaItem.createTime);
+    add('status', metaItem.knowledgeExtractStatus);
+    add('semanticKeywords', metaItem.semanticKeywords);
+  } else {
+    Object.keys(props).slice(0, 8).forEach(k => add(k, props[k]));
+  }
+
+  const statusText = options.loading
+    ? '<div style="color:#b8c7d8;margin-top:6px;">Loading storage.meta...</div>'
+    : (metaItem?.__error
+      ? `<div style="color:#ff9cae;margin-top:6px;">storage.meta query failed: ${escapeHtml(metaItem.__error)}</div>`
+      : (!metaItem && metaKey ? '<div style="color:#b8c7d8;margin-top:6px;">No storage.meta row found.</div>' : ''));
+
+  return [
+    `<strong>${escapeHtml(data?.name || '')}</strong>`,
+    rows.length ? `<table style="margin-top:6px;border-collapse:collapse;">${rows.join('')}</table>` : '',
+    statusText,
+  ].filter(Boolean).join('');
+}
+
+async function openMetadataNodeInAccess(node) {
+  if (!node || !node.categoryName) return;
+  const accessAgentName = pickAgentName();
+
+  if (isRootLogicalPathNode(node)) {
+    await openFolderView('/', {
+      recordHistory: true,
+      accessAgentName,
+      showRunningMessage: true,
+    });
+    return;
+  }
+
+  const metaKey = getNodeMetaKey(node);
+
+  if (!metaKey) {
+    return;
+  }
+
+  const metaItem = await fetchMetadataMetaByKey(metaKey);
+  if (metaItem?.__error) {
+    alert('storage.meta query failed: ' + metaItem.__error);
+    return;
+  }
+  if (!metaItem) {
+    alert('No storage.meta row found for key=' + metaKey);
+    return;
+  }
+
+  const logicalPath = metaItem.logicalPath || '';
+  const fileName = metaItem.fileName || '';
+  const dataType = String(metaItem.dataType || '').toLowerCase();
+  if (!logicalPath) {
+    alert('storage.meta row has no logicalPath for key=' + metaKey);
+    return;
+  }
+
+  if (dataType === 'directory') {
+    await openFolderView(joinLogicalPath(logicalPath, fileName), {
+      recordHistory: true,
+      accessAgentName,
+      showRunningMessage: true,
+    });
+    return;
+  }
+
+  if (fileName) {
+    await openFileInFolder(logicalPath, fileName, accessAgentName);
+    return;
+  }
+
+  await openFolderView(logicalPath, {
+    recordHistory: true,
+    accessAgentName,
+    showRunningMessage: true,
+  });
+}
 function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search') {
   const container = $('metadata-graph');
   if (!container) return;
@@ -1809,6 +1946,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   }
 
   const focus = (focusKeyword || '').toLowerCase();
+  const hasBackendMatches = nodes.some(n => n?.matched === true);
 
   const styledNodes = nodes.map(n => {
     const categoryName = String(n.categoryName || 'Other');
@@ -1818,18 +1956,35 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     const displayName = (!rawName || rawName === '(unknown)')
       ? (categoryName === 'LogicalPath' ? '(路径节点)' : `(未命名${categoryName})`)
       : rawName;
-    const matched = !!focus && displayName.toLowerCase().includes(focus);
+    const matched = hasBackendMatches ? n.matched === true : (!!focus && displayName.toLowerCase().includes(focus));
+    const muteAsContext = hasBackendMatches
+      && !matched
+      && (categoryName === 'LogicalPath' || categoryName === 'DataAsset');
     const symbolSize = isRootPath ? Math.max(56, Number(n.symbolSize || 42)) : Number(n.symbolSize || 26);
+    const mutedStyle = {
+      color: '#7f8b96',
+      shadowBlur: 0,
+      shadowColor: 'rgba(0, 0, 0, 0)',
+      borderColor: 'rgba(174, 184, 194, 0.42)',
+      borderWidth: isRootPath ? 1.8 : 1,
+      opacity: 0.58
+    };
 
     const matchStyle = focusMode === 'new'
       ? {
           color: baseColor,
           shadowBlur: isRootPath ? 20 : 16,
-          shadowColor: baseColor + 'cc',
+          shadowColor: 'rgba(255, 255, 255, 0.82)',
           borderColor: 'rgba(255, 255, 255, 0.95)',
           borderWidth: isRootPath ? 2.8 : 2.2,
         }
-      : { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' };
+      : {
+          color: baseColor,
+          shadowBlur: isRootPath ? 22 : 18,
+          shadowColor: 'rgba(255, 68, 102, 0.9)',
+          borderColor: '#ff4466',
+          borderWidth: isRootPath ? 3 : 2.4,
+        };
 
     return {
       ...n,
@@ -1837,16 +1992,16 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       symbolSize,
       itemStyle: matched
         ? matchStyle
-        : {
+        : (muteAsContext ? mutedStyle : {
             color: baseColor,
             shadowBlur: isRootPath ? 16 : 8,
             shadowColor: baseColor + '80',
             borderColor: 'rgba(235, 242, 249, 0.86)',
             borderWidth: isRootPath ? 2 : 1.1
-          },
+          }),
       label: {
         show: true,
-        color: isRootPath ? '#f0f6ff' : '#dce8f5',
+        color: muteAsContext ? '#9aa6b2' : (isRootPath ? '#f0f6ff' : '#dce8f5'),
         fontWeight: isRootPath ? 700 : 400
       }
     };
@@ -1860,9 +2015,11 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   const styledLinks = links.map(l => {
     const src = nodeById[String(l.source)];
     const tgt = nodeById[String(l.target)];
-    const matched = !!focus
-      && ((src && String(src.name || '').toLowerCase().includes(focus))
-      || (tgt && String(tgt.name || '').toLowerCase().includes(focus)));
+    const matched = hasBackendMatches
+      ? !!((src && src.matched === true) || (tgt && tgt.matched === true))
+      : (!!focus
+        && ((src && String(src.name || '').toLowerCase().includes(focus))
+        || (tgt && String(tgt.name || '').toLowerCase().includes(focus))));
     const relType = String(l.type || l.label || '').toUpperCase();
     const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
     const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
@@ -1879,10 +2036,10 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
             }
           : { color: '#ff4466', width: 3 })
         : {
-            color: baseEdgeColor,
+            color: hasBackendMatches ? 'rgba(142, 152, 164, 0.42)' : baseEdgeColor,
             curveness: 0.1,
             width: 1.5,
-            opacity: 0.95,
+            opacity: hasBackendMatches ? 0.55 : 0.95,
             type: 'dashed'
           },
       label: {
@@ -1903,7 +2060,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       backgroundColor: 'rgba(8,28,54,0.95)',
       borderColor: 'rgba(0,207,255,0.3)',
       textStyle: { color: '#cce4f5', fontSize: 11 },
-      formatter: params => {
+      formatter: (params, ticket, callback) => {
         if (params.dataType === 'edge') {
           const edge = params.data || {};
           const relType = String(edge.type || '').toUpperCase();
@@ -1922,13 +2079,14 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
         }
 
         const data = params.data || {};
-        const p = data.properties || {};
-        const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${String(p[k])}`);
-        return [
-          `<strong>${data.name || ''}</strong>`,
-          data.categoryName ? `类型: ${data.categoryName}` : '',
-          ...rows,
-        ].filter(Boolean).join('<br/>');
+        const metaKey = getNodeMetaKey(data);
+        if (metaKey) {
+          fetchMetadataMetaByKey(metaKey).then(metaItem => {
+            callback(ticket, buildMetadataNodeTooltip(data, metaItem));
+          });
+          return buildMetadataNodeTooltip(data, null, { loading: true });
+        }
+        return buildMetadataNodeTooltip(data, null);
       },
     },
     legend: {
@@ -1957,6 +2115,19 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     }],
   };
   metadataChart.setOption(option, true);
+  metadataChart.off('click');
+  metadataChart.on('click', params => {
+    if (params.dataType !== 'node') {
+      return;
+    }
+    if (!isRootLogicalPathNode(params.data) && !getNodeMetaKey(params.data)) {
+      return;
+    }
+    openMetadataNodeInAccess(params.data).catch(error => {
+      console.error('Open metadata node in access failed:', error);
+      alert('访问服务打开失败: ' + (error.message || String(error)));
+    });
+  });
   recenterMetadataGraph();
 }
 
@@ -2045,7 +2216,6 @@ function enterMetadataFullscreen() {
   const panel = document.querySelector('.panel-metadata');
   if (!panel || metadataFullscreen) return;
   metadataFullscreen = true;
-  syncMetadataQueryModeUI('system');
   syncMetadataHeaderControls();
   panel.classList.add('metadata-fullscreen');
   document.body.classList.add('metadata-fullscreen-active');
@@ -2102,28 +2272,16 @@ $('metadata-search-btn').addEventListener('click', async () => {
       });
       focusKeyword = quickKeyword;
     } else {
-      const mode = metadataQueryMode;
-      if (mode === 'llm') {
-        const llmQuestion = $('metadata-llm-input')?.value.trim() || '';
-        if (!llmQuestion) {
-          alert('请填写LLM查询问题');
-          return;
-        }
-        graph = await queryMetadataByLLM(llmQuestion);
-        // LLM 查询不强行沿用非全屏关键词，避免历史高亮残留。
-        focusKeyword = '';
-      } else {
-        const logicalPath = $('metadata-path-input')?.value.trim() || '';
-        const dataType = $('metadata-type-input')?.value.trim() || '';
-        const keyword = $('metadata-keyword-input')?.value.trim() || '';
+      const logicalPath = $('metadata-path-input')?.value.trim() || '';
+      const dataType = $('metadata-type-input')?.value.trim() || '';
+      const keyword = $('metadata-keyword-input')?.value.trim() || '';
 
-        graph = await queryMetadataBySystem({
-          logicalPath,
-          dataType,
-          keyword,
-        });
-        focusKeyword = keyword;
-      }
+      graph = await queryMetadataBySystem({
+        logicalPath,
+        dataType,
+        keyword,
+      });
+      focusKeyword = keyword;
     }
 
     renderAndTrackMetadataGraph(graph, {
@@ -2159,9 +2317,6 @@ $('metadata-quick-keyword-input').addEventListener('keydown', e => {
 $('metadata-keyword-input')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') $('metadata-search-btn').click();
 });
-$('metadata-llm-input')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') $('metadata-search-btn').click();
-});
 
 $('metadata-fullscreen-btn').addEventListener('click', () => {
   enterMetadataFullscreen();
@@ -2170,20 +2325,6 @@ $('metadata-fullscreen-btn').addEventListener('click', () => {
 $('metadata-exit-fullscreen-btn').addEventListener('click', () => {
   exitMetadataFullscreen();
 });
-
-function syncMetadataQueryModeUI(mode) {
-  metadataQueryMode = (mode || 'system').toLowerCase() === 'llm' ? 'llm' : 'system';
-
-  const systemBtn = $('metadata-mode-system-btn');
-  const llmBtn = $('metadata-mode-llm-btn');
-  const systemPanel = $('metadata-system-filters');
-  const llmPanel = $('metadata-llm-panel');
-
-  if (systemBtn) systemBtn.classList.toggle('active', metadataQueryMode === 'system');
-  if (llmBtn) llmBtn.classList.toggle('active', metadataQueryMode === 'llm');
-  if (systemPanel) systemPanel.classList.toggle('hidden', metadataQueryMode !== 'system');
-  if (llmPanel) llmPanel.classList.toggle('hidden', metadataQueryMode !== 'llm');
-}
 
 function syncMetadataHeaderControls() {
   const quickInput = $('metadata-quick-keyword-input');
@@ -2197,9 +2338,6 @@ function syncMetadataHeaderControls() {
   }
 }
 
-$('metadata-mode-system-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('system'));
-$('metadata-mode-llm-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('llm'));
-syncMetadataQueryModeUI('system');
 syncMetadataHeaderControls();
 
 document.addEventListener('keydown', e => {
