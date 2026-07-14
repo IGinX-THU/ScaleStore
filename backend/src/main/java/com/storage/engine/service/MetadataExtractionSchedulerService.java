@@ -159,8 +159,16 @@ public class MetadataExtractionSchedulerService {
         handleSemanticCallback("Leaf", request);
     }
 
+    public void handleLeafSemanticStartCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticStartCallback("Leaf", request);
+    }
+
     public void handleDirectorySemanticCallback(MetadataSemanticLeafCallbackRequest request) {
         handleSemanticCallback("Directory", request);
+    }
+
+    public void handleDirectorySemanticStartCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticStartCallback("Directory", request);
     }
 
     private void handleSemanticCallback(String assetKind, MetadataSemanticLeafCallbackRequest request) {
@@ -215,6 +223,36 @@ public class MetadataExtractionSchedulerService {
                 assetPath,
                 keywords.length(),
                 System.currentTimeMillis() - startedAt);
+    }
+
+    private void handleSemanticStartCallback(String assetKind, MetadataSemanticLeafCallbackRequest request) {
+        if (request == null || request.getMetaKey() == null) {
+            throw new IllegalArgumentException("metaKey is required");
+        }
+
+        long metaKey = request.getMetaKey().longValue();
+        String assetPath = safe(request.getAssetPath());
+        if (assetPath.isEmpty()) {
+            assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
+        }
+        String dataType = safe(request.getDataType()).toLowerCase(Locale.ROOT);
+        String fileName = safe(request.getFileName());
+        String title = assetPath.isEmpty() ? String.valueOf(metaKey) : assetPath;
+
+        publishEvent(
+                "running",
+                "STARTED",
+                assetKind + " semantic extraction started: path=" + title
+                        + ", dataType=" + dataType
+                        + ", fileName=" + fileName,
+                "Metadata-UDF");
+        logger.info(
+                "[MetadataSemanticStartCallback] kind={}, metaKey={}, dataType={}, fileName={}, assetPath={}",
+                assetKind.toLowerCase(Locale.ROOT),
+                metaKey,
+                dataType,
+                fileName,
+                assetPath);
     }
 
     private boolean isDirectory(DataItem item) {

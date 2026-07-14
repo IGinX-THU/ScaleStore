@@ -383,6 +383,12 @@ class BaseMetadataExtractor(object):
         txt = re.sub(r"[^A-Za-z0-9_\-\u4e00-\u9fa5]", "", txt)
         return txt
 
+    def normalize_iginx_duplicate_key_name(self, value):
+        text = self._safe(value)
+        if text.lower() == "key_2":
+            return "key"
+        return text
+
     def _to_int(self, value, default_value):
         try:
             return int(str(value).strip())

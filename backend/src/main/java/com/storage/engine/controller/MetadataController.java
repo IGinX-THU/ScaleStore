@@ -87,9 +87,21 @@ public class MetadataController {
         return Response.success();
     }
 
+    @PostMapping("/metadata/extraction/semantic/leaf-start-callback")
+    public Response<Void> leafSemanticStartCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleLeafSemanticStartCallback(request);
+        return Response.success();
+    }
+
     @PostMapping("/metadata/extraction/semantic/directory-callback")
     public Response<Void> directorySemanticCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
         metadataExtractionSchedulerService.handleDirectorySemanticCallback(request);
+        return Response.success();
+    }
+
+    @PostMapping("/metadata/extraction/semantic/directory-start-callback")
+    public Response<Void> directorySemanticStartCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleDirectorySemanticStartCallback(request);
         return Response.success();
     }
 }

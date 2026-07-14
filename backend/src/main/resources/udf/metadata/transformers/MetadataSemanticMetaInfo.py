@@ -1,4 +1,8 @@
+import json
 import math
+import os
+
+import requests
 
 
 def _safe(value):
@@ -93,7 +97,71 @@ def _trace(message, **fields):
     print("[MetadataSemanticTransform][meta-info] " + message + suffix, flush=True)
 
 
-class _MetaInfoBase(object):
+class _CallbackSupport(object):
+    DEFAULT_CALLBACK_BASE_URL = "http://127.0.0.1:8080"
+    CALLBACK_CONFIG_ENV = "METADATA_CONFIG_FILE"
+    CALLBACK_CONFIG_NAME = "config.json"
+
+    def _load_callback_config(self):
+        path = os.environ.get(self.CALLBACK_CONFIG_ENV)
+        if not path:
+            path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), self.CALLBACK_CONFIG_NAME)
+        if not os.path.exists(path):
+            return {}
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            _trace("callback_config_load_failed", error=str(exc))
+            return {}
+
+    def _callback_url(self, kind):
+        config = self._load_callback_config()
+        direct_key = kind + "SemanticCallbackUrl"
+        direct_url = _safe(config.get(direct_key, ""))
+        if direct_url:
+            return direct_url
+        webserver = config.get("webserver", {})
+        if isinstance(webserver, dict):
+            direct_url = _safe(webserver.get(direct_key, ""))
+            if direct_url:
+                return direct_url
+        base_url = _safe(config.get("callbackBaseUrl", ""))
+        if not base_url and isinstance(webserver, dict):
+            base_url = _safe(webserver.get("baseUrl", ""))
+        if not base_url:
+            base_url = self.DEFAULT_CALLBACK_BASE_URL
+        return base_url.rstrip("/") + "/metadata/extraction/semantic/" + kind + "-callback"
+
+    def _post_callback(self, kind, payload):
+        url = self._callback_url(kind)
+        response = requests.post(url, json=payload, timeout=10)
+        body = response.text
+        if response.status_code < 200 or response.status_code >= 300:
+            _trace(
+                kind + "_callback_failed",
+                metaKey=payload.get("metaKey", ""),
+                statusCode=response.status_code,
+                bodyPreview=body[:160],
+            )
+            raise RuntimeError("%s semantic callback failed: status=%s body=%s" % (kind, response.status_code, body[:400]))
+        try:
+            parsed = response.json()
+        except Exception:
+            return
+        code = parsed.get("code")
+        if code is not None and int(code) != 200:
+            _trace(
+                kind + "_callback_rejected",
+                metaKey=payload.get("metaKey", ""),
+                code=code,
+                message=_safe(parsed.get("message", "")),
+            )
+            raise RuntimeError("%s semantic callback rejected: code=%s message=%s" % (kind, code, _safe(parsed.get("message", ""))))
+
+
+class _MetaInfoBase(_CallbackSupport):
     OUTPUT_COLUMNS = [
         "metaKey",
         "logicalPath",
@@ -173,6 +241,31 @@ class _MetaInfoBase(object):
             self._to_binary(_safe(item.get("contentPath", ""))),
         ]]
 
+    def _notify_started(self, item):
+        meta_key = _to_int(item.get("key", item.get("metaKey", "")), 0)
+        logical_path = _normalize_path(item.get("logicalPath", ""))
+        asset_path = self._asset_path(item)
+        data_type = _safe(item.get("dataType", "")).lower()
+        payload = {
+            "metaKey": meta_key,
+            "status": "STARTED",
+            "keywords": "[]",
+            "message": "semantic extraction started",
+            "logicalPath": logical_path,
+            "assetPath": asset_path,
+            "fileName": _safe(item.get("fileName", "")),
+            "dataType": data_type,
+            "fileFormat": _safe(item.get("fileFormat", "")),
+        }
+        self._post_callback(self.CALLBACK_KIND, payload)
+        _trace(
+            self.LOG_NAME + "_started_callback_sent",
+            metaKey=meta_key,
+            logicalPath=logical_path,
+            assetPath=asset_path,
+            dataType=data_type,
+        )
+
     def _to_binary(self, value):
         if value is None:
             return b""
@@ -183,6 +276,7 @@ class _MetaInfoBase(object):
 
 class _MetaInfoPassThrough(_MetaInfoBase):
     LOG_NAME = "meta_info"
+    CALLBACK_KIND = "leaf-start"
 
     def transform(self, rows):
         records = self._records(rows)
@@ -191,6 +285,7 @@ class _MetaInfoPassThrough(_MetaInfoBase):
             return [self.OUTPUT_COLUMNS]
 
         record = records[0]
+        self._notify_started(record)
         output = self._emit(record)
         _trace(
             self.LOG_NAME + "_emit",
@@ -205,7 +300,9 @@ class _MetaInfoPassThrough(_MetaInfoBase):
 
 class MetadataSemanticLeafMetaInfo(_MetaInfoPassThrough):
     LOG_NAME = "leaf_meta_info"
+    CALLBACK_KIND = "leaf-start"
 
 
 class MetadataSemanticDirectoryMetaInfo(_MetaInfoPassThrough):
     LOG_NAME = "directory_meta_info"
+    CALLBACK_KIND = "directory-start"

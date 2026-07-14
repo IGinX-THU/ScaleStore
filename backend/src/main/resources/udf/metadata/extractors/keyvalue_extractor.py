@@ -7,6 +7,7 @@ class KeyValueMetadataExtractor(BaseMetadataExtractor):
         fields = self.extract_keyvalue_keys(text_content)
         if not fields:
             fields = self.extract_fields()
+        fields = self.dedup_strings([self.normalize_iginx_duplicate_key_name(field) for field in fields], 120)
 
         return {
             "fieldKind": "key",

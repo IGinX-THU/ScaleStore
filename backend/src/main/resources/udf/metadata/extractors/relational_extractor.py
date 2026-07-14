@@ -5,11 +5,8 @@ class RelationalMetadataExtractor(BaseMetadataExtractor):
     def extract(self):
         fields = []
         for field in self.extract_fields():
-            lower = str(field).lower().strip()
-            # UDF query result may include synthetic key column; legacy behavior excluded it.
-            if lower == "key":
-                continue
-            fields.append(field)
+            fields.append(self.normalize_iginx_duplicate_key_name(field))
+        fields = self.dedup_strings(fields, 120)
 
         return {
             "fieldKind": "column",
