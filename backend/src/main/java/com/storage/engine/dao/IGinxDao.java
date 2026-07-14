@@ -480,19 +480,36 @@ public class IGinxDao {
       if (safeStatus.isEmpty()) {
           safeStatus = "PENDING";
       }
-      String sql = String.format(
-              Locale.ROOT,
-          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s');",
-              IGinxConstants.STORAGE_META_PATH,
-              key,
-              escapeSql(logicalPath),
-              escapeSql(dataType),
-              escapeSql(fileName),
-          escapeSqlKeepBackslash(contentPath),
-              fileSize,
-              escapeSql(fileFormat),
-              escapeSql(createTime),
-              escapeSql(safeStatus));
+      String sql;
+      if ("SKIPPED".equals(safeStatus)) {
+          sql = String.format(
+                  Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus, semanticKeywords) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s', '[]');",
+                  IGinxConstants.STORAGE_META_PATH,
+                  key,
+                  escapeSql(logicalPath),
+                  escapeSql(dataType),
+                  escapeSql(fileName),
+              escapeSqlKeepBackslash(contentPath),
+                  fileSize,
+                  escapeSql(fileFormat),
+                  escapeSql(createTime),
+                  escapeSql(safeStatus));
+      } else {
+          sql = String.format(
+                  Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s');",
+                  IGinxConstants.STORAGE_META_PATH,
+                  key,
+                  escapeSql(logicalPath),
+                  escapeSql(dataType),
+                  escapeSql(fileName),
+              escapeSqlKeepBackslash(contentPath),
+                  fileSize,
+                  escapeSql(fileFormat),
+                  escapeSql(createTime),
+                  escapeSql(safeStatus));
+      }
       executeSql(sql);
   }
 

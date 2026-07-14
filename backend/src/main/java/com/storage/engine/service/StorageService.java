@@ -37,6 +37,10 @@ public class StorageService {
     private static final long FULL_ROW_BYTES = 1024L * 1024L;
     private static final String DEFAULT_FILESYSTEM_STRUCT = "FileTree";
     private static final String STATUS_PENDING = "PENDING";
+    private static final String STATUS_SKIPPED = "SKIPPED";
+    private static final Set<String> IMAGE_FILE_EXTENSIONS = new HashSet<String>(Arrays.asList(
+            "jpg", "jpeg", "png", "bmp", "gif", "webp"
+    ));
 
     @Autowired
     private IGinxDao iginxDao;
@@ -246,10 +250,11 @@ public class StorageService {
         String folderPath = StorageUtils.toIginxDataPath(logicalPath);
         String iginxPath = StorageUtils.toFileLeafPath(folderPath, fileName);
         String contentPath = buildContentPath(iginxPath, dataType);
+        String knowledgeExtractStatus = initialKnowledgeExtractStatus(dataType, fileName, fileFormat);
 
         // Store metadata
         ensureDirectoryAssetsInMeta(logicalPath, createTime, accessService.getAllMeta());
-        iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime);
+        iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, knowledgeExtractStatus);
 
         // Delegate to adapter for actual data storage
         adapter.store(file, iginxPath);
@@ -263,10 +268,14 @@ public class StorageService {
         item.setFileFormat(fileFormat);
         item.setCreateTime(createTime);
         item.setIsValid(true);
-        item.setKnowledgeExtractStatus("PENDING");
+        item.setKnowledgeExtractStatus(knowledgeExtractStatus);
+        if (STATUS_SKIPPED.equals(knowledgeExtractStatus)) {
+            item.setSemanticKeywords("[]");
+        }
         item.setContentPath(contentPath);
 
         dataSourceService.increaseDefaultDataSourceSize(fileSize);
+        publishInitialKnowledgeExtractEvent("Storage-Service", logicalPath, fileName, dataType, fileFormat, knowledgeExtractStatus);
         metadataExtractionSchedulerService.persistMetadataTreeAsync(item);
         return item;
     }
@@ -472,6 +481,7 @@ public class StorageService {
             String contentPath = buildContentPath(assetPath, inferredDataType);
             long estimatedFileSize = estimateExternalAssetSize(assetPath, context);
             long metaId = allocateMetaId();
+            String knowledgeExtractStatus = initialKnowledgeExtractStatus(inferredDataType, fileName, fileFormat);
 
             iginxDao.insertMeta(
                     metaId,
@@ -481,7 +491,8 @@ public class StorageService {
                     contentPath,
                     estimatedFileSize,
                     fileFormat,
-                    createTime);
+                    createTime,
+                    knowledgeExtractStatus);
 
             result.importedCount++;
             result.totalEstimatedSize += Math.max(0L, estimatedFileSize);
@@ -494,8 +505,13 @@ public class StorageService {
             added.setDataType(inferredDataType);
             added.setContentPath(contentPath);
             added.setFileSize(estimatedFileSize);
+            added.setKnowledgeExtractStatus(knowledgeExtractStatus);
+            if (STATUS_SKIPPED.equals(knowledgeExtractStatus)) {
+                added.setSemanticKeywords("[]");
+            }
             existingMeta.add(added);
             result.importedItems.add(added);
+            publishInitialKnowledgeExtractEvent("External-Source", logicalPath, fileName, inferredDataType, fileFormat, knowledgeExtractStatus);
 
             pendingSizeDelta += Math.max(0L, estimatedFileSize);
             pendingFlushFiles++;
@@ -581,6 +597,7 @@ public class StorageService {
 
             long estimatedFileSize = estimateSchemaFilesystemAssetSize(assetPath, context, inferredDataType, asset.columns);
             long metaId = allocateMetaId();
+            String knowledgeExtractStatus = initialKnowledgeExtractStatus(inferredDataType, fileName, fileFormat);
 
             iginxDao.insertMeta(
                     metaId,
@@ -591,7 +608,7 @@ public class StorageService {
                     estimatedFileSize,
                     fileFormat,
                     createTime,
-                    STATUS_PENDING);
+                    knowledgeExtractStatus);
 
             result.importedCount++;
             result.totalEstimatedSize += Math.max(0L, estimatedFileSize);
@@ -603,9 +620,13 @@ public class StorageService {
             added.setDataType(inferredDataType);
             added.setContentPath(contentPath);
             added.setFileSize(estimatedFileSize);
-            added.setKnowledgeExtractStatus(STATUS_PENDING);
+            added.setKnowledgeExtractStatus(knowledgeExtractStatus);
+            if (STATUS_SKIPPED.equals(knowledgeExtractStatus)) {
+                added.setSemanticKeywords("[]");
+            }
             existingMeta.add(added);
             result.importedItems.add(added);
+            publishInitialKnowledgeExtractEvent("External-Source", logicalPath, fileName, inferredDataType, fileFormat, knowledgeExtractStatus);
 
             pendingSizeDelta += Math.max(0L, estimatedFileSize);
             pendingFlushFiles++;
@@ -1359,6 +1380,52 @@ public class StorageService {
                 + ", size=" + safeSize + " bytes"
                 + (safe(detail).isEmpty() ? "" : ", detail=" + safe(detail));
         metadataExtractionSchedulerService.publishExternalSourceEvent(level, status, text, "External-Source");
+    }
+
+    private String initialKnowledgeExtractStatus(String dataType, String fileName, String fileFormat) {
+        return shouldSkipKnowledgeExtractionAtIngest(dataType, fileName, fileFormat) ? STATUS_SKIPPED : STATUS_PENDING;
+    }
+
+    private boolean shouldSkipKnowledgeExtractionAtIngest(String dataType, String fileName, String fileFormat) {
+        if (!IGinxConstants.TYPE_FILE.equals(safe(dataType).toLowerCase(Locale.ROOT))) {
+            return false;
+        }
+        String normalizedFileFormat = safe(fileFormat).toLowerCase(Locale.ROOT);
+        if (normalizedFileFormat.startsWith(".")) {
+            normalizedFileFormat = normalizedFileFormat.substring(1);
+        }
+        if (normalizedFileFormat.isEmpty()) {
+            String normalizedFileName = safe(fileName).toLowerCase(Locale.ROOT);
+            int dotIndex = normalizedFileName.lastIndexOf('.');
+            if (dotIndex >= 0 && dotIndex + 1 < normalizedFileName.length()) {
+                normalizedFileFormat = normalizedFileName.substring(dotIndex + 1);
+            }
+        }
+        return !IMAGE_FILE_EXTENSIONS.contains(normalizedFileFormat);
+    }
+
+    private void publishInitialKnowledgeExtractEvent(String agentName,
+                                                     String logicalPath,
+                                                     String fileName,
+                                                     String dataType,
+                                                     String fileFormat,
+                                                     String knowledgeExtractStatus) {
+        String normalizedStatus = safe(knowledgeExtractStatus).toUpperCase(Locale.ROOT);
+        if (!STATUS_SKIPPED.equals(normalizedStatus)) {
+            return;
+        }
+        String pathPart = safe(logicalPath).isEmpty() ? "(unknown)" : safe(logicalPath);
+        String filePart = safe(fileName).isEmpty() ? "(unknown)" : safe(fileName);
+        String text = "Knowledge extraction skipped at ingest: path=" + pathPart
+                + ", dataType=" + safe(dataType).toLowerCase(Locale.ROOT)
+                + ", fileName=" + filePart
+                + ", fileFormat=" + safe(fileFormat)
+                + ", reason=non-image file blocked before extraction";
+        metadataExtractionSchedulerService.publishExternalSourceEvent(
+                "info",
+                STATUS_SKIPPED,
+                text,
+                safe(agentName).isEmpty() ? "Storage-Service" : safe(agentName));
     }
 
     private long resolveExternalRowCount(String assetPath) {

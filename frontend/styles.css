@@ -997,6 +997,22 @@ body.metadata-fullscreen-active {
   overflow: hidden;
 }
 
+body.agent-expanded-active {
+  overflow: hidden;
+}
+
+.dashboard-grid.agent-expanded {
+  grid-template-areas:
+    "cluster cluster metadata metadata metadata metadata storage storage"
+    "topology topology metadata metadata metadata metadata storage storage"
+    "user user agent agent agent agent access access"
+    "policy policy agent agent agent agent access access";
+}
+
+.dashboard-grid.agent-expanded .panel-interface {
+  display: none;
+}
+
 .panel-metadata.metadata-fullscreen {
   position: fixed;
   inset: 18px;

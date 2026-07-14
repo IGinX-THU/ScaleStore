@@ -297,11 +297,15 @@ class MetadataSemanticDirectoryCandidate(object):
             if _parent_path(child_path) != dir_path:
                 continue
             has_child = True
-            if self._status(item) != "SUCCESS" or not _safe(item.get("semanticKeywords", "")):
+            status = self._status(item)
+            keywords = _safe(item.get("semanticKeywords", ""))
+            if status == "SKIPPED":
+                continue
+            if status != "SUCCESS" or not keywords:
                 return False, "child_not_ready:%s:%s:%s" % (
                     _safe(item.get("key", item.get("metaKey", ""))),
-                    self._status(item),
-                    _safe(item.get("semanticKeywords", ""))[:64],
+                    status,
+                    keywords[:64],
                 )
         if not has_child:
             return False, "no_child"

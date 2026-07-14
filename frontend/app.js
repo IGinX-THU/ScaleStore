@@ -30,9 +30,12 @@ let dataSourceSummary = { totalDataSize: 0, dataSources: [] };
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
+let agentExpanded = false;
 let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
+let agentDisplayQueue = [];
+let agentDisplayTimer = null;
 let metadataGraphSignature = '';
 let metadataGraphNodeIds = new Set();
 let metadataCurrentLogicalPath = '';
@@ -669,6 +672,49 @@ function pushAgentMessage({ level = 'info', status = '', text = '', agentName = 
   });
 }
 
+function getAgentDisplayIntervalMs() {
+  return agentDisplayQueue.length > 50 ? 500 : 1000;
+}
+
+function stopAgentDisplayQueue() {
+  if (agentDisplayTimer) {
+    clearTimeout(agentDisplayTimer);
+    agentDisplayTimer = null;
+  }
+}
+
+function scheduleAgentDisplayQueue() {
+  stopAgentDisplayQueue();
+  if (agentDisplayQueue.length === 0) return;
+  agentDisplayTimer = setTimeout(() => {
+    agentDisplayTimer = null;
+    const next = agentDisplayQueue.shift();
+    if (next) {
+      pushAgentMessage(next);
+    }
+    if (agentDisplayQueue.length > 0) {
+      scheduleAgentDisplayQueue();
+    }
+  }, getAgentDisplayIntervalMs());
+}
+
+function enqueueAgentMessage(message) {
+  if (!message || !message.text) return;
+  agentDisplayQueue.push(message);
+  if (!agentDisplayTimer) {
+    scheduleAgentDisplayQueue();
+    return;
+  }
+  if (agentDisplayQueue.length > 50) {
+    scheduleAgentDisplayQueue();
+  }
+}
+
+function clearAgentDisplayQueue() {
+  agentDisplayQueue = [];
+  stopAgentDisplayQueue();
+}
+
 function sanitizeAgentEventText(text) {
   return String(text || '')
     .replace(/\s*[a-z]+(?:\s+[a-z]+)*\s+extraction by udf;\s*neo4j persisted\.?/ig, '')
@@ -724,7 +770,7 @@ async function pollAgentEvents() {
   for (const evt of events) {
     const rawLevel = String(evt.level || '').toLowerCase();
     const level = ['running', 'success', 'warn', 'info'].includes(rawLevel) ? rawLevel : 'info';
-    pushAgentMessage({
+    enqueueAgentMessage({
       level,
       status: evt.status || '',
       text: sanitizeAgentEventText(evt.text || ''),
@@ -766,6 +812,7 @@ function startAgentEventPolling() {
 function clearAgentStream() {
   const list = $('agent-stream-list');
   if (list) list.innerHTML = '';
+  clearAgentDisplayQueue();
 }
 
 function initAgentPanel() {
@@ -785,6 +832,22 @@ function initAgentPanel() {
     });
   }
 
+  const expandBtn = $('agent-expand-btn');
+  if (expandBtn && !expandBtn.dataset.bound) {
+    expandBtn.dataset.bound = 'true';
+    expandBtn.addEventListener('click', () => {
+      enterAgentExpanded();
+    });
+  }
+
+  const collapseBtn = $('agent-collapse-btn');
+  if (collapseBtn && !collapseBtn.dataset.bound) {
+    collapseBtn.dataset.bound = 'true';
+    collapseBtn.addEventListener('click', () => {
+      exitAgentExpanded();
+    });
+  }
+
   clearAgentStream();
   agentEventCursor = 0;
   pushAgentMessage({
@@ -795,6 +858,26 @@ function initAgentPanel() {
   });
   syncAgentPoolNodeState(true);
   startAgentEventPolling();
+}
+
+function enterAgentExpanded() {
+  const grid = document.querySelector('.dashboard-grid');
+  if (!grid || agentExpanded) return;
+  agentExpanded = true;
+  grid.classList.add('agent-expanded');
+  document.body.classList.add('agent-expanded-active');
+  $('agent-expand-btn')?.classList.add('hidden');
+  $('agent-collapse-btn')?.classList.remove('hidden');
+}
+
+function exitAgentExpanded() {
+  const grid = document.querySelector('.dashboard-grid');
+  if (!grid || !agentExpanded) return;
+  agentExpanded = false;
+  grid.classList.remove('agent-expanded');
+  document.body.classList.remove('agent-expanded-active');
+  $('agent-expand-btn')?.classList.remove('hidden');
+  $('agent-collapse-btn')?.classList.add('hidden');
 }
 
 // ==================== 集群管理 ====================
@@ -2343,6 +2426,9 @@ syncMetadataHeaderControls();
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && metadataFullscreen) {
     exitMetadataFullscreen();
+  }
+  if (e.key === 'Escape' && agentExpanded) {
+    exitAgentExpanded();
   }
 });
 
