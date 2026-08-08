@@ -13,7 +13,6 @@ taskList:
     dataFlowType: "stream"
     timeout: 10000000
     sqlList:
-      - INSERT INTO storage.meta(key, knowledgeExtractStatus) VALUES (SELECT metaKey AS key, 'PROCESSING' FROM directoryMetaInfo);
       - SELECT * FROM (SELECT key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus, semanticKeywords FROM storage.meta) FULL OUTER JOIN (SELECT metaKey AS dirMeta_key, logicalPath AS dirMeta_logicalPath, assetPath AS dirMeta_assetPath, fileName AS dirMeta_fileName, createTime AS dirMeta_createTime FROM directoryMetaInfo);
   - taskType: "python"
     dataFlowType: "batch"

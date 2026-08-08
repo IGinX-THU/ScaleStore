@@ -231,6 +231,7 @@ public class MetadataExtractionSchedulerService {
         }
 
         long metaKey = request.getMetaKey().longValue();
+        iginxDao.updateMetaKnowledgeStatus(metaKey, "PROCESSING");
         String assetPath = safe(request.getAssetPath());
         if (assetPath.isEmpty()) {
             assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
