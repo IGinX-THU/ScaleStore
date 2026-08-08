@@ -18,6 +18,7 @@ taskList:
     dataFlowType: "stream"
     timeout: 10000000
     sqlList:
+      - INSERT INTO storage.meta(key, knowledgeExtractStatus) VALUES (SELECT metaKey AS key, 'PROCESSING' FROM leafMetaInfo);
       - SELECT * FROM (SELECT VALUE2META(SELECT contentPath FROM leafMetaInfo) FROM data) FULL OUTER JOIN (SELECT metaKey AS metaInfo_key, logicalPath AS metaInfo_logicalPath, assetPath AS metaInfo_assetPath, fileName AS metaInfo_fileName, dataType AS metaInfo_dataType, fileFormat AS metaInfo_fileFormat, fileSize AS metaInfo_fileSize, createTime AS metaInfo_createTime, contentPath AS metaInfo_contentPath FROM leafMetaInfo);
   - taskType: "python"
     dataFlowType: "batch"
