@@ -70,6 +70,58 @@ def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
         return fallback_keywords
 
 
+def extract_keyword_relations(params, keywords, max_count=24):
+    terms = dedup_strings(keywords, 40)
+    if len(terms) < 2 or not _llm_available(params):
+        return []
+
+    prompt = (
+        "You extract direct semantic relations between metadata keywords. Return strict JSON only: "
+        "{\"triples\":[{\"subject\":\"keyword from input\",\"predicate\":\"concise Chinese relation\",\"object\":\"keyword from input\"}]}. "
+        "Only output relations directly supported by the supplied keywords. "
+        "Subject and object must be exact copies of supplied keywords: never use synonyms, aliases, expansions, "
+        "abbreviations, translations, or newly invented entities. Do not infer weak topical similarity."
+    )
+    user_content = json.dumps({
+        "keywords": terms,
+        "rules": [
+            "Use only keywords supplied in keywords for subject and object.",
+            "Copy subject and object exactly from keywords; do not rewrite either endpoint.",
+            "Do not create self relations.",
+            "Return an empty triples array when no direct relation exists.",
+        ],
+    }, ensure_ascii=False)
+
+    try:
+        started = time.time()
+        node = _parse_json_object(_llm_chat(params, _safe(params.get("llmModel", "")), [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": user_content},
+        ]))
+        allowed = set(terms)
+        triples = []
+        for triple in node.get("triples", []) if isinstance(node, dict) else []:
+            if not isinstance(triple, dict):
+                continue
+            subject = _safe(triple.get("subject", ""))
+            predicate = _safe(triple.get("predicate", triple.get("relation", "")))
+            obj = _safe(triple.get("object", ""))
+            if subject not in allowed or obj not in allowed or subject == obj or not predicate:
+                continue
+            triples.append({"subject": subject, "predicate": predicate, "object": obj})
+        normalized = _dedup_triples(triples, max_count)
+        _trace(
+            "keyword_relation_extract_done",
+            metaKey=params.get("metaKey", ""),
+            relationCount=len(normalized),
+            elapsedMs=int((time.time() - started) * 1000),
+        )
+        return normalized
+    except Exception as exc:
+        _trace("keyword_relation_extract_failed", metaKey=params.get("metaKey", ""), error=str(exc))
+        return []
+
+
 def summarize_directory_keywords(params, path, child_keywords, max_count=12):
     fallback_keywords = dedup_strings(child_keywords or [], max_count)
     if not fallback_keywords or not _llm_available(params):
@@ -123,6 +175,41 @@ def dedup_strings(values, max_count):
         if len(out) >= max_count:
             break
     return out
+
+
+def _dedup_triples(triples, max_count):
+    seen = set()
+    out = []
+    for triple in triples or []:
+        if not isinstance(triple, dict):
+            continue
+        subject = _safe(triple.get("subject", ""))
+        predicate = _safe(triple.get("predicate", triple.get("relation", "")))
+        obj = _safe(triple.get("object", ""))
+        if not subject or not predicate or not obj:
+            continue
+        key = subject + "|" + predicate + "|" + obj
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append({"subject": subject, "predicate": predicate, "object": obj})
+        if len(out) >= max_count:
+            break
+    return out
+
+
+def filter_triples_by_keywords(triples, keywords, max_count=180):
+    allowed = set(_safe(keyword) for keyword in keywords or [])
+    filtered = []
+    for triple in triples or []:
+        if not isinstance(triple, dict):
+            continue
+        subject = _safe(triple.get("subject", ""))
+        obj = _safe(triple.get("object", ""))
+        if subject not in allowed or obj not in allowed:
+            continue
+        filtered.append(triple)
+    return _dedup_triples(filtered, max_count)
 
 
 def _asset_fallback(asset):
@@ -339,6 +426,9 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             keywords = []
             if not skip_keyword_normalization:
                 keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
+            keyword_relations = extract_keyword_relations(params, keywords)
+            source_triples = (extracted.get("triples", []) or []) + keyword_relations
+            triples = filter_triples_by_keywords(source_triples, keywords, 180)
 
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(
@@ -351,7 +441,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 fields=fields,
                 field_kind=field_kind,
                 entities=entities,
-                triples=extracted.get("triples", []) or [],
+                triples=triples,
                 keywords=keywords,
             )
             message = self._safe(extracted.get("message", ""))
@@ -362,6 +452,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 metaKey=params.get("metaKey", ""),
                 status="SUCCESS",
                 keywordCount=len(keywords),
+                rejectedTripleCount=len(source_triples) - len(triples),
                 totalElapsedMs=int((time.time() - started) * 1000),
             )
             return self._result("SUCCESS", keywords, fields, field_kind, message)

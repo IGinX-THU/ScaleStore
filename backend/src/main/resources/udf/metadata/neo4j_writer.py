@@ -88,10 +88,12 @@ class Neo4jGraphWriter(object):
             ON CREATE SET a.name = $name, a.updatedAt = timestamp()
             ON MATCH SET a.name = $name,
                          a.updatedAt = timestamp()
+            SET a.semanticKeywords = $keywords
             REMOVE a.logicalPath, a.dataType, a.fileFormat, a.fileSize, a.createTime, a.assetKind, a.keywords, a.ukey
             """,
             meta_key=meta_key,
             name=payload.get("file_name", ""),
+            keywords=payload.get("keywords", []),
         )
         tx.run(
             """
@@ -169,19 +171,23 @@ class Neo4jGraphWriter(object):
             key_name=key_name,
             key_value=key_value,
         )
+        tx.run(
+            """
+            MATCH ()-[r:SEMANTIC_RELATION]->()
+            WHERE r.assetKey = $asset_key
+            DELETE r
+            """,
+            asset_key=self._relation_asset_key(label, key_value),
+        )
 
-        terms = []
-        terms.extend(payload.get("keywords", []) or [])
-        terms.extend(payload.get("entities", []) or [])
-        for triple in payload.get("triples", []) or []:
-            terms.append(triple.get("subject", ""))
-            terms.append(triple.get("object", ""))
-
-        for term in self._dedup_strings(terms, 120):
+        keyword_terms = self._dedup_strings(payload.get("keywords", []) or [], 120)
+        keyword_norms = set()
+        for term in keyword_terms:
             name = self._normalize_display(term)
             norm = self._normalize(name)
             if not norm:
                 continue
+            keyword_norms.add(norm)
             tx.run(
                 """
                 MATCH (n)
@@ -199,6 +205,179 @@ class Neo4jGraphWriter(object):
                 norm=norm,
                 name=name,
             )
+
+        for triple in payload.get("triples", []) or []:
+            subject = self._normalize_display(triple.get("subject", ""))
+            predicate = self._normalize_display(triple.get("predicate", triple.get("relation", "")))
+            obj = self._normalize_display(triple.get("object", ""))
+            subject_norm = self._normalize(subject)
+            object_norm = self._normalize(obj)
+            if (not subject_norm or not object_norm or subject_norm == object_norm or not predicate
+                    or subject_norm not in keyword_norms or object_norm not in keyword_norms):
+                continue
+            subject_norm, subject, object_norm, obj = self._canonical_entity_pair(
+                subject_norm, subject, object_norm, obj
+            )
+            tx.run(
+                """
+                MERGE (subject:Entity {norm: $subject_norm})
+                ON CREATE SET subject.name = $subject, subject.updatedAt = timestamp()
+                ON MATCH SET subject.name = coalesce(subject.name, $subject), subject.updatedAt = timestamp()
+                MERGE (object:Entity {norm: $object_norm})
+                ON CREATE SET object.name = $object, object.updatedAt = timestamp()
+                ON MATCH SET object.name = coalesce(object.name, $object), object.updatedAt = timestamp()
+                MERGE (subject)-[r:SEMANTIC_RELATION {assetKey: $asset_key}]->(object)
+                SET r.related = true,
+                    r.relation = $relation,
+                    r.source = 'asset-extraction',
+                    r.updatedAt = timestamp()
+                """,
+                subject_norm=subject_norm,
+                subject=subject,
+                object_norm=object_norm,
+                object=obj,
+                asset_key=self._relation_asset_key(label, key_value),
+                relation=predicate,
+            )
+
+    def persist_entity_relation(self, subject, relation, obj, asset_key, related=True, source="query-udf"):
+        enabled = str(self.params.get("neo4jEnabled", "true")).strip().lower() == "true"
+        if not enabled:
+            return "neo4j disabled"
+
+        uri = self._safe(self.params.get("neo4jUri", ""))
+        username = self._safe(self.params.get("neo4jUsername", ""))
+        password = self._safe(self.params.get("neo4jPassword", ""))
+        if not uri or not username or not password:
+            raise RuntimeError("neo4j config missing: neo4jUri/neo4jUsername/neo4jPassword")
+
+        subject_name = self._normalize_display(subject)
+        object_name = self._normalize_display(obj)
+        relation_name = self._normalize_display(relation)
+        relation_asset_key = self._safe(asset_key)
+        subject_norm = self._normalize(subject_name)
+        object_norm = self._normalize(object_name)
+        if not subject_norm or not object_norm or subject_norm == object_norm or not relation_name or not relation_asset_key:
+            return "entity relation skipped"
+        subject_norm, subject_name, object_norm, object_name = self._canonical_entity_pair(
+            subject_norm, subject_name, object_norm, object_name
+        )
+
+        try:
+            from neo4j import GraphDatabase
+        except Exception as exc:
+            raise RuntimeError("neo4j package is required: pip install neo4j==4.4.41") from exc
+
+        driver = GraphDatabase.driver(uri, auth=(username, password))
+        try:
+            with driver.session() as session:
+                self._ensure_constraints(session)
+                session.write_transaction(
+                    self._write_entity_relation_tx,
+                    subject_norm,
+                    subject_name,
+                    relation_name,
+                    object_norm,
+                    object_name,
+                    relation_asset_key,
+                    bool(related),
+                    self._safe(source) or "query-udf",
+                )
+        finally:
+            driver.close()
+        return "entity relation persisted"
+
+    def _write_entity_relation_tx(self, tx, subject_norm, subject, relation, object_norm, obj, asset_key, related, source):
+        tx.run(
+            """
+            MERGE (subject:Entity {norm: $subject_norm})
+            ON CREATE SET subject.name = $subject, subject.updatedAt = timestamp()
+            ON MATCH SET subject.name = coalesce(subject.name, $subject), subject.updatedAt = timestamp()
+            MERGE (object:Entity {norm: $object_norm})
+            ON CREATE SET object.name = $object, object.updatedAt = timestamp()
+            ON MATCH SET object.name = coalesce(object.name, $object), object.updatedAt = timestamp()
+            MERGE (subject)-[r:SEMANTIC_RELATION {assetKey: $asset_key}]->(object)
+            SET r.related = $related,
+                r.relation = $relation,
+                r.source = $source,
+                r.updatedAt = timestamp()
+            """,
+            subject_norm=subject_norm,
+            subject=subject,
+            relation=relation,
+            object_norm=object_norm,
+            object=obj,
+            asset_key=asset_key,
+            related=related,
+            source=source,
+        )
+
+    def get_entity_relation_statuses(self, focus, candidates, asset_key):
+        """Return cached true/false conclusions for one asset-scoped entity set."""
+        enabled = str(self.params.get("neo4jEnabled", "true")).strip().lower() == "true"
+        if not enabled:
+            return {}
+
+        uri = self._safe(self.params.get("neo4jUri", ""))
+        username = self._safe(self.params.get("neo4jUsername", ""))
+        password = self._safe(self.params.get("neo4jPassword", ""))
+        focus_norm = self._normalize(focus)
+        candidate_norms = self._dedup_strings([self._normalize(item) for item in candidates], 120)
+        relation_asset_key = self._safe(asset_key)
+        if not uri or not username or not password:
+            raise RuntimeError("neo4j config missing: neo4jUri/neo4jUsername/neo4jPassword")
+        if not focus_norm or not candidate_norms or not relation_asset_key:
+            return {}
+
+        try:
+            from neo4j import GraphDatabase
+        except Exception as exc:
+            raise RuntimeError("neo4j package is required: pip install neo4j==4.4.41") from exc
+
+        driver = GraphDatabase.driver(uri, auth=(username, password))
+        try:
+            with driver.session() as session:
+                self._ensure_constraints(session)
+                records = session.read_transaction(
+                    self._read_entity_relation_statuses_tx,
+                    focus_norm,
+                    candidate_norms,
+                    relation_asset_key,
+                )
+        finally:
+            driver.close()
+
+        statuses = {}
+        for record in records:
+            norm = self._safe(record.get("norm", ""))
+            related = record.get("related")
+            if norm and isinstance(related, bool):
+                statuses[norm] = related
+        return statuses
+
+    def _read_entity_relation_statuses_tx(self, tx, focus_norm, candidate_norms, asset_key):
+        result = tx.run(
+            """
+            MATCH (focus:Entity {norm: $focus_norm})-[r:SEMANTIC_RELATION]-(candidate:Entity)
+            WHERE r.assetKey = $asset_key
+              AND candidate.norm IN $candidate_norms
+              AND r.related IS NOT NULL
+            RETURN candidate.norm AS norm, r.related AS related, r.updatedAt AS updatedAt
+            ORDER BY updatedAt DESC
+            """,
+            focus_norm=focus_norm,
+            candidate_norms=candidate_norms,
+            asset_key=asset_key,
+        )
+        return list(result)
+
+    def _relation_asset_key(self, label, key_value):
+        return self._safe(label) + "::" + self._safe(key_value)
+
+    def _canonical_entity_pair(self, left_norm, left_name, right_norm, right_name):
+        if left_norm <= right_norm:
+            return left_norm, left_name, right_norm, right_name
+        return right_norm, right_name, left_norm, left_name
 
     def _delete_legacy_directory_assets_tx(self, tx, payload):
         paths = self._build_path_chain(payload.get("asset_path", ""))

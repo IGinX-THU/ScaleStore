@@ -1,5 +1,6 @@
 package com.storage.engine.service;
 
+import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.AgentMessageEvent;
@@ -12,12 +13,16 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Deque;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
@@ -34,6 +39,7 @@ public class MetadataExtractionSchedulerService {
 
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
+    private final Set<String> relationExpansionInFlight = ConcurrentHashMap.newKeySet();
     @PostConstruct
     public void init() {
         String message = extractionEnabled
@@ -64,6 +70,89 @@ public class MetadataExtractionSchedulerService {
                 }
             }
         });
+    }
+
+    public void expandEntityRelationsAsync(String focusEntity, List<Long> metaKeys) {
+        final String focus = safe(focusEntity);
+        final String whereClause = buildMetaKeyWhereClause(metaKeys);
+        if (focus.isEmpty() || whereClause.isEmpty() || !relationExpansionInFlight.add(focus)) {
+            return;
+        }
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_semantic_entity_relation_expand(*, '"
+                            + escapeSql(focus) + "') from " + IGinxConstants.STORAGE_META_PATH
+                            + " where " + whereClause + ";";
+                    logger.info("[Metadata-UDF][ENTITY-RELATION-SQL] focus={}, sql={}", focus, sql);
+                    publishEvent("running", "ENTITY_RELATION_BATCH",
+                            "Entity relation expansion started: focus=" + focus + ", candidates=" + metaKeys.size(),
+                            "Metadata-UDF");
+                    SessionExecuteSqlResult result = iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "ENTITY_RELATION_DONE",
+                            "Entity relation expansion completed: focus=" + focus + ", "
+                                    + extractEntityRelationSummary(result),
+                            "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Expand entity relations failed: focus={}, reason={}", focus, e.getMessage());
+                    publishEvent("warn", "ENTITY_RELATION_FAILED",
+                            "Entity relation expansion failed: focus=" + focus + ", reason=" + safe(e.getMessage()),
+                            "Metadata-UDF");
+                } finally {
+                    relationExpansionInFlight.remove(focus);
+                }
+            }
+        });
+    }
+
+    private String buildMetaKeyWhereClause(List<Long> metaKeys) {
+        if (metaKeys == null || metaKeys.isEmpty()) {
+            return "";
+        }
+        StringBuilder where = new StringBuilder();
+        for (Long metaKey : metaKeys) {
+            if (metaKey == null || metaKey.longValue() <= 0L) {
+                continue;
+            }
+            if (where.length() > 0) {
+                where.append(" OR ");
+            }
+            where.append("key = ").append(metaKey.longValue());
+        }
+        return where.toString();
+    }
+
+    private String extractEntityRelationSummary(SessionExecuteSqlResult result) {
+        if (result == null || result.getValues() == null) {
+            return "entity relation results: unavailable";
+        }
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                String text = decodeSqlValue(value);
+                int index = text.indexOf("entity relation results:");
+                if (index >= 0) {
+                    return text.substring(index).trim();
+                }
+            }
+        }
+        return "entity relation results: unavailable";
+    }
+
+    private String decodeSqlValue(Object value) {
+        if (value instanceof byte[]) {
+            return new String((byte[]) value, StandardCharsets.UTF_8);
+        }
+        if (value instanceof ByteBuffer) {
+            ByteBuffer buffer = ((ByteBuffer) value).duplicate();
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        return value == null ? "" : String.valueOf(value);
     }
 
     private String buildTreePersistWhereClause(DataItem item) {

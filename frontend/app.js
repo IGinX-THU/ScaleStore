@@ -1722,13 +1722,18 @@ function queueMetadataAutoRefresh(hints = []) {
 async function performMetadataAutoRefresh(hints = []) {
   metadataAutoRefreshInFlight = true;
   try {
-    if (metadataFullscreen || !metadataChart) {
+    if (!metadataChart) {
       return;
     }
 
     const activeSearchKeyword = String(metadataActiveSearchKeyword || '').trim();
     if (activeSearchKeyword) {
-      const nextGraph = await queryMetadataBySystem({ keyword: activeSearchKeyword });
+      const activeFilters = { keyword: activeSearchKeyword, expandRelations: false };
+      if (metadataFullscreen) {
+        activeFilters.logicalPath = $('metadata-path-input')?.value.trim() || '';
+        activeFilters.dataType = $('metadata-type-input')?.value.trim() || '';
+      }
+      const nextGraph = await queryMetadataBySystem(activeFilters);
       const delta = calculateGraphDelta(nextGraph);
       if (!delta.changed) {
         return;
@@ -1804,6 +1809,7 @@ async function queryMetadataBySystem(filters) {
   if (filters?.logicalPath) params.set('logicalPath', filters.logicalPath);
   if (filters?.dataType) params.set('dataType', filters.dataType);
   if (filters?.keyword) params.set('keyword', filters.keyword);
+  if (filters?.expandRelations === false) params.set('expandRelations', 'false');
 
   const url = `${API_BASE}/metadata/query?${params.toString()}`;
   const response = await fetch(url);
@@ -2104,31 +2110,40 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
         && ((src && String(src.name || '').toLowerCase().includes(focus))
         || (tgt && String(tgt.name || '').toLowerCase().includes(focus))));
     const relType = String(l.type || l.label || '').toUpperCase();
+    const isEntityRelation = relType === 'SEMANTIC_RELATION';
     const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
     const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
     return {
       ...l,
       relationText,
-      lineStyle: matched
-        ? (focusMode === 'new'
-          ? {
-              color: baseEdgeColor,
-              width: 2.6,
-              opacity: 1,
-              type: 'solid',
-            }
-          : { color: '#ff4466', width: 3 })
-        : {
-            color: hasBackendMatches ? 'rgba(142, 152, 164, 0.42)' : baseEdgeColor,
-            curveness: 0.1,
-            width: 1.5,
-            opacity: hasBackendMatches ? 0.55 : 0.95,
-            type: 'dashed'
-          },
+      lineStyle: isEntityRelation
+        ? {
+            color: matched ? 'rgba(168, 178, 190, 0.82)' : 'rgba(142, 152, 164, 0.58)',
+            curveness: 0.24,
+            width: matched ? 1.2 : 0.9,
+            opacity: matched ? 0.9 : 0.62,
+            type: 'dashed',
+          }
+        : (matched
+          ? (focusMode === 'new'
+            ? {
+                color: baseEdgeColor,
+                width: 2.6,
+                opacity: 1,
+                type: 'solid',
+              }
+            : { color: '#ff4466', width: 3 })
+          : {
+              color: hasBackendMatches ? 'rgba(142, 152, 164, 0.42)' : baseEdgeColor,
+              curveness: 0.1,
+              width: 1.5,
+              opacity: hasBackendMatches ? 0.55 : 0.95,
+              type: 'dashed'
+            }),
       label: {
         show: false,
         formatter: relationText,
-        color: '#c4d6e8',
+        color: isEntityRelation ? '#c5cbd3' : '#c4d6e8',
         fontSize: 10,
         backgroundColor: 'transparent',
         padding: [0, 0],
@@ -2158,6 +2173,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
             `类型: ${relType || 'RELATION'}`,
             `起点: ${sourceName}`,
             `终点: ${targetName}`,
+            ...(relationText && relationText.toUpperCase() !== relType ? [`关系: ${relationText}`] : []),
           ].join('<br/>');
         }
 
@@ -2193,8 +2209,8 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       force: { repulsion: 300, gravity: 0.05, edgeLength: 150, friction: 0.12 },
       lineStyle: { color: 'rgba(100,160,200,0.35)', curveness: 0.14, width: 1.5 },
       emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
-      edgeSymbol: ['none', 'arrow'],
-      edgeSymbolSize: [0, 8],
+      edgeSymbol: ['none', 'none'],
+      edgeSymbolSize: [0, 0],
     }],
   };
   metadataChart.setOption(option, true);
@@ -2348,6 +2364,7 @@ $('metadata-search-btn').addEventListener('click', async () => {
   try {
     let graph;
     let focusKeyword = '';
+    let logicalPath = '';
     if (!metadataFullscreen) {
       // 非全屏：仅按实体关键词进行快速查询。
       graph = await queryMetadataBySystem({
@@ -2355,7 +2372,7 @@ $('metadata-search-btn').addEventListener('click', async () => {
       });
       focusKeyword = quickKeyword;
     } else {
-      const logicalPath = $('metadata-path-input')?.value.trim() || '';
+      logicalPath = $('metadata-path-input')?.value.trim() || '';
       const dataType = $('metadata-type-input')?.value.trim() || '';
       const keyword = $('metadata-keyword-input')?.value.trim() || '';
 
@@ -2370,8 +2387,8 @@ $('metadata-search-btn').addEventListener('click', async () => {
     renderAndTrackMetadataGraph(graph, {
       focusKeyword,
       focusMode: 'search',
-      logicalPath: metadataCurrentLogicalPath,
-      searchKeyword: metadataFullscreen ? '' : quickKeyword,
+      logicalPath: logicalPath || metadataCurrentLogicalPath,
+      searchKeyword: focusKeyword,
     });
     if (graph.cypher) {
       console.log('Metadata query cypher:', graph.cypher);

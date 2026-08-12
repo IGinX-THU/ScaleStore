@@ -46,9 +46,11 @@ public class MetadataController {
     public Response<Map<String, Object>> query(
             @RequestParam(value = "logicalPath", required = false) String logicalPath,
             @RequestParam(value = "dataType", required = false) String dataType,
-            @RequestParam(value = "keyword", required = false) String keyword) {
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "expandRelations", required = false) Boolean expandRelations) {
 
-        Map<String, Object> result = metadataKnowledgeService.queryBySystemFilters(logicalPath, dataType, keyword);
+        Map<String, Object> result = metadataKnowledgeService.queryBySystemFilters(
+                logicalPath, dataType, keyword, expandRelations == null || expandRelations.booleanValue());
         return Response.success(result);
     }
 

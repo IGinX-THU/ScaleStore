@@ -128,6 +128,7 @@ public class Neo4jDao {
 				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) "
 				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) "
 				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) "
+				+ "WHERE coalesce(sr.related, true) = true "
 				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
 				+ "WITH pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e, assetRank, coalesce(m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
@@ -406,10 +407,18 @@ public class Neo4jDao {
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
 				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) WHERE id(parent) IN $assetIds "
 				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) WHERE id(child) IN $assetIds "
-				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) WHERE id(related) IN $assetIds "
-				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
+				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) "
+				+ "WHERE id(related) IN $assetIds AND coalesce(sr.related, true) = true "
+				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) WHERE $kw='' "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e LIMIT $limit";
+				+ "WHERE $kw='' OR toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) "
+				+ "OPTIONAL MATCH (e)-[er:SEMANTIC_RELATION]-(relatedEntity:Entity) "
+				+ "WHERE $kw<>'' "
+				+ "AND er.assetKey = 'DataAsset::' + toString(d.metaKey) "
+				+ "AND coalesce(er.related, true) = true "
+				+ "AND EXISTS { MATCH (d)-[:MENTIONS]->(relatedEntity) } "
+				+ "OPTIONAL MATCH (d)-[relatedMention:MENTIONS]->(relatedEntity) "
+				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e,er,relatedEntity,relatedMention LIMIT $limit";
 
 		String directoryGraphCypher = "MATCH (p:LogicalPath) WHERE id(p) IN $directoryIds "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
@@ -438,7 +447,8 @@ public class Neo4jDao {
 			if (!assetIds.isEmpty()) {
 				records.addAll(session.run(assetGraphCypher, Values.parameters(
 						"assetIds", assetIds,
-						"limit", safeLimit)).list());
+						"limit", safeLimit,
+						"kw", kw)).list());
 			}
 			if (!directoryIds.isEmpty()) {
 				records.addAll(session.run(directoryGraphCypher, Values.parameters(
@@ -448,6 +458,43 @@ public class Neo4jDao {
 			Map<String, Object> graph = buildGraph(records, matchedIdSet);
 			graph.put("matchedNodeIds", new ArrayList<Long>(matchedIdSet));
 			return graph;
+		} finally {
+			session.close();
+		}
+	}
+
+	public List<String> findMatchedSemanticEntities(List<Long> metaKeys, String keyword) {
+		List<String> out = new ArrayList<String>();
+		if (!neo4jEnabled || metaKeys == null || metaKeys.isEmpty() || keyword == null || keyword.trim().isEmpty()) {
+			return out;
+		}
+		ensureConstraints();
+		List<String> keyTexts = new ArrayList<String>();
+		for (Long metaKey : metaKeys) {
+			if (metaKey != null && metaKey.longValue() > 0L) {
+				keyTexts.add(String.valueOf(metaKey.longValue()));
+			}
+		}
+		if (keyTexts.isEmpty()) {
+			return out;
+		}
+
+		String cypher = "MATCH (d:DataAsset)-[:MENTIONS]->(e:Entity) "
+				+ "WHERE toString(d.metaKey) IN $metaKeys "
+				+ "AND (toLower(coalesce(e.name,'')) CONTAINS toLower($keyword) "
+				+ "OR toLower(coalesce(e.norm,'')) CONTAINS toLower($keyword)) "
+				+ "RETURN DISTINCT e.name AS name ORDER BY name LIMIT 16";
+		Session session = getDriver().session();
+		try {
+			for (Record record : session.run(cypher, Values.parameters(
+					"metaKeys", keyTexts,
+					"keyword", keyword.trim())).list()) {
+				String name = record.get("name").asString("").trim();
+				if (!name.isEmpty()) {
+					out.add(name);
+				}
+			}
+			return out;
 		} finally {
 			session.close();
 		}
@@ -515,16 +562,18 @@ public class Neo4jDao {
 			return;
 		}
 		ensureConstraints();
+		String assetKey = "DataAssetPair::" + Math.min(leftId, rightId) + "::" + Math.max(leftId, rightId);
 		String cypher = "MATCH (a:DataAsset), (b:DataAsset) "
 				+ "WHERE id(a)=$leftId AND id(b)=$rightId "
 				+ "MERGE (a)-[r:SEMANTIC_RELATION]-(b) "
-				+ "SET r.relation=$relation, r.source=$source, r.updatedAt=timestamp()";
+				+ "SET r.related=true, r.relation=$relation, r.assetKey=$assetKey, r.source=$source, r.updatedAt=timestamp()";
 		Session session = getDriver().session();
 		try {
 			session.run(cypher, Values.parameters(
 					"leftId", leftId,
 					"rightId", rightId,
 					"relation", relation.trim(),
+					"assetKey", assetKey,
 					"source", source == null ? "metadata-relation-batch" : source));
 		} finally {
 			session.close();
