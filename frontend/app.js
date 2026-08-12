@@ -638,16 +638,23 @@ function pickAgentName() {
   return pickRandom(getAgentNodeNames()) || 'IGinX1';
 }
 
+function getAgentStatusLabel(level) {
+  const statusLabels = {
+    running: '进行中',
+    success: '完成',
+    warn: '失败',
+    info: '通知',
+  };
+  return statusLabels[level] || statusLabels.info;
+}
+
 function pushAgentMessage({ level = 'info', status = '', text = '', agentName = '', smooth = true, timestamp = null } = {}) {
   const list = $('agent-stream-list');
   if (!list || !text) return;
 
   const validLevels = ['running', 'success', 'warn', 'info'];
   const normalizedLevel = validLevels.includes(level) ? level : 'info';
-  const defaultStatus = normalizedLevel === 'running'
-    ? '进行中'
-    : (normalizedLevel === 'success' ? '完成' : (normalizedLevel === 'warn' ? '失败' : '通知'));
-  const statusText = status || defaultStatus;
+  const statusText = getAgentStatusLabel(normalizedLevel);
   const lineText = agentName ? `智能体【${agentName}】${text}` : text;
   const clock = (timestamp && Number.isFinite(Number(timestamp)))
     ? formatClockTime(new Date(Number(timestamp)))
