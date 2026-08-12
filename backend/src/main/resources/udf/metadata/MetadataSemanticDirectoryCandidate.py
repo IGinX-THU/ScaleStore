@@ -140,7 +140,6 @@ class MetadataSemanticDirectoryCandidate(object):
         records = self._records(data)
         selected = self._select(records)
         if selected is None:
-            _trace("directory_candidate_none")
             return [list(OUTPUT_COLUMNS), list(OUTPUT_TYPES)]
 
         output = [list(OUTPUT_COLUMNS), list(OUTPUT_TYPES), self._emit_row(selected)]

@@ -3,7 +3,6 @@ package com.storage.engine.service.adapter;
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
-import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;

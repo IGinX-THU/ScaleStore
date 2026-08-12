@@ -52,7 +52,6 @@ public class MetadataExtractionSchedulerService {
         if (item == null || item.getId() == null) {
             return;
         }
-        final long key = item.getId().longValue();
         final String assetPath = assetPath(item);
         final String whereClause = buildTreePersistWhereClause(item);
         CompletableFuture.runAsync(new Runnable() {

@@ -1,7 +1,5 @@
 package com.storage.engine.dao;
 
-import com.storage.engine.model.DataItem;
-import com.storage.engine.model.MetadataExtractResult;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.types.Node;
@@ -51,56 +49,12 @@ public class Neo4jDao {
 			Session session = getDriver().session();
 			try {
 				session.run("CREATE CONSTRAINT logical_path_unique IF NOT EXISTS FOR (p:LogicalPath) REQUIRE p.path IS UNIQUE");
-				session.run("DROP CONSTRAINT data_asset_unique IF EXISTS");
-				session.run("CREATE CONSTRAINT data_asset_ukey_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.ukey IS UNIQUE");
-				session.run("CREATE CONSTRAINT field_unique IF NOT EXISTS FOR (f:Field) REQUIRE f.ukey IS UNIQUE");
+				session.run("CREATE CONSTRAINT data_asset_meta_key_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.metaKey IS UNIQUE");
 				session.run("CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE");
-				session.run("MATCH (d:DataAsset)-[old:HAS_FILED]->(f:Field) "
-						+ "MERGE (d)-[r:HAS_FIELD]->(f) "
-						+ "SET r.updatedAt=coalesce(old.updatedAt,timestamp()) "
-						+ "DELETE old");
 				constraintsReady = true;
 			} finally {
 				session.close();
 			}
-		}
-	}
-
-	/**
-	 * 将单条数据资产及其抽取语义写入 Neo4j 图谱。
-	 */
-	public void upsertKnowledgeGraph(DataItem item, MetadataExtractResult semantics) {
-		if (!neo4jEnabled || item == null) {
-			return;
-		}
-		ensureConstraints();
-
-		final String logicalPath = normalizePath(item.getLogicalPath());
-		final String dataType = safe(item.getDataType());
-		final String fileName = safe(item.getFileName());
-		final String fileFormat = safe(item.getFileFormat());
-		final long fileSize = item.getFileSize() == null ? 0L : item.getFileSize();
-		final String createTime = safe(item.getCreateTime());
-
-		final MetadataExtractResult s = semantics == null ? new MetadataExtractResult() : semantics;
-		final List<String> pathChain = buildPathChain(logicalPath);
-
-		Session session = getDriver().session();
-		try {
-			session.writeTransaction(new TransactionWork<Void>() {
-				@Override
-				public Void execute(Transaction tx) {
-					mergePathHierarchy(tx, pathChain);
-					mergeAsset(tx, logicalPath, dataType, fileName, fileFormat, fileSize, createTime);
-					linkAssetToPath(tx, logicalPath);
-					mergeFields(tx, logicalPath, s.getFields(), s.getFieldKind());
-					mergeEntities(tx, logicalPath, s.getEntities());
-					mergeSemanticTriples(tx, logicalPath, s.getTriples());
-					return null;
-				}
-			});
-		} finally {
-			session.close();
 		}
 	}
 
@@ -117,23 +71,18 @@ public class Neo4jDao {
 		int safeLimit = Math.max(20, Math.min(limit, 500));
 		int assetWindow = Math.max(10, Math.min(200, safeLimit));
 
-		String cypher = "MATCH (d:DataAsset) "
-				+ "WHERE ($path='' OR coalesce(d.logicalPath,'') STARTS WITH $path) "
-				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC, id(d) DESC LIMIT $assetWindow "
+		String cypher = "MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d:DataAsset) "
+				+ "WHERE ($path='' OR p.path STARTS WITH $path) "
+				+ "WITH p,hd,d ORDER BY coalesce(d.updatedAt, id(d)) DESC, id(d) DESC LIMIT $assetWindow "
 				+ "WITH collect(d) AS assets "
 				+ "UNWIND range(0, size(assets) - 1) AS assetRank "
 				+ "WITH assets[assetRank] AS d, assetRank "
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
-				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) "
-				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) "
-				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) "
-				+ "WHERE coalesce(sr.related, true) = true "
-				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "WITH pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e, assetRank, coalesce(m.updatedAt,hf.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
+				+ "WITH pathChain,p,hd,d,m,e, assetRank, coalesce(m.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
 				+ "ORDER BY assetRank ASC, ord DESC "
-				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,m,e LIMIT $limit";
 
 		Session session = getDriver().session();
 		try {
@@ -165,48 +114,9 @@ public class Neo4jDao {
 	/**
 	 * 执行只读 Cypher 并返回可视化图结构。
 	 */
-	public Map<String, Object> queryByCypher(String cypher) {
-		if (!neo4jEnabled) {
-			return emptyGraph("Neo4j disabled");
-		}
-		Session session = getDriver().session();
-		try {
-			List<Record> records = session.run(cypher).list();
-			return buildGraph(records);
-		} finally {
-			session.close();
-		}
-	}
-
 	/**
 	 * 关键词回退查询：按 name/path/logicalPath 模糊匹配节点。
 	 */
-	public Map<String, Object> queryByKeyword(String keyword) {
-		return queryByKeyword(keyword, 80);
-	}
-
-	public Map<String, Object> queryByKeyword(String keyword, int limit) {
-		if (!neo4jEnabled) {
-			return emptyGraph("Neo4j disabled");
-		}
-		int safeLimit = Math.max(20, Math.min(limit, 500));
-
-		String cypher = "MATCH (n) "
-				+ "WHERE toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
-				+ "OR toLower(coalesce(n.path,'')) CONTAINS toLower($kw) "
-				+ "OR toLower(coalesce(n.logicalPath,'')) CONTAINS toLower($kw) "
-				+ "OR any(k IN coalesce(n.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
-				+ "RETURN n LIMIT $limit";
-
-		Session session = getDriver().session();
-		try {
-			List<Record> records = session.run(cypher, Values.parameters("kw", keyword, "limit", safeLimit)).list();
-			return buildGraph(records);
-		} finally {
-			session.close();
-		}
-	}
-
 	public Map<String, Object> emptyGraph(String message) {
 		Map<String, Object> graph = new LinkedHashMap<String, Object>();
 		graph.put("nodes", Collections.emptyList());
@@ -229,140 +139,6 @@ public class Neo4jDao {
 		return driver;
 	}
 
-	private void mergePathHierarchy(Transaction tx, List<String> pathChain) {
-		for (int i = 0; i < pathChain.size(); i++) {
-			String path = pathChain.get(i);
-			tx.run("MERGE (p:LogicalPath {path:$path}) "
-							+ "ON CREATE SET p.name=$name, p.depth=$depth, p.updatedAt=timestamp() "
-							+ "ON MATCH SET p.name=$name, p.depth=$depth, p.updatedAt=timestamp()",
-					Values.parameters("path", path, "name", getLeafName(path), "depth", depth(path)));
-
-			if (i > 0) {
-				String parent = pathChain.get(i - 1);
-				tx.run("MATCH (a:LogicalPath {path:$parent}), (b:LogicalPath {path:$child}) "
-								+ "MERGE (a)-[r:CONTAINS]->(b) "
-								+ "SET r.updatedAt=timestamp()",
-						Values.parameters("parent", parent, "child", path));
-			}
-		}
-	}
-
-	private void mergeAsset(Transaction tx, String logicalPath, String dataType,
-							String fileName, String fileFormat, long fileSize, String createTime) {
-		tx.run("MERGE (d:DataAsset {logicalPath:$logicalPath}) "
-						+ "ON CREATE SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime, d.updatedAt=timestamp() "
-						+ "ON MATCH SET d.dataType=$dataType, d.fileName=$fileName, d.fileFormat=$fileFormat, d.fileSize=$fileSize, d.createTime=$createTime, d.updatedAt=timestamp()",
-				Values.parameters(
-						"logicalPath", logicalPath,
-						"dataType", dataType,
-						"fileName", fileName,
-						"fileFormat", fileFormat,
-						"fileSize", fileSize,
-						"createTime", createTime));
-	}
-
-	private void linkAssetToPath(Transaction tx, String logicalPath) {
-		String parentPath = parentPathOfData(logicalPath);
-		tx.run("MATCH (p:LogicalPath {path:$parentPath}), (d:DataAsset {logicalPath:$logicalPath}) "
-						+ "MERGE (p)-[r:HAS_DATA]->(d) "
-						+ "SET r.updatedAt=timestamp()",
-				Values.parameters("parentPath", parentPath, "logicalPath", logicalPath));
-	}
-
-	private void mergeFields(Transaction tx, String logicalPath, List<String> fields, String kind) {
-		if (fields == null || fields.isEmpty()) {
-			return;
-		}
-		String fieldKind = (kind == null || kind.trim().isEmpty()) ? "field" : kind;
-
-		for (String field : fields) {
-			String name = safe(field);
-			if (name.isEmpty()) {
-				continue;
-			}
-			String norm = normalize(name);
-			String ukey = fieldKind + "::" + norm;
-			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
-							+ "MERGE (f:Field {ukey:$ukey}) "
-							+ "ON CREATE SET f.norm=$norm, f.kind=$kind, f.name=$name, f.updatedAt=timestamp() "
-							+ "ON MATCH SET f.norm=coalesce(f.norm,$norm), f.kind=coalesce(f.kind,$kind), f.name=coalesce(f.name,$name), f.updatedAt=timestamp() "
-							+ "MERGE (d)-[r:HAS_FIELD]->(f) "
-							+ "SET r.updatedAt=timestamp()",
-					Values.parameters("path", logicalPath, "ukey", ukey, "norm", norm, "kind", fieldKind, "name", name));
-		}
-	}
-
-	private void mergeEntities(Transaction tx, String logicalPath, List<String> entities) {
-		if (entities == null || entities.isEmpty()) {
-			return;
-		}
-
-		for (String entity : entities) {
-			String alias = safe(entity);
-			if (alias.isEmpty()) {
-				continue;
-			}
-
-			String canonical = normalizeDisplay(alias);
-			String norm = normalize(canonical);
-			if (norm.isEmpty()) {
-				continue;
-			}
-
-			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
-							+ "MERGE (e:Entity {norm:$norm}) "
-							+ "ON CREATE SET e.name=$name, e.updatedAt=timestamp() "
-							+ "ON MATCH SET e.updatedAt=timestamp() "
-							+ "MERGE (d)-[r:MENTIONS]->(e) "
-							+ "SET r.updatedAt=timestamp()",
-					Values.parameters("path", logicalPath, "norm", norm, "name", canonical));
-		}
-	}
-
-	private void mergeSemanticTriples(Transaction tx,
-									  String logicalPath,
-									  List<MetadataExtractResult.SemanticTriple> triples) {
-		if (triples == null || triples.isEmpty()) {
-			return;
-		}
-
-		for (MetadataExtractResult.SemanticTriple triple : triples) {
-			if (triple == null) {
-				continue;
-			}
-
-			String subjectName = normalizeDisplay(safe(triple.getSubject()));
-			String objectName = normalizeDisplay(safe(triple.getObject()));
-			if (subjectName.isEmpty() || objectName.isEmpty()) {
-				continue;
-			}
-
-			String subjectNorm = normalize(subjectName);
-			String objectNorm = normalize(objectName);
-			if (subjectNorm.isEmpty() || objectNorm.isEmpty()) {
-				continue;
-			}
-
-			tx.run("MATCH (d:DataAsset {logicalPath:$path}) "
-							+ "MERGE (s:Entity {norm:$subjectNorm}) "
-							+ "ON CREATE SET s.name=$subjectName, s.updatedAt=timestamp() "
-							+ "ON MATCH SET s.updatedAt=timestamp() "
-							+ "MERGE (o:Entity {norm:$objectNorm}) "
-							+ "ON CREATE SET o.name=$objectName, o.updatedAt=timestamp() "
-							+ "ON MATCH SET o.updatedAt=timestamp() "
-							+ "MERGE (d)-[dm1:MENTIONS]->(s) "
-							+ "SET dm1.updatedAt=timestamp() "
-							+ "MERGE (d)-[dm2:MENTIONS]->(o) "
-							+ "SET dm2.updatedAt=timestamp()",
-					Values.parameters(
-							"path", logicalPath,
-							"subjectNorm", subjectNorm,
-							"subjectName", subjectName,
-							"objectNorm", objectNorm,
-							"objectName", objectName));
-		}
-	}
-
 	public Map<String, Object> queryAssetsByKeyword(String logicalPath, String dataType, String keyword, int limit) {
 		if (!neo4jEnabled) {
 			return emptyGraph("Neo4j disabled");
@@ -377,16 +153,13 @@ public class Neo4jDao {
 
 		String matchedAssetCypher = "MATCH (d:DataAsset) "
 				+ "OPTIONAL MATCH (pd:LogicalPath)-[:HAS_DATA]->(d) "
-				+ "WITH d, pd, coalesce(d.logicalPath, "
-				+ "CASE WHEN pd.path IS NULL THEN '' WHEN pd.path = '/' THEN '/' + coalesce(d.name, d.fileName, '') ELSE pd.path + '/' + coalesce(d.name, d.fileName, '') END) AS assetPath "
+				+ "WITH d, pd, CASE WHEN pd.path IS NULL THEN '' WHEN pd.path = '/' THEN '/' + d.name ELSE pd.path + '/' + d.name END AS assetPath "
 				+ "WHERE ($path='' OR assetPath STARTS WITH $path OR coalesce(pd.path,'') STARTS WITH $path) "
 				+ "AND ($dt='' OR toLower(coalesce(d.dataType,'')) = $dt) "
 				+ "AND ($kw='' "
 				+ "OR toLower(coalesce(d.name,'')) CONTAINS toLower($kw) "
-				+ "OR toLower(coalesce(d.fileName,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(assetPath) CONTAINS toLower($kw) "
-				+ "OR any(k IN coalesce(d.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
-				+ "OR EXISTS { MATCH (d)-[:HAS_FIELD]->(f:Field) WHERE toLower(coalesce(f.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(f.norm,'')) CONTAINS toLower($kw) } "
+				+ "OR any(k IN coalesce(d.semanticKeywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
 				+ "OR EXISTS { MATCH (d)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
 				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $assetWindow "
 				+ "RETURN id(d) AS id";
@@ -397,7 +170,6 @@ public class Neo4jDao {
 				+ "AND ($kw='' "
 				+ "OR toLower(coalesce(p.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(p.path,'')) CONTAINS toLower($kw) "
-				+ "OR any(k IN coalesce(p.keywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
 				+ "OR EXISTS { MATCH (p)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
 				+ "WITH p ORDER BY coalesce(p.updatedAt, id(p)) DESC LIMIT $directoryWindow "
 				+ "RETURN id(p) AS id";
@@ -405,11 +177,6 @@ public class Neo4jDao {
 		String assetGraphCypher = "MATCH (d:DataAsset) WHERE id(d) IN $assetIds "
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
-				+ "OPTIONAL MATCH (parent:DataAsset)-[ca:CONTAINS_ASSET]->(d) WHERE id(parent) IN $assetIds "
-				+ "OPTIONAL MATCH (d)-[ca2:CONTAINS_ASSET]->(child:DataAsset) WHERE id(child) IN $assetIds "
-				+ "OPTIONAL MATCH (d)-[sr:SEMANTIC_RELATION]-(related:DataAsset) "
-				+ "WHERE id(related) IN $assetIds AND coalesce(sr.related, true) = true "
-				+ "OPTIONAL MATCH (d)-[hf:HAS_FIELD]->(f:Field) WHERE $kw='' "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
 				+ "WHERE $kw='' OR toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) "
 				+ "OPTIONAL MATCH (e)-[er:SEMANTIC_RELATION]-(relatedEntity:Entity) "
@@ -418,7 +185,7 @@ public class Neo4jDao {
 				+ "AND coalesce(er.related, true) = true "
 				+ "AND EXISTS { MATCH (d)-[:MENTIONS]->(relatedEntity) } "
 				+ "OPTIONAL MATCH (d)-[relatedMention:MENTIONS]->(relatedEntity) "
-				+ "RETURN pathChain,p,hd,d,parent,ca,ca2,child,sr,related,hf,f,m,e,er,relatedEntity,relatedMention LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,m,e,er,relatedEntity,relatedMention LIMIT $limit";
 
 		String directoryGraphCypher = "MATCH (p:LogicalPath) WHERE id(p) IN $directoryIds "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
@@ -500,51 +267,6 @@ public class Neo4jDao {
 		}
 	}
 
-	public List<Map<String, Object>> findUncomputedAssetRelationPairs(List<String> assetIds, int limit) {
-		List<Map<String, Object>> out = new ArrayList<Map<String, Object>>();
-		if (!neo4jEnabled || assetIds == null || assetIds.size() < 2) {
-			return out;
-		}
-		ensureConstraints();
-		List<Long> ids = new ArrayList<Long>();
-		for (String id : assetIds) {
-			try {
-				ids.add(Long.valueOf(id));
-			} catch (Exception ignore) {
-			}
-		}
-		if (ids.size() < 2) {
-			return out;
-		}
-		int safeLimit = Math.max(1, Math.min(limit, 30));
-		String cypher = "MATCH (a:DataAsset) WHERE id(a) IN $ids "
-				+ "MATCH (b:DataAsset) WHERE id(b) IN $ids AND id(a) < id(b) "
-				+ "WHERE NOT (a)-[:CONTAINS_ASSET]-(b) "
-				+ "AND NOT (a)-[:SEMANTIC_RELATION]-(b) "
-				+ "RETURN id(a) AS leftId, id(b) AS rightId, "
-				+ "coalesce(a.fileName, a.name, a.logicalPath, '') AS leftName, "
-				+ "coalesce(b.fileName, b.name, b.logicalPath, '') AS rightName, "
-				+ "coalesce(a.keywords, []) AS leftKeywords, coalesce(b.keywords, []) AS rightKeywords "
-				+ "LIMIT $limit";
-		Session session = getDriver().session();
-		try {
-			List<Record> records = session.run(cypher, Values.parameters("ids", ids, "limit", safeLimit)).list();
-			for (Record record : records) {
-				Map<String, Object> row = new LinkedHashMap<String, Object>();
-				row.put("leftId", record.get("leftId").asLong());
-				row.put("rightId", record.get("rightId").asLong());
-				row.put("leftName", record.get("leftName").asString(""));
-				row.put("rightName", record.get("rightName").asString(""));
-				row.put("leftKeywords", valueAsStringList(record.get("leftKeywords")));
-				row.put("rightKeywords", valueAsStringList(record.get("rightKeywords")));
-				out.add(row);
-			}
-			return out;
-		} finally {
-			session.close();
-		}
-	}
-
 	private List<Long> queryIdList(Session session, String cypher, org.neo4j.driver.Value parameters) {
 		List<Long> ids = new ArrayList<Long>();
 		List<Record> records = session.run(cypher, parameters).list();
@@ -555,45 +277,6 @@ public class Neo4jDao {
 			}
 		}
 		return ids;
-	}
-
-	public void upsertSemanticRelation(long leftId, long rightId, String relation, String source) {
-		if (!neo4jEnabled || leftId == rightId || relation == null || relation.trim().isEmpty()) {
-			return;
-		}
-		ensureConstraints();
-		String assetKey = "DataAssetPair::" + Math.min(leftId, rightId) + "::" + Math.max(leftId, rightId);
-		String cypher = "MATCH (a:DataAsset), (b:DataAsset) "
-				+ "WHERE id(a)=$leftId AND id(b)=$rightId "
-				+ "MERGE (a)-[r:SEMANTIC_RELATION]-(b) "
-				+ "SET r.related=true, r.relation=$relation, r.assetKey=$assetKey, r.source=$source, r.updatedAt=timestamp()";
-		Session session = getDriver().session();
-		try {
-			session.run(cypher, Values.parameters(
-					"leftId", leftId,
-					"rightId", rightId,
-					"relation", relation.trim(),
-					"assetKey", assetKey,
-					"source", source == null ? "metadata-relation-batch" : source));
-		} finally {
-			session.close();
-		}
-	}
-
-	private List<String> valueAsStringList(org.neo4j.driver.Value value) {
-		List<String> out = new ArrayList<String>();
-		if (value == null || value.isNull()) {
-			return out;
-		}
-		for (Object item : value.asList()) {
-			if (item != null) {
-				String text = String.valueOf(item).trim();
-				if (!text.isEmpty()) {
-					out.add(text);
-				}
-			}
-		}
-		return out;
 	}
 
 	private Map<String, Object> buildGraph(List<Record> records) {
@@ -821,74 +504,6 @@ public class Neo4jDao {
 		if ("DataAsset".equals(label)) return 36;
 		if ("Entity".equals(label)) return 30;
 		return 24;
-	}
-
-	private String normalizePath(String path) {
-		if (path == null || path.trim().isEmpty()) {
-			return "/";
-		}
-		String p = path.trim();
-		if (!p.startsWith("/")) {
-			p = "/" + p;
-		}
-		while (p.length() > 1 && p.endsWith("/")) {
-			p = p.substring(0, p.length() - 1);
-		}
-		return p;
-	}
-
-	private List<String> buildPathChain(String logicalPath) {
-		List<String> chain = new ArrayList<String>();
-		chain.add("/");
-		if ("/".equals(logicalPath)) {
-			return chain;
-		}
-		String[] parts = logicalPath.substring(1).split("/");
-		String current = "";
-		for (String part : parts) {
-			if (part == null || part.trim().isEmpty()) {
-				continue;
-			}
-			current += "/" + part;
-			chain.add(current);
-		}
-		return chain;
-	}
-
-	private String parentPathOfData(String logicalPath) {
-		if (logicalPath == null || logicalPath.trim().isEmpty()) {
-			return "/";
-		}
-		return normalizePath(logicalPath);
-	}
-
-	private String getLeafName(String path) {
-		if (path == null || "/".equals(path)) return "/";
-		int i = path.lastIndexOf('/');
-		return i >= 0 ? path.substring(i + 1) : path;
-	}
-
-	private int depth(String path) {
-		if (path == null || "/".equals(path)) return 0;
-		int d = 0;
-		for (int i = 0; i < path.length(); i++) {
-			if (path.charAt(i) == '/') d++;
-		}
-		return d;
-	}
-
-	private String normalizeDisplay(String name) {
-		if (name == null) return "";
-		return name.trim().replaceAll("\\s+", " ");
-	}
-
-	private String normalize(String value) {
-		if (value == null) return "";
-		return value.toLowerCase(Locale.ROOT).replaceAll("[^a-z0-9\\u4e00-\\u9fa5]", "");
-	}
-
-	private String safe(String value) {
-		return value == null ? "" : value.trim();
 	}
 
 	@PreDestroy

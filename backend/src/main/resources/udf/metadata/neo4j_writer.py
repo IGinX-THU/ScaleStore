@@ -88,21 +88,15 @@ class Neo4jGraphWriter(object):
             ON CREATE SET a.name = $name, a.updatedAt = timestamp()
             ON MATCH SET a.name = $name,
                          a.updatedAt = timestamp()
-            SET a.semanticKeywords = $keywords
-            REMOVE a.logicalPath, a.dataType, a.fileFormat, a.fileSize, a.createTime, a.assetKind, a.keywords, a.ukey
+            SET a.dataType = $data_type,
+                a.semanticKeywords = $keywords
+            REMOVE a.logicalPath, a.fileFormat, a.fileSize, a.createTime, a.assetKind, a.keywords, a.ukey
             """,
             meta_key=meta_key,
             name=payload.get("file_name", ""),
+            data_type=payload.get("data_type", ""),
             keywords=payload.get("keywords", []),
         )
-        tx.run(
-            """
-            MATCH (a:DataAsset {metaKey: $meta_key})-[r:HAS_FIELD]->(:Field)
-            DELETE r
-            """,
-            meta_key=meta_key,
-        )
-
         tx.run(
             """
             MATCH (p:LogicalPath {path: $parent_path})

@@ -190,18 +190,6 @@ public class IGinxDao {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
   }
 
-  public SessionExecuteSqlResult getTransformMetaExtractRows(int limit) {
-      int safeLimit = Math.max(1, limit);
-      try {
-          String latestSql = "select * from transform order by key desc limit " + safeLimit + ";";
-          return executeSql(latestSql);
-      } catch (RuntimeException e) {
-          // Fallback for engines that do not support ORDER BY on this path.
-          String fallbackSql = "select * from transform limit " + safeLimit + ";";
-          return executeSql(fallbackSql);
-      }
-  }
-
   // RESTful interface operations
 
   public void insertRestfulApi(long key,
@@ -297,26 +285,6 @@ public class IGinxDao {
       executeSql(sql);
   }
 
-  public void updateJavaGrpcApi(long key,
-                                String name,
-                                String url,
-                                String method,
-                                String description,
-                                String paramsExample,
-                                String responseExample,
-                                String invokeExample,
-                                boolean isValid) {
-      insertJavaGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
-  }
-
-  public void deleteJavaGrpcApi(long key) {
-      String sql = String.format(Locale.ROOT,
-              "insert into %s(key, isValid) values (%d, false);",
-              IGinxConstants.INTERFACE_JAVA_GRPC_PATH,
-              key);
-      executeSql(sql);
-  }
-
   public SessionExecuteSqlResult getAllJavaGrpcApis() {
       try {
           return executeSql("select * from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
@@ -331,19 +299,6 @@ public class IGinxDao {
       } catch (RuntimeException e) {
           return null;
       }
-  }
-
-  public long getMaxJavaGrpcApiId() {
-      try {
-          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
-          if (result.getKeys() != null && result.getKeys().length > 0) {
-              long[] keys = result.getKeys();
-              return keys[keys.length - 1];
-          }
-      } catch (RuntimeException e) {
-          // interface.java_grpc path may not exist on fresh deployments
-      }
-      return -1;
   }
 
   // Python gRPC interface operations
@@ -373,26 +328,6 @@ public class IGinxDao {
       executeSql(sql);
   }
 
-  public void updatePythonGrpcApi(long key,
-                                  String name,
-                                  String url,
-                                  String method,
-                                  String description,
-                                  String paramsExample,
-                                  String responseExample,
-                                  String invokeExample,
-                                  boolean isValid) {
-      insertPythonGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
-  }
-
-  public void deletePythonGrpcApi(long key) {
-      String sql = String.format(Locale.ROOT,
-              "insert into %s(key, isValid) values (%d, false);",
-              IGinxConstants.INTERFACE_PYTHON_GRPC_PATH,
-              key);
-      executeSql(sql);
-  }
-
   public SessionExecuteSqlResult getAllPythonGrpcApis() {
       try {
           return executeSql("select * from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
@@ -407,19 +342,6 @@ public class IGinxDao {
       } catch (RuntimeException e) {
           return null;
       }
-  }
-
-  public long getMaxPythonGrpcApiId() {
-      try {
-          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
-          if (result.getKeys() != null && result.getKeys().length > 0) {
-              long[] keys = result.getKeys();
-              return keys[keys.length - 1];
-          }
-      } catch (RuntimeException e) {
-          // interface.python_grpc path may not exist on fresh deployments
-      }
-      return -1;
   }
 
   // ==================== Data Source Operations ====================
@@ -468,11 +390,6 @@ public class IGinxDao {
   }
 
   // ==================== Storage Metadata Operations ====================
-
-  public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-             String contentPath, long fileSize, String fileFormat, String createTime) {
-      insertMeta(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, "PENDING");
-  }
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
              String contentPath, long fileSize, String fileFormat, String createTime, String knowledgeExtractStatus) {

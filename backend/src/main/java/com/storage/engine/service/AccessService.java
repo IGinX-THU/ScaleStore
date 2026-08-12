@@ -23,25 +23,6 @@ public class AccessService {
     private StorageAdapterFactory adapterFactory;
 
     /**
-     * Get metadata for a data item by logical path (exact match only, valid entries).
-     */
-    public DataItem getMetaByPath(String logicalPath) {
-        logicalPath = normalizePath(logicalPath);
-        try {
-            SessionExecuteSqlResult result = iginxDao.getAllMeta();
-            List<DataItem> items = parseMeta(result);
-            for (DataItem item : items) {
-                if (logicalPath.equals(normalizePath(item.getLogicalPath()))) {
-                    return item;
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("按逻辑路径查询元数据失败: " + e.getMessage(), e);
-        }
-        return null;
-    }
-
-    /**
      * Get metadata by folder logical path + file name.
      */
     public DataItem getMetaByPathAndFileName(String logicalPath, String fileName) {

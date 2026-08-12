@@ -1,6 +1,5 @@
 package com.storage.engine.service.adapter;
 
-import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
@@ -11,7 +10,6 @@ import java.util.List;
  * provides one implementation for:
  * 1) store
  * 2) access preview/download
- * 3) metadata extraction
  */
 public interface StorageAdapter {
 

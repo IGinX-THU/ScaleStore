@@ -1,6 +1,7 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import com.storage.engine.component.MetadataTransformJobInitializer;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.Policy;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -24,6 +25,9 @@ public class PolicyService {
 
     @Autowired
     private Environment environment;
+
+    @Autowired
+    private MetadataTransformJobInitializer metadataTransformJobInitializer;
 
     @org.springframework.beans.factory.annotation.Value("${metadata.graph-max-triples:200}")
     private long configuredMetadataGraphMaxTriples;
@@ -73,6 +77,17 @@ public class PolicyService {
         iginxDao.updatePolicy(extractionEnabled, newIntervalMs, newMetadataGraphMaxTriples);
 
         cachedPolicy = loadEffectivePolicy();
+        metadataTransformJobInitializer.onPolicyUpdated(
+                current.getExtractionEnabled() != null ? current.getExtractionEnabled() : DEFAULT_EXTRACTION_ENABLED,
+                current.getExtractionScanIntervalMs() != null
+                        ? current.getExtractionScanIntervalMs()
+                        : DEFAULT_SCAN_INTERVAL_MS,
+                cachedPolicy.getExtractionEnabled() != null
+                        ? cachedPolicy.getExtractionEnabled()
+                        : DEFAULT_EXTRACTION_ENABLED,
+                cachedPolicy.getExtractionScanIntervalMs() != null
+                        ? cachedPolicy.getExtractionScanIntervalMs()
+                        : DEFAULT_SCAN_INTERVAL_MS);
         return copyPolicy(cachedPolicy);
     }
 
