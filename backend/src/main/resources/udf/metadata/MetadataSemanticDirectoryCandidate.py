@@ -137,6 +137,7 @@ def _trace(message, **fields):
 
 class MetadataSemanticDirectoryCandidate(object):
     def transform(self, data, args, kvargs):
+        # 工作流每轮只返回一个目录，保证目录关键字按“子节点已完成”顺序自底向上生成。
         records = self._records(data)
         selected = self._select(records)
         if selected is None:
@@ -156,6 +157,7 @@ class MetadataSemanticDirectoryCandidate(object):
         headers = []
         start = 0
         if isinstance(rows[0], list):
+            # IGinX 的 Python UDF 输入可能带有表头和类型行；下面统一转换为字段名到值的记录。
             headers = self._dedup_headers([_normalize_column(v) for v in rows[0]])
             start = 1
             if len(rows) > 1 and isinstance(rows[1], list) and self._is_type_row(headers, rows[1]):
@@ -191,24 +193,29 @@ class MetadataSemanticDirectoryCandidate(object):
         return records
 
     def _select(self, records):
+        # 深层目录优先：先让最内层目录完成汇总，父目录才能可靠地使用其直接子节点关键字。深度越大，metaKey数值越小，排得越前。
         sorted_items = sorted(records, key=self._sort_key)
         pending_directory = None
         retry_directory = None
         for item in sorted_items:
             if not self._is_directory(item):
                 continue
+            # 1. 满足状态条件：PENDING or FAILED or (SUCCESS and semanticKeywords 为空)
             missing_keywords = not _safe(item.get("semanticKeywords", ""))
             eligible_status = self._is_pending_or_failed(item) or (
                 self._status(item) == "SUCCESS" and missing_keywords
             )
+            # 2. 满足子项已经完成：_directory_children_ready_with_reason
             if not (eligible_status and self._directory_children_ready(item, records)):
                 continue
+            # 判断是正常待处理的(Pending)，还是失败重试的(Failed)
             if self._is_pending(item) or (self._status(item) == "SUCCESS" and missing_keywords):
                 if pending_directory is None:
                     pending_directory = item
             elif self._is_failed(item) and retry_directory is None:
                 retry_directory = item
 
+        # 正常待处理项优先于失败重试项，避免重试占用持续到来的新任务。
         return pending_directory if pending_directory is not None else retry_directory
 
     def _dedup_headers(self, headers):
@@ -293,11 +300,13 @@ class MetadataSemanticDirectoryCandidate(object):
             if item is directory:
                 continue
             child_path = self._asset_path(item)
+            # 目录摘要只消费直接子项；孙级目录会先独立产出自己的摘要。
             if _parent_path(child_path) != dir_path:
                 continue
             has_child = True
             status = self._status(item)
             keywords = _safe(item.get("semanticKeywords", ""))
+            # SKIPPED 不提供语义，但不阻塞其他可提取子项形成目录摘要。
             if status == "SKIPPED":
                 continue
             if status != "SUCCESS" or not keywords:

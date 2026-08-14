@@ -2,6 +2,7 @@ import re
 
 
 class Neo4jGraphWriter(object):
+    # 约束在同一 Python 进程中只初始化一次，避免每个资产写入都重复执行 DDL。
     _constraints_initialized = False
 
     def __init__(self, params):
@@ -23,6 +24,7 @@ class Neo4jGraphWriter(object):
         except Exception as exc:
             raise RuntimeError("neo4j package is required: pip install neo4j==4.4.41") from exc
 
+        # DataAsset 的稳定身份由 storage.meta.key 决定；路径仅用于构建目录树和父子关系。
         data_type = self._safe(data_type).lower()
         file_name = self._safe(file_name)
         asset_path = self._asset_path(logical_path, file_name, data_type)
@@ -69,10 +71,11 @@ class Neo4jGraphWriter(object):
         Neo4jGraphWriter._constraints_initialized = True
 
     def _write_graph_tx(self, tx, payload):
+        # 路径节点先于资产节点创建，以确保 HAS_DATA 关系总能找到父目录。
         self._write_path_chain_tx(tx, payload.get("path_chain", []))
-        self._delete_legacy_directory_assets_tx(tx, payload)
 
         if payload.get("data_type", "") == "directory":
+            # 目录本身映射为 LogicalPath，不额外创建 DataAsset，避免一个路径有两种图表示。
             self._write_directory_meta_key_tx(tx, payload)
             if not str(self.params.get("skipSemanticEntities", "")).strip().lower() == "true":
                 self._write_semantic_entities_tx(tx, "LogicalPath", "path", payload.get("asset_path", ""), payload)
@@ -108,7 +111,6 @@ class Neo4jGraphWriter(object):
             meta_key=meta_key,
         )
 
-        self._delete_legacy_leaf_asset_tx(tx, payload)
         self._write_semantic_entities_tx(tx, "DataAsset", "metaKey", meta_key, payload)
 
     def _write_path_chain_tx(self, tx, path_chain):
@@ -154,6 +156,7 @@ class Neo4jGraphWriter(object):
         )
 
     def _write_semantic_entities_tx(self, tx, label, key_name, key_value, payload):
+        # 语义提取是覆盖式快照：先删除当前资产旧的 MENTIONS 和资产范围关系，再写入本次结果。
         tx.run(
             """
             MATCH (n)
@@ -201,6 +204,7 @@ class Neo4jGraphWriter(object):
             )
 
         for triple in payload.get("triples", []) or []:
+            # 图关系端点必须属于本次关键词集合，阻止模型返回的外部或幻觉实体进入知识图谱。
             subject = self._normalize_display(triple.get("subject", ""))
             predicate = self._normalize_display(triple.get("predicate", triple.get("relation", "")))
             obj = self._normalize_display(triple.get("object", ""))
@@ -253,6 +257,7 @@ class Neo4jGraphWriter(object):
         object_norm = self._normalize(object_name)
         if not subject_norm or not object_norm or subject_norm == object_norm or not relation_name or not relation_asset_key:
             return "entity relation skipped"
+        # 实体对按规范名排序，使无向语义判断在 Neo4j 中始终落到同一条有向边上。
         subject_norm, subject_name, object_norm, object_name = self._canonical_entity_pair(
             subject_norm, subject_name, object_norm, object_name
         )
@@ -316,6 +321,7 @@ class Neo4jGraphWriter(object):
         username = self._safe(self.params.get("neo4jUsername", ""))
         password = self._safe(self.params.get("neo4jPassword", ""))
         focus_norm = self._normalize(focus)
+        # 查询同样以资产为作用域；其他资产的 related=false 不能影响当前资产的判断。
         candidate_norms = self._dedup_strings([self._normalize(item) for item in candidates], 120)
         relation_asset_key = self._safe(asset_key)
         if not uri or not username or not password:
@@ -372,29 +378,6 @@ class Neo4jGraphWriter(object):
         if left_norm <= right_norm:
             return left_norm, left_name, right_norm, right_name
         return right_norm, right_name, left_norm, left_name
-
-    def _delete_legacy_directory_assets_tx(self, tx, payload):
-        paths = self._build_path_chain(payload.get("asset_path", ""))
-        for path in paths:
-            tx.run(
-                """
-                MATCH (a:DataAsset)
-                WHERE a.logicalPath = $path AND (a.dataType = 'directory' OR a.assetKind = 'directory')
-                DETACH DELETE a
-                """,
-                path=path,
-            )
-
-    def _delete_legacy_leaf_asset_tx(self, tx, payload):
-        tx.run(
-            """
-            MATCH (a:DataAsset)
-            WHERE a.ukey = $legacy_key OR (a.logicalPath = $asset_path AND a.metaKey IS NULL)
-            DETACH DELETE a
-            """,
-            legacy_key="asset::" + payload.get("asset_path", "") + "::" + payload.get("file_name", ""),
-            asset_path=payload.get("asset_path", ""),
-        )
 
     def _normalize_path(self, logical_path):
         path = self._safe(logical_path)

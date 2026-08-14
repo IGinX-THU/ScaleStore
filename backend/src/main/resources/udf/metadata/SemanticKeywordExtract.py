@@ -21,6 +21,7 @@ def _trace(message, **fields):
 
 
 def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
+    # LLM 不可用时仍返回规则提取结果，使元数据流水线不依赖外部模型才能完成。
     fallback_keywords = dedup_strings(fallback if fallback is not None else _asset_fallback(asset), max_count)
     if not _llm_available(params):
         return fallback_keywords
@@ -57,6 +58,7 @@ def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
             {"role": "user", "content": user_content},
         ]))
         keywords = node.get("keywords", []) if isinstance(node, dict) else []
+        # LLM 输出仅作为规范化建议；空响应或异常均回退到已提取的本地语义。
         normalized = dedup_strings([v for v in keywords if isinstance(v, str)], max_count)
         _trace(
             "keyword_normalization_done",
@@ -71,6 +73,7 @@ def normalize_asset_keywords(params, asset, fallback=None, max_count=12):
 
 
 def extract_keyword_relations(params, keywords, max_count=24):
+    # 关系端点限制在已确认关键词中，后续写图时可保证关系不引入额外实体。
     terms = dedup_strings(keywords, 40)
     if len(terms) < 2 or not _llm_available(params):
         return []
@@ -98,6 +101,7 @@ def extract_keyword_relations(params, keywords, max_count=24):
             {"role": "system", "content": prompt},
             {"role": "user", "content": user_content},
         ]))
+        # 强校验模型响应：端点必须逐字匹配输入，且不能产生自环。
         allowed = set(terms)
         triples = []
         for triple in node.get("triples", []) if isinstance(node, dict) else []:
@@ -123,6 +127,7 @@ def extract_keyword_relations(params, keywords, max_count=24):
 
 
 def summarize_directory_keywords(params, path, child_keywords, max_count=12):
+    # 目录只由直接子资产的已完成关键词归纳，不读取原始内容，避免重复消耗大文件数据。
     fallback_keywords = dedup_strings(child_keywords or [], max_count)
     if not fallback_keywords or not _llm_available(params):
         return fallback_keywords
@@ -199,6 +204,7 @@ def _dedup_triples(triples, max_count):
 
 
 def filter_triples_by_keywords(triples, keywords, max_count=180):
+    # 关键词是进入图谱的实体白名单；提取器或 LLM 给出的其他端点一律丢弃。
     allowed = set(_safe(keyword) for keyword in keywords or [])
     filtered = []
     for triple in triples or []:
@@ -235,6 +241,7 @@ def _llm_chat(params, model, messages):
         raise RuntimeError("openai package is required: pip install openai") from exc
 
     api_key = _safe(params.get("llmApiKey", ""))
+    # 配置既可指向 OpenAI 根地址，也兼容误填到 /chat/completions 的兼容 API 地址。
     base_url = _normalize_openai_base_url(_safe(params.get("llmBaseUrl", "")))
     client = OpenAI(api_key=api_key, base_url=base_url) if base_url else OpenAI(api_key=api_key)
     started = time.time()
@@ -256,6 +263,7 @@ def _llm_chat(params, model, messages):
 
 
 def _parse_json_object(text):
+    # 兼容带思考标签、Markdown 代码围栏或前后说明文字的模型响应。
     cleaned = _strip_code_fence(_strip_think(text or ""))
     try:
         return json.loads(cleaned)
@@ -315,11 +323,13 @@ class _RuntimeConfigMixin(object):
     ENV_CONFIG_PATH_KEY = "METADATA_CONFIG_FILE"
 
     def _params(self, kvargs):
+        # UDF 调用参数优先级高于 config.json，便于同一套代码按任务覆盖运行配置。
         params = self._load_runtime_config()
         params.update(self._decode_kvargs(kvargs))
         return params
 
     def _load_runtime_config(self):
+        # 优先使用环境变量指定的配置文件，部署环境无需修改随包资源。
         path = os.environ.get(self.ENV_CONFIG_PATH_KEY)
         if not path:
             path = os.path.join(os.path.dirname(os.path.abspath(__file__)), self.CONFIG_FILE_NAME)
@@ -379,6 +389,7 @@ class _RuntimeConfigMixin(object):
         return str(value).strip()
 
     def _result(self, status, keywords=None, fields=None, field_kind="field", message=""):
+        # 所有叶子和目录 UDF 共用固定二维表返回协议，供 Executor 解析后回调 Java 服务。
         return [
             ["status", "keywords", "fields", "fieldKind", "message"],
             ["BINARY", "BINARY", "BINARY", "BINARY", "BINARY"],
@@ -403,6 +414,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             params = self._params(kvargs)
             data_type = self.DATA_TYPE or self._safe(params.get("dataType", "")).lower()
             params["dataType"] = data_type
+            # 不同数据类型只替换提取器；后续关键词归一化、三元组过滤、图持久化保持一致。
             extractor = self.EXTRACTOR(data, args, params)
             extracted = extractor.extract()
 
@@ -423,9 +435,11 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 "entities": entities,
                 "keywords": raw_keywords,
             }
+            # 文件类提取器可显式跳过归一化（例如无可解析的非图片文件），避免凭文件名臆造关键词。
             keywords = []
             if not skip_keyword_normalization:
                 keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
+            # 同时保留提取器关系和关键词关系，但统一经过关键词白名单过滤。
             keyword_relations = extract_keyword_relations(params, keywords)
             source_triples = (extracted.get("triples", []) or []) + keyword_relations
             triples = filter_triples_by_keywords(source_triples, keywords, 180)
@@ -506,6 +520,7 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
                 "fileName": params.get("fileName", ""),
                 "dataType": "directory",
             })
+            # 仅汇总状态已成功的直接子项；候选器已经保证目录到达此处时子项均已就绪。
             child_keywords = self._read_immediate_child_keywords(data, target_path)
             if not child_keywords:
                 return self._result("FAILED", [], [], "field", "directory has no completed child keywords")
@@ -551,6 +566,7 @@ class DirectorySemanticKeywordExtract(_RuntimeConfigMixin):
             if status != "SUCCESS":
                 continue
             child_path = self._asset_path(row)
+            # 不跨越目录层级汇总，保证每层目录都拥有独立、可解释的摘要。
             if self._parent_path(child_path) != target_path:
                 continue
             kws = self._parse_keywords(row.get("semanticKeywords", ""))

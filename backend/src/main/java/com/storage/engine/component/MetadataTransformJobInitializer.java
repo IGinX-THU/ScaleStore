@@ -194,7 +194,7 @@ public class MetadataTransformJobInitializer {
         try {
             session = new Session(endpoint.host, endpoint.port, iginxUsername, iginxPassword);
             session.openSession();
-            session.executeSql("CANCEL TRANSFORM JOB " + jobId + ";");
+            session.cancelTransformJob(jobId);
             logger.info("Canceled metadata transform job: endpoint={}, jobId={}", endpoint, jobId);
             return true;
         } catch (Exception e) {

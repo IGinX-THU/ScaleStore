@@ -117,6 +117,7 @@ class _CallbackSupport(object):
             return {}
 
     def _callback_url(self, kind):
+        # 支持按回调类型覆写 URL；未配置时退回到同一 Web 服务的标准回调路由。
         config = self._load_callback_config()
         direct_key = kind + "SemanticCallbackUrl"
         direct_url = _safe(config.get(direct_key, ""))
@@ -135,6 +136,7 @@ class _CallbackSupport(object):
         return base_url.rstrip("/") + "/metadata/extraction/semantic/" + kind + "-callback"
 
     def _post_callback(self, kind, payload):
+        # STARTED 回调把元数据状态置为 PROCESSING，避免调度器在 UDF 执行期间重复选中同一项。
         url = self._callback_url(kind)
         response = requests.post(url, json=payload, timeout=10)
         body = response.text
@@ -181,6 +183,7 @@ class _MetaInfoBase(_CallbackSupport):
         headers = []
         start = 0
         if isinstance(rows[0], list):
+            # 将 IGinX 行列结果标准化为字典，后续流程不依赖 SQL 中的列前缀或二进制表现形式。
             headers = self._dedup_headers([_normalize_column(v) for v in rows[0]])
             if headers:
                 start = 1
@@ -229,6 +232,7 @@ class _MetaInfoBase(_CallbackSupport):
     def _emit(self, item):
         if item is None:
             return [self.OUTPUT_COLUMNS]
+        # 输出列名是工作流 JOIN 的契约，字段顺序不可随意调整。
         return [self.OUTPUT_COLUMNS, [
             _to_int(item.get("key", item.get("metaKey", "")), 0),
             self._to_binary(_normalize_path(item.get("logicalPath", ""))),
@@ -242,6 +246,7 @@ class _MetaInfoBase(_CallbackSupport):
         ]]
 
     def _notify_started(self, item):
+        # 在读取原始内容之前发送状态回调；异常时由后续 Executor 的失败结果覆盖状态。
         meta_key = _to_int(item.get("key", item.get("metaKey", "")), 0)
         logical_path = _normalize_path(item.get("logicalPath", ""))
         asset_path = self._asset_path(item)
@@ -284,6 +289,7 @@ class _MetaInfoPassThrough(_MetaInfoBase):
             _trace(self.LOG_NAME + "_no_candidate")
             return [self.OUTPUT_COLUMNS]
 
+        # 调度 SQL 已限制为单个候选资产；这里只透传第一条，避免一次批处理产生多次状态转换。
         record = records[0]
         self._notify_started(record)
         output = self._emit(record)

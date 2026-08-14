@@ -19,11 +19,15 @@ def _trace(event, **fields):
 
 
 class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
+    # 一次 UDF 调用只处理一个焦点实体；最多从本次 SQL 输入中取 MAX_ASSET_GROUPS 个资产。
     MAX_ASSET_GROUPS = 8
+    # 每个资产最多拿 MAX_CANDIDATES_PER_GROUP 个关键词作为候选实体，避免 LLM 请求过大。
     MAX_CANDIDATES_PER_GROUP = 30
 
     def transform(self, data, args, kvargs):
         try:
+            # args[0] 是 SQL 中传入的焦点实体，例如：
+            # metadata_semantic_entity_relation_expand(*, '温度传感器')。
             focus = self._focus_entity(args)
             _trace(
                 "enter",
@@ -35,6 +39,8 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
                 _trace("exit", status="FAILED", reason="focus_entity_is_required")
                 return self._result("FAILED", [], [], "entity", "focus entity is required")
 
+            # data 是 FROM storage.meta WHERE key=... 查询返回的全部元数据行。
+            # 这里按“资产”分组候选关键词，而不是把所有资产的关键词混成一组。
             candidate_groups = self._candidate_groups(data, focus)
             if not candidate_groups:
                 _trace("exit", focus=focus, status="SUCCESS", reason="no_remaining_candidates")
@@ -55,6 +61,7 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
             skipped_unrelated = 0
             for group in candidate_groups:
                 candidates = group["candidates"]
+                # 关系缓存按资产隔离：同一对实体在不同 DataAsset 中可以有不同结论。
                 statuses = writer.get_entity_relation_statuses(
                     focus,
                     candidates,
@@ -64,10 +71,13 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
                 for candidate in candidates:
                     status = statuses.get(self._normalize(candidate))
                     if status is True:
+                        # 已缓存为相关，不再调用 LLM，也不重复写入。
                         skipped_related += 1
                     elif status is False:
+                        # 已缓存为不相关，同样跳过；false 也是有意保存的结论。
                         skipped_unrelated += 1
                     else:
+                        # Neo4j 没有结论，才进入本次 LLM 判断。
                         unknown.append(candidate)
                 if unknown:
                     pending_groups.append({
@@ -92,12 +102,14 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
             persisted_unrelated = 0
             for group in pending_groups:
                 candidates = group["candidates"]
+                # 每个资产组单独调用一次 LLM；不会跨资产合并候选词。
                 _trace("llm_request", focus=focus, candidates="|".join(candidates))
                 inferred = self._infer_relations(params, focus, candidates)
                 inferred_by_norm = dict((self._normalize(item["entity"]), item) for item in inferred)
                 for candidate in candidates:
                     item = inferred_by_norm.get(self._normalize(candidate))
                     if item:
+                        # LLM 返回该候选：写入 related=true 的资产范围关系。
                         writer.persist_entity_relation(
                             focus,
                             item["relation"],
@@ -113,6 +125,7 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
                         })
                         persisted_related += 1
                     else:
+                        # LLM 未返回该候选：明确缓存 related=false，避免下次重复询问。
                         writer.persist_entity_relation(
                             focus,
                             "无直接语义关系",
@@ -177,8 +190,10 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
         groups = []
         seen_asset_keys = set()
         for row in self._rows(data):
+            # 每一行对应一个 storage.meta 资产；UDF 只依赖 key 和 semanticKeywords。
             raw_keywords = row.get("semanticKeywords", "")
             keywords = self._parse_keywords(raw_keywords)
+            # 只有该资产的关键词中包含焦点实体，才为它建立候选组。
             contains_focus = any(self._normalize(item) == focus_norm for item in keywords)
             _trace(
                 "candidate_row",
@@ -190,9 +205,11 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
             )
             if not contains_focus:
                 continue
+            # 候选词来自同一资产的 semanticKeywords，并排除焦点自身。
             candidates = [item for item in keywords if self._normalize(item) != focus_norm]
             candidates = dedup_strings(candidates, self.MAX_CANDIDATES_PER_GROUP)
             meta_key = self._safe(row.get("key", ""))
+            # assetKey 使用 DataAsset::<metaKey>，与 Neo4j 中 SEMANTIC_RELATION.assetKey 一致。
             asset_key = "DataAsset::" + meta_key
             if candidates and meta_key and asset_key not in seen_asset_keys:
                 groups.append({"assetKey": asset_key, "candidates": candidates})
@@ -217,6 +234,7 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
         if not _llm_available(params):
             return []
 
+        # LLM 只能从输入候选中挑选“明确直接相关”的实体；未返回的候选由调用方缓存为 false。
         prompt = (
             "You decide whether metadata semantic entities are directly related. Return strict JSON only: "
             "{\"relations\":[{\"entity\":\"candidate from input\",\"relation\":\"concise Chinese relation\"}]}. "
@@ -268,6 +286,7 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
     def _rows(self, data):
         if not isinstance(data, list) or not data or not isinstance(data[0], list):
             return []
+        # IGinX UDF 输入通常包含：表头行、可选类型行、数据行。
         headers = [self._column_name(value) for value in data[0]]
         start = 1
         if len(data) > 1 and self._is_type_row(data[1]):
@@ -297,6 +316,7 @@ class MetadataSemanticEntityRelationExpand(_RuntimeConfigMixin):
         return bool(row) and all(self._decode(value).strip().upper() in known_types for value in row)
 
     def _parse_keywords(self, value):
+        # semanticKeywords 在 storage.meta 中是 JSON 数组字符串，例如 ["设备", "温度"]。
         try:
             parsed = json.loads(self._safe(value))
             if isinstance(parsed, list):

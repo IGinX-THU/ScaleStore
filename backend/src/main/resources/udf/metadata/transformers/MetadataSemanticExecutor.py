@@ -101,6 +101,7 @@ class _ExecutorBase(object):
             return {}
 
     def _callback_url(self, kind):
+        # 与 MetaInfo 使用相同的 URL 解析逻辑，确保开始和完成回调落到同一个后端实例。
         config = self._load_callback_config()
         direct_key = kind + "SemanticCallbackUrl"
         direct_url = _safe(config.get(direct_key, ""))
@@ -119,6 +120,7 @@ class _ExecutorBase(object):
         return base_url.rstrip("/") + "/metadata/extraction/semantic/" + kind + "-callback"
 
     def _post_callback(self, kind, payload):
+        # 完成回调是语义关键字写回 storage.meta 的唯一通道，非 2xx 或业务拒绝都必须让任务失败。
         url = self._callback_url(kind)
         response = requests.post(url, json=payload, timeout=30)
         body = response.text
@@ -145,6 +147,7 @@ class _ExecutorBase(object):
             raise RuntimeError("%s semantic callback rejected: code=%s message=%s" % (kind, code, _safe(parsed.get("message", ""))))
 
     def _parse_udf_result(self, payload):
+        # UDF 返回固定的“表头、类型、数据”二维表；解析失败统一转换成可回调的 FAILED 结果。
         if not isinstance(payload, list) or len(payload) < 3:
             return "FAILED", "[]", "empty udf result"
         row = payload[-1] if isinstance(payload[-1], list) else []
@@ -168,6 +171,7 @@ class _ExecutorBase(object):
         if not isinstance(rows, list) or not rows or not isinstance(rows[0], list):
             return [], []
 
+        # JOIN 后包含原始内容列和 metaInfo_/dirMeta_ 元数据列，保留全部列供后续拆分。
         headers = self._dedup_headers([_normalize_column(v) for v in rows[0]])
         data_rows = []
         start = 1
@@ -199,6 +203,7 @@ class _ExecutorBase(object):
         return out
 
     def _find_prefixed_record(self, headers, row, prefix):
+        # 元数据列由工作流 SQL 加前缀，防止与内容表中的同名字段发生碰撞。
         record = {}
         has_value = False
         for idx, header in enumerate(headers):
@@ -277,6 +282,7 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
             data_indices.append(idx)
             data_headers.append(header)
 
+        # 向具体提取 UDF 只传内容矩阵；metaInfo_ 列仅作为运行参数，不应被识别成业务字段。
         matrix = [data_headers]
         for row in data_rows:
             matrix.append([row[idx] if idx < len(row) else None for idx in data_indices])
@@ -316,6 +322,7 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
                 error=str(exc),
             )
             raise
+        # 语义 UDF 已写 Neo4j；该回调负责把 status、keywords 和诊断消息写回 IginX 元数据表。
         callback_payload = {
             "metaKey": meta_key,
             "status": status,
@@ -382,6 +389,7 @@ class MetadataSemanticDirectoryExecutor(_ExecutorBase):
             "createTime": _safe(meta.get("createTime", "")),
         }
 
+        # 目录 UDF 需要看到所有元数据行，以筛选当前目录的直接已完成子项。
         matrix = [headers]
         matrix.extend(data_rows)
         udf_started = time.time()

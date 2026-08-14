@@ -6,11 +6,13 @@ class MetadataTreePersist(_RuntimeConfigMixin):
     def transform(self, data, args, kvargs):
         try:
             params = self._params(kvargs)
+            # 该 UDF 仅用于补建路径树，不能覆盖已由语义提取写入的关键词和实体关系。
             params["skipAncestorKeywordRefresh"] = "true"
             params["skipSemanticEntities"] = "true"
             writer = Neo4jGraphWriter(params)
             count = 0
             for row in self._rows(data):
+                # 无效元数据不应出现在可查询的逻辑路径树中。
                 if self._safe(row.get("isValid", "true")).lower() == "false":
                     continue
                 logical_path = self._normalize_path(row.get("logicalPath", ""))
@@ -43,6 +45,7 @@ class MetadataTreePersist(_RuntimeConfigMixin):
         headers = []
         start = 0
         if isinstance(data[0], list):
+            # 兼容 IGinX 的“表头 + 可选类型行 + 数据行”返回格式。
             candidate = [self._column_name(v) for v in data[0]]
             if any(v in ("logicalPath", "fileName", "dataType") for v in candidate):
                 headers = candidate
@@ -67,6 +70,7 @@ class MetadataTreePersist(_RuntimeConfigMixin):
         return text.strip("()")
 
     def _parse_keywords(self, value):
+        # semanticKeywords 是持久化后的 JSON 数组；损坏数据按空处理，避免树补建任务失败。
         import json
         raw = self._safe(value)
         if not raw:

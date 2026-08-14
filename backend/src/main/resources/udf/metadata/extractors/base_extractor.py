@@ -6,6 +6,7 @@ import time
 
 class BaseMetadataExtractor(object):
     __metaclass__ = abc.ABCMeta
+    # 图像原文和发送给视觉模型的最大体积分别受限，避免 UDF 因异常大文件耗尽内存或请求体。
     DEFAULT_MAX_RAW_IMAGE_BYTES = 64 * 1024 * 1024
     DEFAULT_MAX_VLM_IMAGE_BYTES = 4 * 1024 * 1024
     DEFAULT_MAX_VLM_IMAGE_SIDE = 1280
@@ -23,7 +24,23 @@ class BaseMetadataExtractor(object):
     def extract(self):
         raise NotImplementedError()
 
+    def build_result(self, field_kind, fields=None, keywords=None, entities=None, triples=None, message="",
+                     skip_keyword_normalization=False):
+        """Build the common raw-extraction contract consumed by the leaf semantic UDF."""
+        result = {
+            "fieldKind": field_kind,
+            "fields": fields or [],
+            "keywords": keywords or [],
+            "entities": entities or [],
+            "triples": triples or [],
+            "message": message,
+        }
+        if skip_keyword_normalization:
+            result["skipKeywordNormalization"] = True
+        return result
+
     def extract_fields(self):
+        # 优先将 IGinX 表头视为结构化字段；没有表头时才从扁平化值中做有限的兜底推断。
         fields = []
         if isinstance(self.data, list) and len(self.data) > 0 and isinstance(self.data[0], list):
             for item in self.data[0]:
@@ -44,6 +61,7 @@ class BaseMetadataExtractor(object):
         return self.dedup_strings(fields, 120)
 
     def extract_text_content(self):
+        # 文本内容有总长度和单值长度上限，控制传入规则解析与 LLM 的输入规模。
         values = []
         self.flatten_values(self.data_rows(), values)
         chunks = []
@@ -74,6 +92,7 @@ class BaseMetadataExtractor(object):
         if max_bytes <= 0:
             raise RuntimeError("maxRawImageBytes must be positive")
 
+        # 只拼接足够大的 bytes 单元，过滤表头或普通短文本带来的伪二进制内容。
         values = []
         self.flatten_values(self.data_rows(), values)
         chunks = []
@@ -103,6 +122,7 @@ class BaseMetadataExtractor(object):
             raise RuntimeError("maxVlmImageBytes must be positive")
 
         original_mime = self._image_mime_type()
+        # 原图合规则不重编码，保留可用于视觉语义识别的全部细节。
         if len(image_bytes) <= max_vlm_bytes:
             return base64.b64encode(image_bytes).decode("utf-8"), original_mime, "original image sent to vlm"
 
@@ -139,6 +159,7 @@ class BaseMetadataExtractor(object):
             if image.mode not in ("RGB", "L"):
                 image = image.convert("RGB")
 
+            # 先在同一尺寸降低 JPEG 质量，再逐步缩小边长，尽量保留可辨识内容。
             side = max_side
             while side >= min_side:
                 candidate = image.copy()
@@ -174,6 +195,7 @@ class BaseMetadataExtractor(object):
             and isinstance(self.data[0], list)
             and isinstance(self.data[1], list)
         ):
+            # 兼容 IGinX 可选的类型行，确保数据类型名称不会被当作真实内容提取。
             start = 2 if self.has_type_row(self.data[0], self.data[1]) else 1
             return self.data[start:]
         return self.data
@@ -211,6 +233,7 @@ class BaseMetadataExtractor(object):
             return keys
 
         try:
+            # JSON 可递归保留层级 key；非 JSON 再降级使用键名模式匹配。
             obj = json.loads(txt)
             if isinstance(obj, dict):
                 self.walk_json_keys(obj, "", keys)
@@ -290,6 +313,7 @@ class BaseMetadataExtractor(object):
         parsed = self.parse_llm_json_payload(raw)
 
         retry_count = 0
+        # 重试以三元组为空为条件：关键词可为空，但需要再给模型一次补充关系的机会。
         while retry_count < max_retry and not parsed.get("triples", []):
             if not retry_messages:
                 break
@@ -300,6 +324,7 @@ class BaseMetadataExtractor(object):
         return parsed, raw
 
     def parse_llm_json_payload(self, llm_text):
+        # 清理常见模型包装后再解析；解析失败返回空结构，调用方可安全继续走回退路径。
         cleaned = self.strip_think(llm_text or "")
         cleaned = self.strip_code_fence(cleaned)
 
@@ -374,6 +399,7 @@ class BaseMetadataExtractor(object):
         return txt.strip()
 
     def normalize_field_name(self, value):
+        # 去掉查询别名、路径前缀及不适合作为字段名的字符，保持 IginX 字段展示稳定。
         txt = self.to_text(value)
         if not txt:
             return ""
