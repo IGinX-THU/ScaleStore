@@ -31,29 +31,29 @@ public class MetadataKnowledgeService {
     @Autowired
     private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
 
-    public Map<String, Object> getGraph(String logicalPath, int limit) {
+    public Map<String, Object> getGraph(String logicalPath, int maxNodes) {
         if (!neo4jDao.isEnabled()) {
             return neo4jDao.emptyGraph("Neo4j disabled");
         }
-        int effectiveLimit = resolveGraphLimit(limit);
-        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, effectiveLimit);
+        int effectiveMaxNodes = resolveGraphMaxNodes(maxNodes);
+        Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, effectiveMaxNodes);
         graph.put("cypher", "MATCH (n)-[r]->(m) ...");
         return graph;
     }
 
-    private int resolveGraphLimit(int requestedLimit) {
-        int policyLimit = 200;
+    private int resolveGraphMaxNodes(int requestedMaxNodes) {
+        int policyMaxNodes = 200;
         try {
             Policy policy = policyService.getPolicy();
-            if (policy != null && policy.getMetadataGraphMaxTriples() != null) {
-                policyLimit = policy.getMetadataGraphMaxTriples();
+            if (policy != null && policy.getMetadataGraphMaxNodes() != null) {
+                policyMaxNodes = policy.getMetadataGraphMaxNodes();
             }
         } catch (Exception e) {
             logger.warn("Failed to load metadata graph policy limit, fallback to default 200: {}", e.getMessage());
         }
 
-        int normalizedRequestedLimit = requestedLimit > 0 ? requestedLimit : policyLimit;
-        return Math.max(20, Math.min(normalizedRequestedLimit, policyLimit));
+        int normalizedRequestedMaxNodes = requestedMaxNodes > 0 ? requestedMaxNodes : policyMaxNodes;
+        return Math.max(20, Math.min(normalizedRequestedMaxNodes, policyMaxNodes));
     }
 
     public Map<String, Object> queryBySystemFilters(String logicalPath,
@@ -74,11 +74,11 @@ public class MetadataKnowledgeService {
         String dt = safe(dataType).toLowerCase(Locale.ROOT);
         String kw = safe(keyword);
 
-        int queryLimit = resolveGraphLimit(0);
-        String finalCypher = "MATCH DataAsset/LogicalPath WHERE path/type/keyword filters RETURN matched nodes,ancestor paths LIMIT " + queryLimit;
+        int queryMaxNodes = resolveGraphMaxNodes(0);
+        String finalCypher = "MATCH DataAsset/LogicalPath WHERE path/type/keyword filters RETURN matched nodes,ancestor paths MAX_NODES " + queryMaxNodes;
         logger.info("Structured metadata query: logicalPath={}, dataType={}, keyword={}, cypher={}",
                 path, dt, kw, finalCypher);
-        Map<String, Object> graph = neo4jDao.queryAssetsByKeyword(path, dt, kw, queryLimit);
+        Map<String, Object> graph = neo4jDao.queryAssetsByKeyword(path, dt, kw, queryMaxNodes);
         graph.put("cypher", finalCypher);
         graph.put("strategy", "system");
         graph.put("strategyReason", "asset_directory_keyword_filters");

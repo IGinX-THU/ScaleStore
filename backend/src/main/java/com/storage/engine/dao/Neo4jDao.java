@@ -61,19 +61,20 @@ public class Neo4jDao {
 	/**
 	 * 按逻辑路径前缀查询图谱子图。
 	 */
-	public Map<String, Object> queryGraph(String logicalPath, int limit) {
+	public Map<String, Object> queryGraph(String logicalPath, int maxNodes) {
 		if (!neo4jEnabled) {
 			return emptyGraph("Neo4j disabled");
 		}
 		ensureConstraints();
 
 		String path = logicalPath == null ? "" : logicalPath.trim();
-		int safeLimit = Math.max(20, Math.min(limit, 500));
-		int assetWindow = Math.max(10, Math.min(200, safeLimit));
+		maxNodes = Math.max(20, Math.min(maxNodes, 500));
+		int candidateAssetWindow = Math.max(10, Math.min(200, maxNodes));
+		int candidateRowLimit = Math.min(2000, Math.max(100, maxNodes * 4));
 
 		String cypher = "MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d:DataAsset) "
 				+ "WHERE ($path='' OR p.path STARTS WITH $path) "
-				+ "WITH p,hd,d ORDER BY coalesce(d.updatedAt, id(d)) DESC, id(d) DESC LIMIT $assetWindow "
+				+ "WITH p,hd,d ORDER BY coalesce(d.updatedAt, id(d)) DESC, id(d) DESC LIMIT $candidateAssetWindow "
 				+ "WITH collect(d) AS assets "
 				+ "UNWIND range(0, size(assets) - 1) AS assetRank "
 				+ "WITH assets[assetRank] AS d, assetRank "
@@ -82,14 +83,14 @@ public class Neo4jDao {
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
 				+ "WITH pathChain,p,hd,d,m,e, assetRank, coalesce(m.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
 				+ "ORDER BY assetRank ASC, ord DESC "
-				+ "RETURN pathChain,p,hd,d,m,e LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,m,e LIMIT $candidateRowLimit";
 
 		Session session = getDriver().session();
 		try {
 			List<Record> records = session.readTransaction(new TransactionWork<List<Record>>() {
 				@Override
 				public List<Record> execute(Transaction tx) {
-					Result result = tx.run(cypher, Values.parameters("path", path, "limit", safeLimit, "assetWindow", assetWindow));
+					Result result = tx.run(cypher, Values.parameters("path", path, "candidateRowLimit", candidateRowLimit, "candidateAssetWindow", candidateAssetWindow));
 					return result.list();
 				}
 			});
@@ -98,14 +99,14 @@ public class Neo4jDao {
 				List<Record> nodeOnly = session.readTransaction(new TransactionWork<List<Record>>() {
 					@Override
 					public List<Record> execute(Transaction tx) {
-						Result result = tx.run("MATCH (n) WHERE ($path='' OR coalesce(n.path,n.logicalPath,'') STARTS WITH $path) RETURN n LIMIT $limit",
-								Values.parameters("path", path, "limit", safeLimit));
+						Result result = tx.run("MATCH (n) WHERE ($path='' OR coalesce(n.path,n.logicalPath,'') STARTS WITH $path) RETURN n LIMIT $candidateRowLimit",
+								Values.parameters("path", path, "candidateRowLimit", candidateRowLimit));
 						return result.list();
 					}
 				});
-				return buildGraph(nodeOnly);
+				return buildGraph(nodeOnly, Collections.<Long>emptySet(), maxNodes);
 			}
-			return buildGraph(records);
+			return buildGraph(records, Collections.<Long>emptySet(), maxNodes);
 		} finally {
 			session.close();
 		}
@@ -139,14 +140,15 @@ public class Neo4jDao {
 		return driver;
 	}
 
-	public Map<String, Object> queryAssetsByKeyword(String logicalPath, String dataType, String keyword, int limit) {
+	public Map<String, Object> queryAssetsByKeyword(String logicalPath, String dataType, String keyword, int maxNodes) {
 		if (!neo4jEnabled) {
 			return emptyGraph("Neo4j disabled");
 		}
 		ensureConstraints();
-		int safeLimit = Math.max(20, Math.min(limit, 500));
-		int assetWindow = Math.max(10, Math.min(120, safeLimit));
-		int directoryWindow = Math.max(10, Math.min(120, safeLimit));
+		maxNodes = Math.max(20, Math.min(maxNodes, 500));
+		int candidateAssetWindow = Math.max(10, Math.min(120, maxNodes));
+		int candidateDirectoryWindow = Math.max(10, Math.min(120, maxNodes));
+		int candidateRowLimit = Math.min(2000, Math.max(100, maxNodes * 4));
 		String path = logicalPath == null ? "" : logicalPath.trim();
 		String dt = dataType == null ? "" : dataType.trim().toLowerCase(Locale.ROOT);
 		String kw = keyword == null ? "" : keyword.trim();
@@ -161,7 +163,7 @@ public class Neo4jDao {
 				+ "OR toLower(assetPath) CONTAINS toLower($kw) "
 				+ "OR any(k IN coalesce(d.semanticKeywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
 				+ "OR EXISTS { MATCH (d)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
-				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $assetWindow "
+				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $candidateAssetWindow "
 				+ "RETURN id(d) AS id";
 
 		String matchedDirectoryCypher = "MATCH (p:LogicalPath) "
@@ -171,7 +173,7 @@ public class Neo4jDao {
 				+ "OR toLower(coalesce(p.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(coalesce(p.path,'')) CONTAINS toLower($kw) "
 				+ "OR EXISTS { MATCH (p)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
-				+ "WITH p ORDER BY coalesce(p.updatedAt, id(p)) DESC LIMIT $directoryWindow "
+				+ "WITH p ORDER BY coalesce(p.updatedAt, id(p)) DESC LIMIT $candidateDirectoryWindow "
 				+ "RETURN id(p) AS id";
 
 		String assetGraphCypher = "MATCH (d:DataAsset) WHERE id(d) IN $assetIds "
@@ -185,12 +187,12 @@ public class Neo4jDao {
 				+ "AND coalesce(er.related, true) = true "
 				+ "AND EXISTS { MATCH (d)-[:MENTIONS]->(relatedEntity) } "
 				+ "OPTIONAL MATCH (d)-[relatedMention:MENTIONS]->(relatedEntity) "
-				+ "RETURN pathChain,p,hd,d,m,e,er,relatedEntity,relatedMention LIMIT $limit";
+				+ "RETURN pathChain,p,hd,d,m,e,er,relatedEntity,relatedMention LIMIT $candidateRowLimit";
 
 		String directoryGraphCypher = "MATCH (p:LogicalPath) WHERE id(p) IN $directoryIds "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
 				+ "OPTIONAL MATCH (p)-[m:MENTIONS]->(e:Entity) "
-				+ "RETURN pathChain,p,m,e LIMIT $limit";
+				+ "RETURN pathChain,p,m,e LIMIT $candidateRowLimit";
 
 		Session session = getDriver().session();
 		try {
@@ -198,14 +200,12 @@ public class Neo4jDao {
 					"path", path,
 					"dt", dt,
 					"kw", kw,
-					"limit", safeLimit,
-					"assetWindow", assetWindow));
+					"candidateAssetWindow", candidateAssetWindow));
 			List<Long> directoryIds = queryIdList(session, matchedDirectoryCypher, Values.parameters(
 					"path", path,
 					"dt", dt,
 					"kw", kw,
-					"limit", safeLimit,
-					"directoryWindow", directoryWindow));
+					"candidateDirectoryWindow", candidateDirectoryWindow));
 			Set<Long> matchedIdSet = new LinkedHashSet<Long>();
 			matchedIdSet.addAll(assetIds);
 			matchedIdSet.addAll(directoryIds);
@@ -214,15 +214,15 @@ public class Neo4jDao {
 			if (!assetIds.isEmpty()) {
 				records.addAll(session.run(assetGraphCypher, Values.parameters(
 						"assetIds", assetIds,
-						"limit", safeLimit,
+						"candidateRowLimit", candidateRowLimit,
 						"kw", kw)).list());
 			}
 			if (!directoryIds.isEmpty()) {
 				records.addAll(session.run(directoryGraphCypher, Values.parameters(
 						"directoryIds", directoryIds,
-						"limit", safeLimit)).list());
+						"candidateRowLimit", candidateRowLimit)).list());
 			}
-			Map<String, Object> graph = buildGraph(records, matchedIdSet);
+			Map<String, Object> graph = buildGraph(records, matchedIdSet, maxNodes);
 			graph.put("matchedNodeIds", new ArrayList<Long>(matchedIdSet));
 			return graph;
 		} finally {
@@ -280,10 +280,14 @@ public class Neo4jDao {
 	}
 
 	private Map<String, Object> buildGraph(List<Record> records) {
-		return buildGraph(records, Collections.<Long>emptySet());
+		return buildGraph(records, Collections.<Long>emptySet(), Integer.MAX_VALUE);
 	}
 
 	private Map<String, Object> buildGraph(List<Record> records, Set<Long> matchedNodeIds) {
+		return buildGraph(records, matchedNodeIds, Integer.MAX_VALUE);
+	}
+
+	private Map<String, Object> buildGraph(List<Record> records, Set<Long> matchedNodeIds, int maxNodes) {
 		Map<String, Map<String, Object>> nodeMap = new LinkedHashMap<String, Map<String, Object>>();
 		Set<String> linkKeys = new LinkedHashSet<String>();
 		List<Map<String, Object>> links = new ArrayList<Map<String, Object>>();
@@ -314,12 +318,29 @@ public class Neo4jDao {
 		}
 
 		List<Map<String, Object>> nodes = new ArrayList<Map<String, Object>>(nodeMap.values());
+		int originalNodeCount = nodes.size();
 		for (Map<String, Object> node : nodes) {
 			try {
 				node.put("matched", matchedIds.contains(Long.valueOf(String.valueOf(node.get("id")))));
 			} catch (Exception ignore) {
 				node.put("matched", false);
 			}
+		}
+		if (maxNodes > 0 && nodes.size() > maxNodes) {
+			Set<String> retained = new LinkedHashSet<String>();
+			for (Map<String, Object> node : nodes) {
+				if (retained.size() >= maxNodes) break;
+				if (Boolean.TRUE.equals(node.get("matched"))) {
+					retained.add(String.valueOf(node.get("id")));
+				}
+			}
+			for (Map<String, Object> node : nodes) {
+				if (retained.size() >= maxNodes) break;
+				retained.add(String.valueOf(node.get("id")));
+			}
+			nodes.removeIf(node -> !retained.contains(String.valueOf(node.get("id"))));
+			links.removeIf(link -> !retained.contains(String.valueOf(link.get("source")))
+					|| !retained.contains(String.valueOf(link.get("target"))));
 		}
 		List<Map<String, Object>> categories = new ArrayList<Map<String, Object>>();
 		for (Map.Entry<String, Integer> entry : categoryMap.entrySet()) {
@@ -335,6 +356,9 @@ public class Neo4jDao {
 		graph.put("categories", categories);
 		graph.put("nodeCount", nodes.size());
 		graph.put("linkCount", links.size());
+		graph.put("graphLimit", maxNodes == Integer.MAX_VALUE ? null : maxNodes);
+		graph.put("truncated", maxNodes != Integer.MAX_VALUE && originalNodeCount > nodes.size());
+		graph.put("omittedNodeCount", Math.max(0, originalNodeCount - nodes.size()));
 		return graph;
 	}
 

@@ -44,9 +44,9 @@ let metadataAutoRefreshInFlight = false;
 let metadataAutoRefreshPending = false;
 const metadataMetaCache = new Map();
 
-const DEFAULT_GRAPH_MAX_TRIPLES = 200;
-const MIN_GRAPH_MAX_TRIPLES = 20;
-const MAX_GRAPH_MAX_TRIPLES = 500;
+const DEFAULT_GRAPH_MAX_NODES = 200;
+const MIN_GRAPH_MAX_NODES = 20;
+const MAX_GRAPH_MAX_NODES = 500;
 
 const AGENT_MAX_MESSAGES = 80;
 
@@ -231,14 +231,14 @@ function mapPolicyFromBackend(policy) {
       inputType: 'number',
     },
     {
-      id: 'metadata-graph-max-triples',
-      key: 'metadataGraphMaxTriples',
-      name: 'metadata.graph-max-triples',
-      value: String(policy.metadataGraphMaxTriples ?? DEFAULT_GRAPH_MAX_TRIPLES),
-      desc: policy.metadataGraphMaxTriplesDesc || '知识图谱展示的最大三元组数量（20-500）',
+      id: 'metadata-graph-max-nodes',
+      key: 'metadataGraphMaxNodes',
+      name: 'metadata.graph-max-nodes',
+      value: String(policy.metadataGraphMaxNodes ?? DEFAULT_GRAPH_MAX_NODES),
+      desc: policy.metadataGraphMaxNodesDesc || '知识图谱单次最多展示的节点数（范围 20-500）',
       inputType: 'number',
-      min: MIN_GRAPH_MAX_TRIPLES,
-      max: MAX_GRAPH_MAX_TRIPLES,
+      min: MIN_GRAPH_MAX_NODES,
+      max: MAX_GRAPH_MAX_NODES,
       step: 1,
     },
   ];
@@ -254,23 +254,6 @@ function parsePolicyInteger(value, fallback, min, max) {
   return Math.min(max, Math.max(min, normalized));
 }
 
-function getPolicyValue(key, fallback) {
-  const row = policyData.find(item => String(item.key) === String(key));
-  if (!row) {
-    return fallback;
-  }
-  return row.value;
-}
-
-function getGraphMaxTriplesLimit() {
-  return parsePolicyInteger(
-    getPolicyValue('metadataGraphMaxTriples', DEFAULT_GRAPH_MAX_TRIPLES),
-    DEFAULT_GRAPH_MAX_TRIPLES,
-    MIN_GRAPH_MAX_TRIPLES,
-    MAX_GRAPH_MAX_TRIPLES
-  );
-}
-
 function buildPolicyPayloadFromRows(rows) {
   const rowByKey = {};
   rows.forEach(row => {
@@ -280,7 +263,7 @@ function buildPolicyPayloadFromRows(rows) {
   return {
     extractionEnabled: String(rowByKey.extractionEnabled?.value || 'false').toLowerCase() === 'true',
     extractionScanIntervalMs: parsePolicyInteger(rowByKey.extractionScanIntervalMs?.value, 60000, 1000, Number.MAX_SAFE_INTEGER),
-    metadataGraphMaxTriples: parsePolicyInteger(rowByKey.metadataGraphMaxTriples?.value, DEFAULT_GRAPH_MAX_TRIPLES, MIN_GRAPH_MAX_TRIPLES, MAX_GRAPH_MAX_TRIPLES),
+    metadataGraphMaxNodes: parsePolicyInteger(rowByKey.metadataGraphMaxNodes?.value, DEFAULT_GRAPH_MAX_NODES, MIN_GRAPH_MAX_NODES, MAX_GRAPH_MAX_NODES),
   };
 }
 
@@ -297,6 +280,31 @@ async function savePolicies(rows) {
     body: JSON.stringify(payload),
   });
   policyData = mapPolicyFromBackend(policy);
+}
+
+async function refreshMetadataGraphAfterPolicyUpdate() {
+  if (!metadataChart) {
+    return;
+  }
+
+  const searchKeyword = String(metadataActiveSearchKeyword || '').trim();
+  if (searchKeyword) {
+    const filters = { keyword: searchKeyword, expandRelations: false };
+    if (metadataFullscreen) {
+      filters.logicalPath = $('metadata-path-input')?.value.trim() || '';
+      filters.dataType = $('metadata-type-input')?.value.trim() || '';
+    }
+    const graph = await queryMetadataBySystem(filters);
+    renderAndTrackMetadataGraph(graph, {
+      focusKeyword: searchKeyword,
+      focusMode: 'search',
+      logicalPath: filters.logicalPath || metadataCurrentLogicalPath,
+      searchKeyword,
+    });
+    return;
+  }
+
+  await initMetadataGraph(metadataCurrentLogicalPath);
 }
 
 function mapRestfulApiFromBackend(item) {
@@ -1590,6 +1598,12 @@ $('policy-save-btn').addEventListener('click', async () => {
 
   try {
     await savePolicies(policyData);
+    try {
+      await refreshMetadataGraphAfterPolicyUpdate();
+    } catch (refreshError) {
+      console.error('Refresh metadata graph after policy update failed:', refreshError);
+      alert('策略已保存，但图谱刷新失败: ' + refreshError.message);
+    }
     exitPolicyEdit();
   } catch (e) {
     alert('策略保存失败: ' + e.message);
@@ -1800,7 +1814,6 @@ async function initMetadataGraph(logicalPath = '') {
 async function fetchMetadataGraph(logicalPath = '') {
   const params = new URLSearchParams();
   if (logicalPath) params.set('logicalPath', logicalPath);
-  params.set('limit', String(getGraphMaxTriplesLimit()));
   const url = `${API_BASE}/metadata/graph?${params.toString()}`;
 
   const response = await fetch(url);
@@ -1981,6 +1994,16 @@ async function openMetadataNodeInAccess(node) {
 function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search') {
   const container = $('metadata-graph');
   if (!container) return;
+  const summary = $('metadata-graph-summary');
+  if (summary) {
+    const nodeCount = Number(graphData?.nodeCount || 0);
+    const linkCount = Number(graphData?.linkCount || 0);
+    const graphLimit = Number(graphData?.graphLimit || 0);
+    const omittedNodeCount = Number(graphData?.omittedNodeCount || 0);
+    summary.textContent = graphLimit > 0
+      ? `显示 ${nodeCount} / ${graphLimit} 个节点，${linkCount} 条关系${omittedNodeCount > 0 ? `；已隐藏 ${omittedNodeCount} 个节点` : ''}`
+      : `显示 ${nodeCount} 个节点，${linkCount} 条关系`;
+  }
   if (!metadataChart) {
     metadataChart = echarts.init(container);
   }
