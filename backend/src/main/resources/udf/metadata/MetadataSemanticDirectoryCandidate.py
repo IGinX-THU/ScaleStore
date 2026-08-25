@@ -296,6 +296,7 @@ class MetadataSemanticDirectoryCandidate(object):
     def _directory_children_ready_with_reason(self, directory, all_items):
         dir_path = self._asset_path(directory)
         has_child = False
+        has_extractable_child = False
         for item in all_items:
             if item is directory:
                 continue
@@ -309,6 +310,7 @@ class MetadataSemanticDirectoryCandidate(object):
             # SKIPPED 不提供语义，但不阻塞其他可提取子项形成目录摘要。
             if status == "SKIPPED":
                 continue
+            has_extractable_child = True
             if status != "SUCCESS" or not keywords:
                 return False, "child_not_ready:%s:%s:%s" % (
                     _safe(item.get("key", item.get("metaKey", ""))),
@@ -317,6 +319,8 @@ class MetadataSemanticDirectoryCandidate(object):
                 )
         if not has_child:
             return False, "no_child"
+        if not has_extractable_child:
+            return False, "all_children_skipped"
         return True, "ready"
 
     def _emit_row(self, item):
