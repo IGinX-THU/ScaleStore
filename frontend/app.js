@@ -36,6 +36,7 @@ let agentEventCursor = 0;
 let agentEventPollTimer = null;
 let agentDisplayQueue = [];
 let agentDisplayTimer = null;
+let agentDisplayCatchUp = false;
 let metadataGraphSignature = '';
 let metadataGraphNodeIds = new Set();
 let metadataCurrentLogicalPath = '';
@@ -49,6 +50,10 @@ const MIN_GRAPH_MAX_NODES = 20;
 const MAX_GRAPH_MAX_NODES = 500;
 
 const AGENT_MAX_MESSAGES = 80;
+const AGENT_SLOW_QUEUE_THRESHOLD = 50;
+const AGENT_CATCH_UP_QUEUE_THRESHOLD = 100;
+const AGENT_CATCH_UP_BATCH_SIZE = 10;
+const AGENT_CATCH_UP_INTERVAL_MS = 50;
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -688,7 +693,8 @@ function pushAgentMessage({ level = 'info', status = '', text = '', agentName = 
 }
 
 function getAgentDisplayIntervalMs() {
-  return agentDisplayQueue.length > 50 ? 500 : 1000;
+  if (agentDisplayCatchUp) return AGENT_CATCH_UP_INTERVAL_MS;
+  return agentDisplayQueue.length > AGENT_SLOW_QUEUE_THRESHOLD ? 500 : 1000;
 }
 
 function stopAgentDisplayQueue() {
@@ -699,13 +705,22 @@ function stopAgentDisplayQueue() {
 }
 
 function scheduleAgentDisplayQueue() {
-  stopAgentDisplayQueue();
-  if (agentDisplayQueue.length === 0) return;
+  if (agentDisplayTimer || agentDisplayQueue.length === 0) return;
   agentDisplayTimer = setTimeout(() => {
     agentDisplayTimer = null;
-    const next = agentDisplayQueue.shift();
-    if (next) {
-      pushAgentMessage(next);
+    const isCatchingUp = agentDisplayCatchUp
+      && agentDisplayQueue.length > AGENT_CATCH_UP_QUEUE_THRESHOLD;
+    const displayCount = isCatchingUp
+      ? Math.min(AGENT_CATCH_UP_BATCH_SIZE, agentDisplayQueue.length - AGENT_CATCH_UP_QUEUE_THRESHOLD)
+      : 1;
+    for (let index = 0; index < displayCount; index += 1) {
+      const next = agentDisplayQueue.shift();
+      if (next) {
+        pushAgentMessage({ ...next, smooth: !isCatchingUp });
+      }
+    }
+    if (agentDisplayQueue.length <= AGENT_CATCH_UP_QUEUE_THRESHOLD) {
+      agentDisplayCatchUp = false;
     }
     if (agentDisplayQueue.length > 0) {
       scheduleAgentDisplayQueue();
@@ -713,20 +728,27 @@ function scheduleAgentDisplayQueue() {
   }, getAgentDisplayIntervalMs());
 }
 
+function startAgentDisplayCatchUp() {
+  if (agentDisplayCatchUp) return;
+  agentDisplayCatchUp = true;
+  stopAgentDisplayQueue();
+  scheduleAgentDisplayQueue();
+}
+
 function enqueueAgentMessage(message) {
   if (!message || !message.text) return;
   agentDisplayQueue.push(message);
-  if (!agentDisplayTimer) {
-    scheduleAgentDisplayQueue();
-    return;
+  if (agentDisplayQueue.length > AGENT_CATCH_UP_QUEUE_THRESHOLD) {
+    startAgentDisplayCatchUp();
   }
-  if (agentDisplayQueue.length > 50) {
+  if (!agentDisplayTimer) {
     scheduleAgentDisplayQueue();
   }
 }
 
 function clearAgentDisplayQueue() {
   agentDisplayQueue = [];
+  agentDisplayCatchUp = false;
   stopAgentDisplayQueue();
 }
 
