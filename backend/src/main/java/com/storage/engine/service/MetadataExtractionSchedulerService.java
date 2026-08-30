@@ -17,6 +17,7 @@ import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
@@ -40,6 +41,7 @@ public class MetadataExtractionSchedulerService {
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
     private final Set<String> relationExpansionInFlight = ConcurrentHashMap.newKeySet();
+
     @PostConstruct
     public void init() {
         String message = extractionEnabled
@@ -66,6 +68,44 @@ public class MetadataExtractionSchedulerService {
                 } catch (Exception e) {
                     logger.warn("Persist metadata tree failed: {}", e.getMessage());
                     publishEvent("warn", "TREE_FAILED", "Metadata directory tree persist failed: path=" + assetPath + ", reason=" + safe(e.getMessage()), "Metadata-UDF");
+                }
+            }
+        });
+    }
+
+    public void persistMetadataTreeForSourceAsync(String sourcePath, List<DataItem> importedItems) {
+        final String whereClause = buildTreePersistWhereClause(importedItems);
+        if (whereClause.isEmpty()) {
+            return;
+        }
+        final String normalizedSourcePath = normalizePath(sourcePath);
+        final int assetCount = countPersistableItems(importedItems);
+        logger.info("[Metadata-UDF][TREE-SOURCE-SUBMITTED] sourcePath={}, assets={}",
+                normalizedSourcePath,
+                assetCount);
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_tree_persist(*) from " + IGinxConstants.STORAGE_META_PATH
+                            + " where " + whereClause + ";";
+                    logger.info("[Metadata-UDF][TREE-SOURCE-SQL] sourcePath={}, assets={}, sql={}",
+                            normalizedSourcePath,
+                            assetCount,
+                            sql);
+                    iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "TREE_SOURCE_DONE",
+                            "Metadata directory tree persisted to Neo4j: sourcePath=" + normalizedSourcePath
+                                    + ", assets=" + assetCount,
+                            "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Persist metadata tree failed: sourcePath={}, reason={}",
+                            normalizedSourcePath,
+                            e.getMessage());
+                    publishEvent("warn", "TREE_SOURCE_FAILED",
+                            "Metadata directory tree persist failed: sourcePath=" + normalizedSourcePath
+                                    + ", reason=" + safe(e.getMessage()),
+                            "Metadata-UDF");
                 }
             }
         });
@@ -172,6 +212,57 @@ public class MetadataExtractionSchedulerService {
                     .append("')");
         }
         return where.toString();
+    }
+
+    private String buildTreePersistWhereClause(List<DataItem> items) {
+        LinkedHashSet<Long> metaKeys = new LinkedHashSet<Long>();
+        LinkedHashSet<String> directoryClauses = new LinkedHashSet<String>();
+        if (items != null) {
+            for (DataItem item : items) {
+                if (item == null || item.getId() == null) {
+                    continue;
+                }
+                metaKeys.add(item.getId().longValue());
+
+                String directoryRoot = isDirectory(item) ? assetPath(item) : normalizePath(item.getLogicalPath());
+                for (String directoryPath : buildDirectoryAssetPaths(directoryRoot)) {
+                    String parentPath = parentPath(directoryPath);
+                    String directoryName = leafName(directoryPath);
+                    directoryClauses.add("(dataType = '" + IGinxConstants.TYPE_DIRECTORY
+                            + "' AND logicalPath = '" + escapeSql(parentPath)
+                            + "' AND fileName = '" + escapeSql(directoryName) + "')");
+                }
+            }
+        }
+
+        StringBuilder where = new StringBuilder();
+        for (Long metaKey : metaKeys) {
+            appendOrClause(where, "key = " + metaKey.longValue());
+        }
+        for (String directoryClause : directoryClauses) {
+            appendOrClause(where, directoryClause);
+        }
+        return where.toString();
+    }
+
+    private void appendOrClause(StringBuilder where, String clause) {
+        if (where.length() > 0) {
+            where.append(" OR ");
+        }
+        where.append(clause);
+    }
+
+    private int countPersistableItems(List<DataItem> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        LinkedHashSet<Long> metaKeys = new LinkedHashSet<Long>();
+        for (DataItem item : items) {
+            if (item != null && item.getId() != null) {
+                metaKeys.add(item.getId().longValue());
+            }
+        }
+        return metaKeys.size();
     }
 
     private List<String> buildDirectoryAssetPaths(String assetPath) {

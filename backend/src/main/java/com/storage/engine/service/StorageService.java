@@ -9,6 +9,7 @@ import com.storage.engine.service.adapter.StorageAdapter;
 import com.storage.engine.service.adapter.StorageAdapterFactory;
 import com.storage.engine.service.adapter.StorageUtils;
 import com.storage.engine.utils.ScriptExecutionUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -32,7 +33,7 @@ public class StorageService {
     private static final DateTimeFormatter TIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
     private static final int EXTERNAL_SIZE_FLUSH_BATCH = 100;
-    private static final long EXTERNAL_SIZE_FLUSH_BYTES = 10L * 1024L * 1024L * 1024L;
+    private static final long EXTERNAL_SIZE_FLUSH_BYTES = 512L * 1024L * 1024L * 1024L; // 512GB
     private static final int STRUCTURED_SAMPLE_ROW_COUNT = 100;
     private static final long FULL_ROW_BYTES = 1024L * 1024L;
     private static final String DEFAULT_FILESYSTEM_STRUCT = "FileTree";
@@ -60,7 +61,16 @@ public class StorageService {
     @Autowired
     private ScriptExecutionUtils scriptExecutionUtils;
 
+    @Value("${external.source.ssh-directory-cache.max-entries:32}")
+    private int sshDirectoryCacheMaxEntries;
+
+    @Value("${external.source.ssh-directory-cache.ttl-ms:900000}")
+    private long sshDirectoryCacheTtlMs;
+
     private final Object metaIdAllocationLock = new Object();
+    private final Object sshDirectoryFileCacheLock = new Object();
+    private final LinkedHashMap<SshDirectoryCacheKey, SshDirectoryFileCacheEntry> sshDirectoryFileCache =
+            new LinkedHashMap<SshDirectoryCacheKey, SshDirectoryFileCacheEntry>(16, 0.75F, true);
     private long nextMetaIdCandidate = -1L;
 
     public synchronized Map<String, Object> addExternalStorageEngine(AddStorageEngineRequest request) {
@@ -114,7 +124,7 @@ public class StorageService {
                         "External-Source");
 
                 ExternalMetaSyncResult syncResult = syncExternalMetadata(asyncContext);
-                persistImportedTrees(syncResult);
+                persistImportedTrees(asyncContext, syncResult);
                 logger.info(
                     "[ExternalSource] Async metadata sync finished. sourceType={}, schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
                     asyncContext.sourceType,
@@ -159,7 +169,7 @@ public class StorageService {
                         "External-Source");
 
                 ExternalMetaSyncResult syncResult = syncExternalSchemaMetadata(asyncContext);
-                persistImportedTrees(syncResult);
+                persistImportedTrees(asyncContext, syncResult);
                 logger.info(
                     "[ExternalSource] Async schema metadata sync finished. schemaPrefix={}, discovered={}, imported={}, skipped={}, replaced={}",
                     asyncContext.schemaPrefix,
@@ -280,13 +290,13 @@ public class StorageService {
         return item;
     }
 
-    private void persistImportedTrees(ExternalMetaSyncResult syncResult) {
-        if (syncResult == null) {
+    private void persistImportedTrees(AddSourceContext context, ExternalMetaSyncResult syncResult) {
+        if (syncResult == null || syncResult.importedItems.isEmpty()) {
             return;
         }
-        for (DataItem item : syncResult.importedItems) {
-            metadataExtractionSchedulerService.persistMetadataTreeAsync(item);
-        }
+        String sourceKey = context == null ? "" : safe(context.logicalSourceKey);
+        String sourcePath = normalizePath(EXTERN_LOGICAL_PREFIX + "/" + sourceKey);
+        metadataExtractionSchedulerService.persistMetadataTreeForSourceAsync(sourcePath, syncResult.importedItems);
     }
 
     private long allocateMetaId() {
@@ -2115,42 +2125,111 @@ public class StorageService {
     private long estimateFilesystemSizeBySSH(String assetPath, AddSourceContext context) {
         try {
             String relativePath = extractRelativePathFromAsset(assetPath, context);
-            
+
             if (context.sshFileSizeCache == null) {
-                logger.info("[ExternalSource] SSH size cache not initialized, executing script for data source: {}", context.dummyDir);
-                
-                File scriptFile = scriptExecutionUtils.resolveScriptFile(
-                        "scripts/calculate_filesystem_size.sh", 
-                        "文件大小计算脚本");
-                
-                Map<String, Long> fileSizeMap = executeSSHSizeScript(
-                        scriptFile.getAbsolutePath(),
-                        context.ip,
-                        context.sshUsername,
-                        context.sshPassword,
-                        String.valueOf(context.sshPort),
-                        context.dummyDir);
-                
-                context.sshFileSizeCache = fileSizeMap;
-                
-                logger.info("[ExternalSource] SSH script executed, cached {} files for data source: {}", 
-                        fileSizeMap.size(), context.dummyDir);
-            } else {
-                logger.debug("[ExternalSource] Using cached SSH file sizes ({} files)", context.sshFileSizeCache.size());
+                context.sshFileSizeCache = resolveSharedSshDirectoryFileSizes(context);
             }
-            
+
             Long fileSize = context.sshFileSizeCache.get(relativePath);
             if (fileSize != null && fileSize > 0L) {
-//                logger.info("[ExternalSource] Found size for file '{}': {} bytes (from cache)", relativePath, fileSize);
                 return fileSize;
             }
-            
+
             logger.warn("[ExternalSource] SSH cache did not contain size for file '{}'. Available files: {}", 
                     relativePath, context.sshFileSizeCache.keySet());
             return estimateFilesystemExternalAssetActualSize(assetPath);
         } catch (Exception e) {
             logger.error("[ExternalSource] Failed to estimate filesystem size by SSH, fallback to system calculation", e);
             return estimateFilesystemExternalAssetActualSize(assetPath);
+        }
+    }
+
+    private Map<String, Long> resolveSharedSshDirectoryFileSizes(AddSourceContext context) throws Exception {
+        SshDirectoryCacheKey cacheKey = SshDirectoryCacheKey.from(context);
+        SshDirectoryFileCacheEntry cacheEntry;
+        boolean loadOwner = false;
+        long now = System.currentTimeMillis();
+        synchronized (sshDirectoryFileCacheLock) {
+            evictExpiredSshDirectoryCacheEntries(now);
+            cacheEntry = sshDirectoryFileCache.get(cacheKey);
+            if (cacheEntry == null) {
+                cacheEntry = new SshDirectoryFileCacheEntry();
+                sshDirectoryFileCache.put(cacheKey, cacheEntry);
+                evictOverflowSshDirectoryCacheEntries();
+                loadOwner = true;
+            }
+        }
+
+        if (loadOwner) {
+            logger.info("[ExternalSource] Filesystem size source=SSH_DU_A_WITH_SHARED_DIRECTORY_FILE_CACHE miss. directory={}",
+                    cacheKey.directory);
+            try {
+                File scriptFile = scriptExecutionUtils.resolveScriptFile(
+                        "scripts/calculate_filesystem_size.sh",
+                        "文件大小计算脚本");
+                Map<String, Long> fileSizes = executeSSHSizeScript(
+                        scriptFile.getAbsolutePath(),
+                        context.ip,
+                        context.sshUsername,
+                        context.sshPassword,
+                        String.valueOf(context.sshPort),
+                        context.dummyDir);
+                Map<String, Long> cachedSizes = Collections.unmodifiableMap(new HashMap<String, Long>(fileSizes));
+                cacheEntry.completedAtMs = System.currentTimeMillis();
+                cacheEntry.fileSizes.complete(cachedSizes);
+                logger.info("[ExternalSource] Filesystem size source=SSH_DU_A_WITH_SHARED_DIRECTORY_FILE_CACHE loaded. directory={}, files={}",
+                        cacheKey.directory,
+                        cachedSizes.size());
+            } catch (Exception e) {
+                cacheEntry.fileSizes.completeExceptionally(e);
+                synchronized (sshDirectoryFileCacheLock) {
+                    SshDirectoryFileCacheEntry current = sshDirectoryFileCache.get(cacheKey);
+                    if (current == cacheEntry) {
+                        sshDirectoryFileCache.remove(cacheKey);
+                    }
+                }
+                throw e;
+            }
+        } else if (cacheEntry.fileSizes.isDone()) {
+            logger.info("[ExternalSource] Filesystem size source=SSH_DIRECTORY_FILE_CACHE hit. directory={}, files={}",
+                    cacheKey.directory,
+                    cacheEntry.fileCount());
+        } else {
+            logger.info("[ExternalSource] Filesystem size source=SSH_DIRECTORY_FILE_CACHE wait. directory={}",
+                    cacheKey.directory);
+        }
+
+        try {
+            return cacheEntry.fileSizes.get();
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to load shared SSH directory file sizes", e);
+        }
+    }
+
+    private void evictExpiredSshDirectoryCacheEntries(long now) {
+        long ttlMs = Math.max(0L, sshDirectoryCacheTtlMs);
+        if (ttlMs == 0L) {
+            return;
+        }
+        Iterator<Map.Entry<SshDirectoryCacheKey, SshDirectoryFileCacheEntry>> iterator =
+                sshDirectoryFileCache.entrySet().iterator();
+        while (iterator.hasNext()) {
+            SshDirectoryFileCacheEntry entry = iterator.next().getValue();
+            if (entry.completedAtMs > 0L && now - entry.completedAtMs >= ttlMs) {
+                iterator.remove();
+            }
+        }
+    }
+
+    private void evictOverflowSshDirectoryCacheEntries() {
+        int maxEntries = Math.max(1, sshDirectoryCacheMaxEntries);
+        Iterator<Map.Entry<SshDirectoryCacheKey, SshDirectoryFileCacheEntry>> iterator =
+                sshDirectoryFileCache.entrySet().iterator();
+        while (sshDirectoryFileCache.size() > maxEntries && iterator.hasNext()) {
+            SshDirectoryFileCacheEntry entry = iterator.next().getValue();
+            if (entry.fileSizes.isDone()) {
+                iterator.remove();
+            }
         }
     }
 
@@ -2253,6 +2332,72 @@ public class StorageService {
         private String sshPassword;
         private int sshPort;
         private Map<String, Long> sshFileSizeCache;
+    }
+
+    private static class SshDirectoryCacheKey {
+        private final String host;
+        private final int port;
+        private final String username;
+        private final String directory;
+
+        private SshDirectoryCacheKey(String host, int port, String username, String directory) {
+            this.host = host;
+            this.port = port;
+            this.username = username;
+            this.directory = directory;
+        }
+
+        private static SshDirectoryCacheKey from(AddSourceContext context) {
+            String directory = context == null || context.dummyDir == null ? "" : context.dummyDir.trim().replace('\\', '/');
+            while (directory.length() > 1 && directory.endsWith("/")) {
+                directory = directory.substring(0, directory.length() - 1);
+            }
+            return new SshDirectoryCacheKey(
+                    context == null || context.ip == null ? "" : context.ip.trim(),
+                    context == null ? 0 : context.sshPort,
+                    context == null || context.sshUsername == null ? "" : context.sshUsername.trim(),
+                    directory);
+        }
+
+        @Override
+        public boolean equals(Object other) {
+            if (this == other) {
+                return true;
+            }
+            if (!(other instanceof SshDirectoryCacheKey)) {
+                return false;
+            }
+            SshDirectoryCacheKey that = (SshDirectoryCacheKey) other;
+            return port == that.port
+                    && host.equals(that.host)
+                    && username.equals(that.username)
+                    && directory.equals(that.directory);
+        }
+
+        @Override
+        public int hashCode() {
+            int result = host.hashCode();
+            result = 31 * result + port;
+            result = 31 * result + username.hashCode();
+            result = 31 * result + directory.hashCode();
+            return result;
+        }
+    }
+
+    private static class SshDirectoryFileCacheEntry {
+        private final CompletableFuture<Map<String, Long>> fileSizes = new CompletableFuture<Map<String, Long>>();
+        private volatile long completedAtMs;
+
+        private int fileCount() {
+            if (!fileSizes.isDone() || fileSizes.isCompletedExceptionally()) {
+                return 0;
+            }
+            try {
+                return fileSizes.getNow(Collections.<String, Long>emptyMap()).size();
+            } catch (Exception ignored) {
+                return 0;
+            }
+        }
     }
 
     private static class ExternalMetaSyncResult {
