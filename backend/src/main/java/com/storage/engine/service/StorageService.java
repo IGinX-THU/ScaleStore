@@ -263,7 +263,12 @@ public class StorageService {
         String knowledgeExtractStatus = initialKnowledgeExtractStatus(dataType, fileName, fileFormat);
 
         // Store metadata
-        ensureDirectoryAssetsInMeta(logicalPath, createTime, accessService.getAllMeta());
+        List<DataItem> existingMeta = accessService.getAllMeta();
+        ensureDirectoryAssetsInMeta(
+                logicalPath,
+                createTime,
+                existingMeta,
+                new MetadataLookupIndex(existingMeta));
         iginxDao.insertMeta(metaId, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, knowledgeExtractStatus);
 
         // Delegate to adapter for actual data storage
@@ -301,12 +306,11 @@ public class StorageService {
 
     private long allocateMetaId() {
         synchronized (metaIdAllocationLock) {
-            long databaseNextId = iginxDao.getMaxMetaId() + 1;
-            long nextId = nextMetaIdCandidate < 0L
-                    ? databaseNextId
-                    : Math.max(nextMetaIdCandidate, databaseNextId);
-            nextMetaIdCandidate = nextId + 1;
-            return nextId;
+            if (nextMetaIdCandidate < 0L) {
+                nextMetaIdCandidate = Math.max(0L, iginxDao.getMaxMetaId() + 1L);
+                logger.info("[ExternalSource] Metadata ID allocator initialized. nextId={}", nextMetaIdCandidate);
+            }
+            return nextMetaIdCandidate++;
         }
     }
 
@@ -345,21 +349,29 @@ public class StorageService {
 
     private int ensureDirectoryAssetsInMeta(String leafParentLogicalPath,
                                             String createTime,
-                                            List<DataItem> existingMeta) {
+                                            List<DataItem> existingMeta,
+                                            MetadataLookupIndex metaIndex) {
         List<String> directories = buildDirectoryAssetPaths(leafParentLogicalPath);
         if (directories.isEmpty()) {
             return 0;
         }
-        List<DataItem> metaIndex = existingMeta == null ? new ArrayList<DataItem>() : existingMeta;
+        if (metaIndex == null) {
+            throw new IllegalArgumentException("Metadata lookup index cannot be null");
+        }
+        List<DataItem> metaItems = existingMeta == null ? new ArrayList<DataItem>() : existingMeta;
         int inserted = 0;
         for (String dirPath : directories) {
+            if (!metaIndex.markDirectoryChecked(dirPath)) {
+                continue;
+            }
             String dirName = getFileNameFromLogicalPath(dirPath);
             String parentPath = parentLogicalPath(dirPath);
-            DataItem existing = findDirectoryMetaByPathAndFile(metaIndex, parentPath, dirName);
-            DataItem legacy = findDirectoryMetaByPathAndFile(metaIndex, dirPath, dirName);
+            DataItem existing = metaIndex.findDirectoryMetaByPathAndFile(parentPath, dirName);
+            DataItem legacy = metaIndex.findDirectoryMetaByPathAndFile(dirPath, dirName);
             if (legacy != null && legacy.getId() != null) {
                 iginxDao.deleteMeta(legacy.getId().longValue());
                 legacy.setIsValid(false);
+                metaIndex.remove(legacy);
             }
             if (existing != null) {
                 continue;
@@ -385,6 +397,7 @@ public class StorageService {
             added.setFileSize(0L);
             added.setIsValid(true);
             added.setKnowledgeExtractStatus(STATUS_PENDING);
+            metaItems.add(added);
             metaIndex.add(added);
             inserted++;
         }
@@ -464,6 +477,7 @@ public class StorageService {
 
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
         List<DataItem> existingMeta = accessService.getAllMeta();
+        MetadataLookupIndex metaIndex = new MetadataLookupIndex(existingMeta);
 
         long pendingSizeDelta = 0L;
         int pendingFlushFiles = 0;
@@ -471,18 +485,19 @@ public class StorageService {
         for (String assetPath : assetPaths) {
             String logicalPath = toExternalLogicalPath(assetPath, context);
             String fileName = deriveExternalFileName(assetPath, context, logicalPath);
-            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta);
-            DataItem existing = findMetaByPathAndFile(existingMeta, logicalPath, fileName);
+            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta, metaIndex);
+            DataItem existing = metaIndex.findMetaByPathAndFile(logicalPath, fileName);
             if (existing != null) {
                 result.skippedCount++;
                 publishExternalSyncEvent("info", "SKIPPED", logicalPath, fileName, 0L, "已存在同名元数据，跳过");
                 continue;
             }
 
-            DataItem legacy = findLegacyExternalStructuredMeta(existingMeta, logicalPath, fileName, context);
+            DataItem legacy = findLegacyExternalStructuredMeta(metaIndex, logicalPath, fileName, context);
             if (legacy != null && legacy.getId() != null) {
                 iginxDao.deleteMeta(legacy.getId().longValue());
                 existingMeta.remove(legacy);
+                metaIndex.remove(legacy);
                 result.replacedCount++;
             }
 
@@ -520,6 +535,7 @@ public class StorageService {
                 added.setSemanticKeywords("[]");
             }
             existingMeta.add(added);
+            metaIndex.add(added);
             result.importedItems.add(added);
             publishInitialKnowledgeExtractEvent("External-Source", logicalPath, fileName, inferredDataType, fileFormat, knowledgeExtractStatus);
 
@@ -571,6 +587,7 @@ public class StorageService {
 
         String createTime = LocalDateTime.now().format(TIME_FORMATTER);
         List<DataItem> existingMeta = accessService.getAllMeta();
+        MetadataLookupIndex metaIndex = new MetadataLookupIndex(existingMeta);
         long pendingSizeDelta = 0L;
         int pendingFlushFiles = 0;
 
@@ -578,9 +595,9 @@ public class StorageService {
             String assetPath = asset.assetPath;
             String logicalPath = toFilesystemFolderLogicalPath(assetPath, context);
             String fileName = deriveExternalFileName(assetPath, context, logicalPath);
-            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta);
+            result.importedCount += ensureDirectoryAssetsInMeta(logicalPath, createTime, existingMeta, metaIndex);
 
-            int removedColumnMetas = deleteLegacySchemaColumnMetas(existingMeta, logicalPath, fileName);
+            int removedColumnMetas = deleteLegacySchemaColumnMetas(existingMeta, metaIndex, logicalPath, fileName);
             if (removedColumnMetas > 0) {
                 result.replacedCount += removedColumnMetas;
                 publishExternalSyncEvent("info", "REPLACED", logicalPath, fileName, 0L,
@@ -591,7 +608,7 @@ public class StorageService {
             String inferredDataType = inferSchemaFilesystemDataType(fileName, fileFormat, asset.columns);
             String contentPath = buildContentPath(assetPath, inferredDataType);
 
-            DataItem existing = findMetaByPathAndFile(existingMeta, logicalPath, fileName);
+            DataItem existing = metaIndex.findMetaByPathAndFile(logicalPath, fileName);
             if (existing != null) {
                 if (!shouldRefreshSchemaMeta(existing, inferredDataType, contentPath)) {
                     result.skippedCount++;
@@ -600,6 +617,7 @@ public class StorageService {
                 }
                 iginxDao.deleteMeta(existing.getId().longValue());
                 existingMeta.remove(existing);
+                metaIndex.remove(existing);
                 result.replacedCount++;
                 publishExternalSyncEvent("info", "REPLACED", logicalPath, fileName, 0L,
                         "refreshed stale schema metadata");
@@ -635,6 +653,7 @@ public class StorageService {
                 added.setSemanticKeywords("[]");
             }
             existingMeta.add(added);
+            metaIndex.add(added);
             result.importedItems.add(added);
             publishInitialKnowledgeExtractEvent("External-Source", logicalPath, fileName, inferredDataType, fileFormat, knowledgeExtractStatus);
 
@@ -797,23 +816,25 @@ public class StorageService {
         return false;
     }
 
-    private int deleteLegacySchemaColumnMetas(List<DataItem> existingMeta, String logicalPath, String schemaFileName) {
+    private int deleteLegacySchemaColumnMetas(List<DataItem> existingMeta,
+                                              MetadataLookupIndex metaIndex,
+                                              String logicalPath,
+                                              String schemaFileName) {
         if (existingMeta == null || schemaFileName == null || schemaFileName.trim().isEmpty()) {
             return 0;
         }
         String legacyColumnFolder = normalizePath(logicalPath + "/" + normalizeFileName(schemaFileName));
         int removed = 0;
-        Iterator<DataItem> iterator = existingMeta.iterator();
-        while (iterator.hasNext()) {
-            DataItem item = iterator.next();
+        List<DataItem> legacyItems = metaIndex == null
+                ? Collections.<DataItem>emptyList()
+                : metaIndex.findByLogicalPath(legacyColumnFolder);
+        for (DataItem item : legacyItems) {
             if (item == null || item.getId() == null) {
                 continue;
             }
-            if (!legacyColumnFolder.equals(normalizePath(item.getLogicalPath()))) {
-                continue;
-            }
             iginxDao.deleteMeta(item.getId().longValue());
-            iterator.remove();
+            existingMeta.remove(item);
+            metaIndex.remove(item);
             removed++;
         }
         return removed;
@@ -1663,11 +1684,11 @@ public class StorageService {
         return picked;
     }
 
-    private DataItem findLegacyExternalStructuredMeta(List<DataItem> items,
+    private DataItem findLegacyExternalStructuredMeta(MetadataLookupIndex metaIndex,
                                                       String logicalPath,
                                                       String fileName,
                                                       AddSourceContext context) {
-        if (items == null || !isStructuredExternalSource(context)) {
+        if (metaIndex == null || !isStructuredExternalSource(context)) {
             return null;
         }
         String normalizedFile = normalizeFileName(fileName);
@@ -1676,22 +1697,7 @@ public class StorageService {
         }
 
         String legacyPath = normalizePath(logicalPath + "/" + normalizedFile);
-        DataItem picked = null;
-        for (DataItem item : items) {
-            if (item == null) {
-                continue;
-            }
-            if (!legacyPath.equals(normalizePath(item.getLogicalPath()))) {
-                continue;
-            }
-            if (!normalizedFile.equals(normalizeFileName(item.getFileName()))) {
-                continue;
-            }
-            if (picked == null || compareItemId(item, picked) > 0) {
-                picked = item;
-            }
-        }
-        return picked;
+        return metaIndex.findMetaByPathAndFile(legacyPath, normalizedFile);
     }
 
     private int compareItemId(DataItem left, DataItem right) {
@@ -2332,6 +2338,98 @@ public class StorageService {
         private String sshPassword;
         private int sshPort;
         private Map<String, Long> sshFileSizeCache;
+    }
+
+    private class MetadataLookupIndex {
+        private final Map<String, List<DataItem>> itemsByPathAndFile = new HashMap<String, List<DataItem>>();
+        private final Map<String, List<DataItem>> itemsByLogicalPath = new HashMap<String, List<DataItem>>();
+        private final Set<String> checkedDirectoryPaths = new HashSet<String>();
+
+        private MetadataLookupIndex(List<DataItem> items) {
+            if (items == null) {
+                return;
+            }
+            for (DataItem item : items) {
+                add(item);
+            }
+        }
+
+        private boolean markDirectoryChecked(String directoryPath) {
+            return checkedDirectoryPaths.add(normalizePath(directoryPath));
+        }
+
+        private DataItem findMetaByPathAndFile(String logicalPath, String fileName) {
+            return findLatest(itemsByPathAndFile.get(pathAndFileKey(logicalPath, fileName)), false);
+        }
+
+        private DataItem findDirectoryMetaByPathAndFile(String logicalPath, String fileName) {
+            return findLatest(itemsByPathAndFile.get(pathAndFileKey(logicalPath, fileName)), true);
+        }
+
+        private List<DataItem> findByLogicalPath(String logicalPath) {
+            List<DataItem> items = itemsByLogicalPath.get(normalizePath(logicalPath));
+            return items == null ? Collections.<DataItem>emptyList() : new ArrayList<DataItem>(items);
+        }
+
+        private void add(DataItem item) {
+            if (item == null) {
+                return;
+            }
+            addToBucket(itemsByPathAndFile, pathAndFileKey(item.getLogicalPath(), item.getFileName()), item);
+            addToBucket(itemsByLogicalPath, normalizePath(item.getLogicalPath()), item);
+        }
+
+        private void remove(DataItem item) {
+            if (item == null) {
+                return;
+            }
+            removeFromBucket(itemsByPathAndFile, pathAndFileKey(item.getLogicalPath(), item.getFileName()), item);
+            removeFromBucket(itemsByLogicalPath, normalizePath(item.getLogicalPath()), item);
+        }
+
+        private void addToBucket(Map<String, List<DataItem>> buckets, String key, DataItem item) {
+            List<DataItem> bucket = buckets.get(key);
+            if (bucket == null) {
+                bucket = new ArrayList<DataItem>();
+                buckets.put(key, bucket);
+            }
+            bucket.add(item);
+        }
+
+        private void removeFromBucket(Map<String, List<DataItem>> buckets, String key, DataItem item) {
+            List<DataItem> bucket = buckets.get(key);
+            if (bucket == null) {
+                return;
+            }
+            bucket.remove(item);
+            if (bucket.isEmpty()) {
+                buckets.remove(key);
+            }
+        }
+
+        private DataItem findLatest(List<DataItem> items, boolean directoriesOnly) {
+            DataItem picked = null;
+            if (items == null) {
+                return null;
+            }
+            for (DataItem item : items) {
+                if (item == null || (directoriesOnly && Boolean.FALSE.equals(item.getIsValid()))) {
+                    continue;
+                }
+                if (directoriesOnly
+                        && !IGinxConstants.TYPE_DIRECTORY.equals(safe(item.getDataType()).toLowerCase(Locale.ROOT))) {
+                    continue;
+                }
+                if (picked == null || compareItemId(item, picked) > 0) {
+                    picked = item;
+                }
+            }
+            return picked;
+        }
+
+        private String pathAndFileKey(String logicalPath, String fileName) {
+            return normalizePath(logicalPath) + "\u0000" + normalizeFileName(fileName);
+        }
     }
 
     private static class SshDirectoryCacheKey {
