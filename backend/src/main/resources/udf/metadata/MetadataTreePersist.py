@@ -10,7 +10,7 @@ class MetadataTreePersist(_RuntimeConfigMixin):
             params["skipAncestorKeywordRefresh"] = "true"
             params["skipSemanticEntities"] = "true"
             writer = Neo4jGraphWriter(params)
-            count = 0
+            records = []
             for row in self._rows(data):
                 # 无效元数据不应出现在可查询的逻辑路径树中。
                 if self._safe(row.get("isValid", "true")).lower() == "false":
@@ -20,22 +20,15 @@ class MetadataTreePersist(_RuntimeConfigMixin):
                 file_name = self._safe(row.get("fileName", ""))
                 if not logical_path or not data_type:
                     continue
-                params["metaKey"] = self._safe(row.get("key", ""))
-                writer.persist(
-                    logical_path=logical_path,
-                    data_type=data_type,
-                    file_name=file_name,
-                    file_format="",
-                    file_size="0",
-                    create_time="",
-                    fields=[],
-                    field_kind="field",
-                    entities=[],
-                    triples=[],
-                    keywords=self._parse_keywords(row.get("semanticKeywords", "")),
-                )
-                count += 1
-            return self._result("SUCCESS", [], [], "field", "metadata tree persisted: nodes=" + str(count))
+                records.append({
+                    "metaKey": self._safe(row.get("key", "")),
+                    "logicalPath": logical_path,
+                    "dataType": data_type,
+                    "fileName": file_name,
+                    "keywords": self._parse_keywords(row.get("semanticKeywords", "")),
+                })
+            writer.persist_tree_batch(records)
+            return self._result("SUCCESS", [], [], "field", "metadata tree persisted: nodes=" + str(len(records)))
         except Exception as exc:
             return self._result("FAILED", [], [], "field", str(exc))
 

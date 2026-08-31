@@ -13,6 +13,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
@@ -24,6 +25,10 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
@@ -38,16 +43,43 @@ public class MetadataExtractionSchedulerService {
     @Value("${metadata.extraction.enabled:true}")
     private boolean extractionEnabled;
 
+    private final int treePersistenceConcurrency = 1;
+
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
+    private final AtomicLong treeWorkerSeq = new AtomicLong(0L);
     private final Set<String> relationExpansionInFlight = ConcurrentHashMap.newKeySet();
+    private ThreadPoolExecutor metadataTreeExecutor;
 
     @PostConstruct
     public void init() {
+        int workerCount = Math.max(1, treePersistenceConcurrency);
+        metadataTreeExecutor = new ThreadPoolExecutor(
+                workerCount,
+                workerCount,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<Runnable>(),
+                new ThreadFactory() {
+                    @Override
+                    public Thread newThread(Runnable runnable) {
+                        Thread thread = new Thread(runnable,
+                                "metadata-tree-worker-" + treeWorkerSeq.incrementAndGet());
+                        thread.setDaemon(false);
+                        return thread;
+                    }
+                });
         String message = extractionEnabled
                 ? "Metadata extraction transform jobs enabled."
                 : "Metadata extraction transform jobs disabled.";
         publishEvent("info", "INIT", message, "Metadata-UDF");
+    }
+
+    @PreDestroy
+    public void shutdown() {
+        if (metadataTreeExecutor != null) {
+            metadataTreeExecutor.shutdown();
+        }
     }
 
     public void persistMetadataTreeAsync(DataItem item) {
@@ -70,7 +102,7 @@ public class MetadataExtractionSchedulerService {
                     publishEvent("warn", "TREE_FAILED", "Metadata directory tree persist failed: path=" + assetPath + ", reason=" + safe(e.getMessage()), "Metadata-UDF");
                 }
             }
-        });
+        }, metadataTreeExecutor);
     }
 
     public void persistMetadataTreeForSourceAsync(String sourcePath, List<DataItem> importedItems) {
@@ -80,9 +112,10 @@ public class MetadataExtractionSchedulerService {
         }
         final String normalizedSourcePath = normalizePath(sourcePath);
         final int assetCount = countPersistableItems(importedItems);
-        logger.info("[Metadata-UDF][TREE-SOURCE-SUBMITTED] sourcePath={}, assets={}",
+        logger.info("[Metadata-UDF][TREE-SOURCE-QUEUED] sourcePath={}, assets={}, queued={}",
                 normalizedSourcePath,
-                assetCount);
+                assetCount,
+                metadataTreeExecutor.getQueue().size());
         CompletableFuture.runAsync(new Runnable() {
             @Override
             public void run() {
@@ -108,7 +141,7 @@ public class MetadataExtractionSchedulerService {
                             "Metadata-UDF");
                 }
             }
-        });
+        }, metadataTreeExecutor);
     }
 
     public void expandEntityRelationsAsync(String focusEntity, List<Long> metaKeys) {

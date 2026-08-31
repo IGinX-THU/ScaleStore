@@ -56,6 +56,163 @@ class Neo4jGraphWriter(object):
 
         return "neo4j persisted"
 
+    def persist_tree_batch(self, records, batch_size=500):
+        """Persist a directory tree using one driver/session for the complete UDF input."""
+        enabled = str(self.params.get("neo4jEnabled", "true")).strip().lower() == "true"
+        if not enabled:
+            return "neo4j disabled"
+
+        uri = self._safe(self.params.get("neo4jUri", ""))
+        username = self._safe(self.params.get("neo4jUsername", ""))
+        password = self._safe(self.params.get("neo4jPassword", ""))
+        if not uri or not username or not password:
+            raise RuntimeError("neo4j config missing: neo4jUri/neo4jUsername/neo4jPassword")
+
+        tree_data = self._build_tree_batch_data(records)
+        if not tree_data["paths"]:
+            return "neo4j persisted"
+
+        try:
+            from neo4j import GraphDatabase
+        except Exception as exc:
+            raise RuntimeError("neo4j package is required: pip install neo4j==4.4.41") from exc
+
+        safe_batch_size = max(1, int(batch_size or 500))
+        driver = GraphDatabase.driver(uri, auth=(username, password))
+        try:
+            with driver.session() as session:
+                self._ensure_constraints(session)
+                self._write_tree_batches(session, self._write_tree_paths_tx, tree_data["paths"], safe_batch_size)
+                self._write_tree_batches(session, self._write_tree_contains_tx, tree_data["contains"], safe_batch_size)
+                self._write_tree_batches(session, self._write_tree_directories_tx, tree_data["directories"], safe_batch_size)
+                self._write_tree_batches(session, self._write_tree_assets_tx, tree_data["assets"], safe_batch_size)
+        finally:
+            driver.close()
+
+        return "neo4j persisted"
+
+    def _build_tree_batch_data(self, records):
+        paths = {}
+        contains = {}
+        directories = {}
+        assets = {}
+
+        for record in records or []:
+            logical_path = self._normalize_path(record.get("logicalPath", ""))
+            data_type = self._safe(record.get("dataType", "")).lower()
+            file_name = self._safe(record.get("fileName", ""))
+            meta_key = self._safe(record.get("metaKey", ""))
+            if not logical_path or not data_type:
+                continue
+
+            asset_path = self._asset_path(logical_path, file_name, data_type)
+            chain_target = asset_path if data_type == "directory" else (self._parent_path(asset_path) or "/")
+            path_chain = self._build_path_chain(chain_target)
+            for path in path_chain:
+                paths[path] = {
+                    "path": path,
+                    "name": self._leaf_name(path),
+                    "depth": self._depth(path),
+                }
+            for idx in range(1, len(path_chain)):
+                parent_path = path_chain[idx - 1]
+                child_path = path_chain[idx]
+                contains[parent_path + "\n" + child_path] = {
+                    "parentPath": parent_path,
+                    "childPath": child_path,
+                }
+
+            if data_type == "directory":
+                if meta_key:
+                    directories[asset_path] = {
+                        "path": asset_path,
+                        "metaKey": meta_key,
+                    }
+                continue
+
+            if not meta_key:
+                raise RuntimeError("metaKey is required for DataAsset graph persistence")
+            assets[meta_key] = {
+                "metaKey": meta_key,
+                "parentPath": self._parent_path(asset_path) or "/",
+                "name": file_name or self._leaf_name(asset_path),
+                "dataType": data_type,
+                "keywords": self._dedup_strings(record.get("keywords", []), 80),
+            }
+
+        return {
+            "paths": list(paths.values()),
+            "contains": list(contains.values()),
+            "directories": list(directories.values()),
+            "assets": list(assets.values()),
+        }
+
+    def _write_tree_batches(self, session, writer, rows, batch_size):
+        for start in range(0, len(rows), batch_size):
+            session.write_transaction(writer, rows[start:start + batch_size])
+
+    def _write_tree_paths_tx(self, tx, rows):
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MERGE (p:LogicalPath {path: row.path})
+            ON CREATE SET p.name = row.name,
+                          p.depth = row.depth,
+                          p.updatedAt = timestamp()
+            """,
+            rows=rows,
+        )
+
+    def _write_tree_contains_tx(self, tx, rows):
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (parent:LogicalPath {path: row.parentPath})
+            MATCH (child:LogicalPath {path: row.childPath})
+            MERGE (parent)-[r:CONTAINS]->(child)
+            ON CREATE SET r.updatedAt = timestamp()
+            """,
+            rows=rows,
+        )
+
+    def _write_tree_directories_tx(self, tx, rows):
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (p:LogicalPath {path: row.path})
+            WHERE p.metaKey IS NULL OR p.metaKey <> row.metaKey
+            SET p.metaKey = row.metaKey,
+                p.updatedAt = timestamp()
+            """,
+            rows=rows,
+        )
+
+    def _write_tree_assets_tx(self, tx, rows):
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MERGE (a:DataAsset {metaKey: row.metaKey})
+            ON CREATE SET a.name = row.name,
+                          a.updatedAt = timestamp()
+            ON MATCH SET a.name = row.name,
+                         a.updatedAt = timestamp()
+            SET a.dataType = row.dataType,
+                a.semanticKeywords = row.keywords
+            REMOVE a.logicalPath, a.fileFormat, a.fileSize, a.createTime, a.assetKind, a.keywords, a.ukey
+            """,
+            rows=rows,
+        )
+        tx.run(
+            """
+            UNWIND $rows AS row
+            MATCH (p:LogicalPath {path: row.parentPath})
+            MATCH (a:DataAsset {metaKey: row.metaKey})
+            MERGE (p)-[r:HAS_DATA]->(a)
+            ON CREATE SET r.updatedAt = timestamp()
+            """,
+            rows=rows,
+        )
+
     def _ensure_constraints(self, session):
         if Neo4jGraphWriter._constraints_initialized:
             return
@@ -111,7 +268,8 @@ class Neo4jGraphWriter(object):
             meta_key=meta_key,
         )
 
-        self._write_semantic_entities_tx(tx, "DataAsset", "metaKey", meta_key, payload)
+        if not str(self.params.get("skipSemanticEntities", "")).strip().lower() == "true":
+            self._write_semantic_entities_tx(tx, "DataAsset", "metaKey", meta_key, payload)
 
     def _write_path_chain_tx(self, tx, path_chain):
         for idx, path in enumerate(path_chain or ["/"]):
