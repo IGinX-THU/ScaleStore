@@ -389,7 +389,6 @@ class MetadataSemanticDirectoryExecutor(_ExecutorBase):
             "createTime": _safe(meta.get("createTime", "")),
         }
 
-        # 目录 UDF 需要看到所有元数据行，以筛选当前目录的直接已完成子项。
         matrix = [headers]
         matrix.extend(data_rows)
         udf_started = time.time()
