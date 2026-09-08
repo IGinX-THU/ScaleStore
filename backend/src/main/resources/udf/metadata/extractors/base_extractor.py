@@ -323,7 +323,7 @@ class BaseMetadataExtractor(object):
 
         return parsed, raw
 
-    def parse_llm_json_payload(self, llm_text):
+    def parse_llm_json_payload(self, llm_text, classify_image=False):
         # 清理常见模型包装后再解析；解析失败返回空结构，调用方可安全继续走回退路径。
         cleaned = self.strip_think(llm_text or "")
         cleaned = self.strip_code_fence(cleaned)
@@ -361,11 +361,15 @@ class BaseMetadataExtractor(object):
                 if subject and predicate and obj:
                     triples.append({"subject": subject, "predicate": predicate, "object": obj})
 
-        return {
-            "keywords": self.dedup_strings(keywords, 80),
-            "entities": self.dedup_strings(entities, 120),
-            "triples": self.dedup_triples(triples, 180),
+        industrial = classify_image and node.get("isIndustrialDrawing") is True
+        result = {
+            "keywords": self.dedup_strings(keywords, None if industrial else 80),
+            "entities": self.dedup_strings(entities, None if industrial else 120),
+            "triples": self.dedup_triples(triples, None if industrial else 180),
         }
+        if classify_image:
+            result["isIndustrialDrawing"] = industrial
+        return result
 
     def extract_text_from_content(self, content):
         if isinstance(content, str):
@@ -451,7 +455,7 @@ class BaseMetadataExtractor(object):
                 continue
             seen.add(text)
             out.append(text)
-            if len(out) >= max_count:
+            if max_count is not None and len(out) >= max_count:
                 break
         return out
 
@@ -471,7 +475,7 @@ class BaseMetadataExtractor(object):
                 continue
             seen.add(key)
             out.append({"subject": subject, "predicate": predicate, "object": obj})
-            if len(out) >= max_count:
+            if max_count is not None and len(out) >= max_count:
                 break
         return out
 

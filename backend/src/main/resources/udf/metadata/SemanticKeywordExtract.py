@@ -177,7 +177,7 @@ def dedup_strings(values, max_count):
             continue
         seen.add(text)
         out.append(text)
-        if len(out) >= max_count:
+        if max_count is not None and len(out) >= max_count:
             break
     return out
 
@@ -198,7 +198,7 @@ def _dedup_triples(triples, max_count):
             continue
         seen.add(key)
         out.append({"subject": subject, "predicate": predicate, "object": obj})
-        if len(out) >= max_count:
+        if max_count is not None and len(out) >= max_count:
             break
     return out
 
@@ -418,9 +418,10 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             extractor = self.EXTRACTOR(data, args, params)
             extracted = extractor.extract()
 
+            industrial = isinstance(extractor, FileMetadataExtractor) and extracted.get("isIndustrialDrawing") is True
             fields = dedup_strings(extracted.get("fields", []) or [], 120)
-            entities = dedup_strings(extracted.get("entities", []) or [], 120)
-            raw_keywords = dedup_strings(extracted.get("keywords", []) or [], 80)
+            entities = dedup_strings(extracted.get("entities", []) or [], None if industrial else 120)
+            raw_keywords = dedup_strings(extracted.get("keywords", []) or [], None if industrial else 80)
             field_kind = self._safe(extracted.get("fieldKind", self.FIELD_KIND)) or self.FIELD_KIND
             fallback = raw_keywords or fields or entities
             skip_keyword_normalization = bool(extracted.get("skipKeywordNormalization", False))
@@ -437,12 +438,16 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             }
             # 文件类提取器可显式跳过归一化（例如无可解析的非图片文件），避免凭文件名臆造关键词。
             keywords = []
-            if not skip_keyword_normalization:
+            if industrial:
+                # 工业图纸保留具体实体名称，仅精确去重，不再调用文本模型归纳。
+                keywords = dedup_strings(raw_keywords + entities, None)
+            elif not skip_keyword_normalization:
                 keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
             # 同时保留提取器关系和关键词关系，但统一经过关键词白名单过滤。
-            keyword_relations = extract_keyword_relations(params, keywords)
+            # 图纸仅使用视觉证据支持的关系，避免额外文本调用和关键词数量限制。
+            keyword_relations = [] if industrial else extract_keyword_relations(params, keywords)
             source_triples = (extracted.get("triples", []) or []) + keyword_relations
-            triples = filter_triples_by_keywords(source_triples, keywords, 180)
+            triples = filter_triples_by_keywords(source_triples, keywords, None if industrial else 180)
 
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(
@@ -457,6 +462,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 entities=entities,
                 triples=triples,
                 keywords=keywords,
+                preserve_semantics=industrial,
             )
             message = self._safe(extracted.get("message", ""))
             if persist_message:

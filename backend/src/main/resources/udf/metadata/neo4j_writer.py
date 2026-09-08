@@ -8,7 +8,7 @@ class Neo4jGraphWriter(object):
     def __init__(self, params):
         self.params = params or {}
 
-    def persist(self, logical_path, data_type, file_name, file_format, file_size, create_time, fields, field_kind, entities, triples, keywords=None):
+    def persist(self, logical_path, data_type, file_name, file_format, file_size, create_time, fields, field_kind, entities, triples, keywords=None, preserve_semantics=False):
         enabled = str(self.params.get("neo4jEnabled", "true")).strip().lower() == "true"
         if not enabled:
             return "neo4j disabled"
@@ -30,7 +30,7 @@ class Neo4jGraphWriter(object):
         asset_path = self._asset_path(logical_path, file_name, data_type)
         semantic_terms = self._dedup_strings(
             keywords if keywords is not None else self._keywords_from_semantics(fields, entities),
-            80,
+            None if preserve_semantics else 80,
         )
 
         payload = {
@@ -42,8 +42,9 @@ class Neo4jGraphWriter(object):
             "file_name": file_name or self._leaf_name(asset_path),
             "path_chain": self._build_path_chain(asset_path if data_type == "directory" else (self._parent_path(asset_path) or "/")),
             "keywords": semantic_terms,
-            "entities": self._dedup_strings(entities, 120),
-            "triples": self._dedup_triples(triples, 180),
+            "preserve_semantics": preserve_semantics,
+            "entities": self._dedup_strings(entities, None if preserve_semantics else 120),
+            "triples": self._dedup_triples(triples, None if preserve_semantics else 180),
         }
 
         driver = GraphDatabase.driver(uri, auth=(username, password))
@@ -335,7 +336,9 @@ class Neo4jGraphWriter(object):
             asset_key=self._relation_asset_key(label, key_value),
         )
 
-        keyword_terms = self._dedup_strings(payload.get("keywords", []) or [], 120)
+        keyword_terms = self._dedup_strings(
+            payload.get("keywords", []) or [], None if payload.get("preserve_semantics") else 120
+        )
         keyword_norms = set()
         for term in keyword_terms:
             name = self._normalize_display(term)
@@ -608,7 +611,7 @@ class Neo4jGraphWriter(object):
                 continue
             seen.add(text)
             out.append(text)
-            if len(out) >= max_count:
+            if max_count is not None and len(out) >= max_count:
                 break
         return out
 
@@ -628,7 +631,7 @@ class Neo4jGraphWriter(object):
                 continue
             seen.add(key)
             out.append({"subject": subject, "predicate": predicate, "object": obj})
-            if len(out) >= max_count:
+            if max_count is not None and len(out) >= max_count:
                 break
         return out
 
