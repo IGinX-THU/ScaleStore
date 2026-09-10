@@ -1,6 +1,7 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
+import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.DataItem;
 import com.storage.engine.service.adapter.StorageAdapter;
@@ -20,25 +21,6 @@ public class AccessService {
 
     @Autowired
     private StorageAdapterFactory adapterFactory;
-
-    /**
-     * Get metadata for a data item by logical path (exact match only, valid entries).
-     */
-    public DataItem getMetaByPath(String logicalPath) {
-        logicalPath = normalizePath(logicalPath);
-        try {
-            SessionExecuteSqlResult result = iginxDao.getAllMeta();
-            List<DataItem> items = parseMeta(result);
-            for (DataItem item : items) {
-                if (logicalPath.equals(normalizePath(item.getLogicalPath()))) {
-                    return item;
-                }
-            }
-        } catch (Exception e) {
-            throw new RuntimeException("按逻辑路径查询元数据失败: " + e.getMessage(), e);
-        }
-        return null;
-    }
 
     /**
      * Get metadata by folder logical path + file name.
@@ -91,6 +73,15 @@ public class AccessService {
         }
     }
 
+    public DataItem getMetaByKey(long key) {
+        try {
+            SessionExecuteSqlResult result = iginxDao.getMetaById(key);
+            List<DataItem> items = parseMeta(result);
+            return items.isEmpty() ? null : items.get(0);
+        } catch (Exception e) {
+            throw new RuntimeException("Query storage.meta by key failed: " + e.getMessage(), e);
+        }
+    }
     /**
      * Access data by logical path.
      * - Exact match → returns metadata + preview from the adapter.
@@ -169,6 +160,9 @@ public class AccessService {
         String target = normalizePath(logicalPath);
         for (DataItem item : items) {
             if (item == null) {
+                continue;
+            }
+            if (isDirectoryItem(item)) {
                 continue;
             }
             String itemPath = normalizePath(item.getLogicalPath());
@@ -378,7 +372,7 @@ public class AccessService {
 
         if (keys == null || values == null || paths == null) return items;
 
-        int pathIdx = -1, typeIdx = -1, nameIdx = -1, contentPathIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1;
+        int pathIdx = -1, typeIdx = -1, nameIdx = -1, contentPathIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1, semanticKeywordsIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -391,6 +385,7 @@ public class AccessService {
             else if (path.endsWith("createTime")) timeIdx = i;
             else if (path.endsWith("isValid")) validIdx = i;
             else if (path.endsWith("knowledgeExtractStatus")) knowledgeStatusIdx = i;
+            else if (path.endsWith("semanticKeywords")) semanticKeywordsIdx = i;
         }
 
         for (int i = 0; i < keys.length; i++) {
@@ -412,6 +407,7 @@ public class AccessService {
             if (formatIdx != -1) item.setFileFormat(getValueAsString(row.get(formatIdx)));
             if (timeIdx != -1) item.setCreateTime(getValueAsString(row.get(timeIdx)));
             if (knowledgeStatusIdx != -1) item.setKnowledgeExtractStatus(getValueAsString(row.get(knowledgeStatusIdx)));
+            if (semanticKeywordsIdx != -1) item.setSemanticKeywords(getValueAsString(row.get(semanticKeywordsIdx)));
             item.setIsValid(true);
             items.add(item);
         }
@@ -450,6 +446,17 @@ public class AccessService {
 
         String logicalPath = item.getLogicalPath();
         String fileName = normalizeFileName(item.getFileName());
+        String contentPath = StorageUtils.normalizeEscapedPath(item.getContentPath());
+        if (contentPath != null && !contentPath.trim().isEmpty()) {
+            while (contentPath.endsWith(".*")) {
+                contentPath = contentPath.substring(0, contentPath.length() - 2);
+            }
+            if (IGinxConstants.DATA_PATH_PREFIX.equals(contentPath)
+                    || contentPath.startsWith(IGinxConstants.DATA_PATH_PREFIX + ".")) {
+                return contentPath;
+            }
+            return IGinxConstants.DATA_PATH_PREFIX + "." + contentPath;
+        }
         if (logicalPath != null && logicalPath.startsWith("/extern/")) {
             if (logicalPath.startsWith("/extern/filesystem/")) {
                 String prefix = "/extern/filesystem/";
@@ -535,7 +542,9 @@ public class AccessService {
         String key = sourceKey == null ? "" : sourceKey.trim().toLowerCase(Locale.ROOT);
         return "mysql".equals(key) || key.startsWith("mysql")
                 || "postgres".equals(key) || key.startsWith("postgres")
-                || "iotdb".equals(key) || key.startsWith("iotdb");
+                || "iotdb".equals(key) || key.startsWith("iotdb")
+                || "mongodb".equals(key) || key.startsWith("mongodb")
+                || "redis".equals(key) || key.startsWith("redis");
     }
 
     private String appendExternalLeafPath(String basePath, String fileName) {
@@ -575,7 +584,15 @@ public class AccessService {
             return false;
         }
         String type = item.getDataType() == null ? "" : item.getDataType().trim().toLowerCase(Locale.ROOT);
-        return "relational".equals(type) || "timeseries".equals(type) || "keyvalue".equals(type);
+        return "relational".equals(type) || "timeseries".equals(type) || "keyvalue".equals(type)
+                || "document".equals(type);
+    }
+
+    private boolean isDirectoryItem(DataItem item) {
+        if (item == null || item.getDataType() == null) {
+            return false;
+        }
+        return "directory".equals(item.getDataType().trim().toLowerCase(Locale.ROOT));
     }
 
     private String sanitizeExternalSourceKey(String sourceKey) {

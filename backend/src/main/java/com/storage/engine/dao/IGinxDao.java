@@ -10,6 +10,7 @@ import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.service.adapter.StorageUtils;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Repository;
 
 import java.util.*;
@@ -36,6 +37,18 @@ public class IGinxDao {
     };
 
   private final IGinxConnectionPool connectionPool;
+
+  @Value("${iginx.host}")
+  private String seedHost;
+
+  @Value("${iginx.port}")
+  private int seedPort;
+
+  @Value("${iginx.username}")
+  private String username;
+
+  @Value("${iginx.password}")
+  private String password;
 
   private interface SessionAction<T> {
       T run(Session session) throws SessionException;
@@ -162,31 +175,19 @@ public class IGinxDao {
 
   // Policy operations
 
-    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int metadataGraphMaxTriples) {
+    public void updatePolicy(boolean extractionEnabled, long extractionScanIntervalMs, int metadataGraphMaxNodes) {
       String sql = String.format(
               Locale.ROOT,
-                                                        "insert into %s(key, extractionEnabled, extractionScanIntervalMs, metadataGraphMaxTriples) values (0, %b, %d, %d);",
+                                                        "insert into %s(key, extractionEnabled, extractionScanIntervalMs, metadataGraphMaxNodes) values (0, %b, %d, %d);",
               IGinxConstants.POLICY_PATH,
               extractionEnabled,
                                                         extractionScanIntervalMs,
-                                                        metadataGraphMaxTriples);
+                                                        metadataGraphMaxNodes);
       executeSql(sql);
   }
 
   public SessionExecuteSqlResult getPolicy() {
       return executeSql("select * from " + IGinxConstants.POLICY_PATH + ";");
-  }
-
-  public SessionExecuteSqlResult getTransformMetaExtractRows(int limit) {
-      int safeLimit = Math.max(1, limit);
-      try {
-          String latestSql = "select * from transform order by key desc limit " + safeLimit + ";";
-          return executeSql(latestSql);
-      } catch (RuntimeException e) {
-          // Fallback for engines that do not support ORDER BY on this path.
-          String fallbackSql = "select * from transform limit " + safeLimit + ";";
-          return executeSql(fallbackSql);
-      }
   }
 
   // RESTful interface operations
@@ -284,26 +285,6 @@ public class IGinxDao {
       executeSql(sql);
   }
 
-  public void updateJavaGrpcApi(long key,
-                                String name,
-                                String url,
-                                String method,
-                                String description,
-                                String paramsExample,
-                                String responseExample,
-                                String invokeExample,
-                                boolean isValid) {
-      insertJavaGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
-  }
-
-  public void deleteJavaGrpcApi(long key) {
-      String sql = String.format(Locale.ROOT,
-              "insert into %s(key, isValid) values (%d, false);",
-              IGinxConstants.INTERFACE_JAVA_GRPC_PATH,
-              key);
-      executeSql(sql);
-  }
-
   public SessionExecuteSqlResult getAllJavaGrpcApis() {
       try {
           return executeSql("select * from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
@@ -318,19 +299,6 @@ public class IGinxDao {
       } catch (RuntimeException e) {
           return null;
       }
-  }
-
-  public long getMaxJavaGrpcApiId() {
-      try {
-          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_JAVA_GRPC_PATH + ";");
-          if (result.getKeys() != null && result.getKeys().length > 0) {
-              long[] keys = result.getKeys();
-              return keys[keys.length - 1];
-          }
-      } catch (RuntimeException e) {
-          // interface.java_grpc path may not exist on fresh deployments
-      }
-      return -1;
   }
 
   // Python gRPC interface operations
@@ -360,26 +328,6 @@ public class IGinxDao {
       executeSql(sql);
   }
 
-  public void updatePythonGrpcApi(long key,
-                                  String name,
-                                  String url,
-                                  String method,
-                                  String description,
-                                  String paramsExample,
-                                  String responseExample,
-                                  String invokeExample,
-                                  boolean isValid) {
-      insertPythonGrpcApi(key, name, url, method, description, paramsExample, responseExample, invokeExample, isValid);
-  }
-
-  public void deletePythonGrpcApi(long key) {
-      String sql = String.format(Locale.ROOT,
-              "insert into %s(key, isValid) values (%d, false);",
-              IGinxConstants.INTERFACE_PYTHON_GRPC_PATH,
-              key);
-      executeSql(sql);
-  }
-
   public SessionExecuteSqlResult getAllPythonGrpcApis() {
       try {
           return executeSql("select * from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
@@ -394,19 +342,6 @@ public class IGinxDao {
       } catch (RuntimeException e) {
           return null;
       }
-  }
-
-  public long getMaxPythonGrpcApiId() {
-      try {
-          SessionExecuteSqlResult result = executeSql("select last(name) from " + IGinxConstants.INTERFACE_PYTHON_GRPC_PATH + ";");
-          if (result.getKeys() != null && result.getKeys().length > 0) {
-              long[] keys = result.getKeys();
-              return keys[keys.length - 1];
-          }
-      } catch (RuntimeException e) {
-          // interface.python_grpc path may not exist on fresh deployments
-      }
-      return -1;
   }
 
   // ==================== Data Source Operations ====================
@@ -457,19 +392,41 @@ public class IGinxDao {
   // ==================== Storage Metadata Operations ====================
 
   public void insertMeta(long key, String logicalPath, String dataType, String fileName,
-             String contentPath, long fileSize, String fileFormat, String createTime) {
-      String sql = String.format(
-              Locale.ROOT,
-          "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, 'PENDING');",
-              IGinxConstants.STORAGE_META_PATH,
-              key,
-              escapeSql(logicalPath),
-              escapeSql(dataType),
-              escapeSql(fileName),
-          escapeSqlKeepBackslash(contentPath),
-              fileSize,
-              escapeSql(fileFormat),
-              escapeSql(createTime));
+             String contentPath, long fileSize, String fileFormat, String createTime, String knowledgeExtractStatus) {
+      String safeStatus = knowledgeExtractStatus == null ? "PENDING" : knowledgeExtractStatus.trim().toUpperCase(Locale.ROOT);
+      if (safeStatus.isEmpty()) {
+          safeStatus = "PENDING";
+      }
+      String sql;
+      if ("SKIPPED".equals(safeStatus)) {
+          sql = String.format(
+                  Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus, semanticKeywords) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s', '[]');",
+                  IGinxConstants.STORAGE_META_PATH,
+                  key,
+                  escapeSql(logicalPath),
+                  escapeSql(dataType),
+                  escapeSql(fileName),
+              escapeSqlKeepBackslash(contentPath),
+                  fileSize,
+                  escapeSql(fileFormat),
+                  escapeSql(createTime),
+                  escapeSql(safeStatus));
+      } else {
+          sql = String.format(
+                  Locale.ROOT,
+              "insert into %s(key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus) values (%d, '%s', '%s', '%s', '%s', %d, '%s', '%s', true, '%s');",
+                  IGinxConstants.STORAGE_META_PATH,
+                  key,
+                  escapeSql(logicalPath),
+                  escapeSql(dataType),
+                  escapeSql(fileName),
+              escapeSqlKeepBackslash(contentPath),
+                  fileSize,
+                  escapeSql(fileFormat),
+                  escapeSql(createTime),
+                  escapeSql(safeStatus));
+      }
       executeSql(sql);
   }
 
@@ -481,8 +438,21 @@ public class IGinxDao {
       executeSql(sql);
   }
 
+  public void updateMetaSemanticKeywords(long key, String status, String semanticKeywords) {
+      String safeStatus = status == null ? "" : escapeSql(status.trim().toUpperCase(Locale.ROOT));
+      String safeKeywords = semanticKeywords == null ? "[]" : escapeSql(semanticKeywords.trim());
+      String sql = String.format(Locale.ROOT,
+          "insert into %s(key, knowledgeExtractStatus, semanticKeywords) values (%d, '%s', '%s');",
+          IGinxConstants.STORAGE_META_PATH, key, safeStatus, safeKeywords);
+      executeSql(sql);
+  }
+
   public SessionExecuteSqlResult getAllMeta() {
       return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + ";");
+  }
+
+  public SessionExecuteSqlResult getMetaById(long key) {
+      return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + " where key = " + key + ";");
   }
 
   public long getMaxMetaId() {
@@ -560,6 +530,32 @@ public class IGinxDao {
               return session.executeSql(sql);
           }
       });
+  }
+
+  /**
+   * Execute an expensive SQL statement with an isolated one-off session.
+   *
+   * Long-running UDF queries must not occupy the shared pool session lock, or
+   * normal requests such as /access/list and datasource summary refresh will
+   * wait behind the UDF until it finishes.
+   */
+  public SessionExecuteSqlResult executeLongRunningSql(String sql) {
+      Session session = null;
+      try {
+          session = new Session(seedHost, seedPort, username, password);
+          session.openSession();
+          return session.executeSql(sql);
+      } catch (SessionException e) {
+          throw new RuntimeException("Failed to execute long-running SQL: " + e.getMessage(), e);
+      } finally {
+          if (session != null) {
+              try {
+                  session.closeSession();
+              } catch (Exception e) {
+                  logger.warn("[IGinX-SQL] Failed to close long-running SQL session: {}", e.getMessage());
+              }
+          }
+      }
   }
 
   /**

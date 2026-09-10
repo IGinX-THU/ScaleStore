@@ -1,0 +1,24 @@
+taskList:
+  - taskType: "sql"
+    dataFlowType: "stream"
+    timeout: 10000000
+    sqlList:
+      - SELECT metadata_semantic_directory_candidate(*) FROM storage.meta;
+  - taskType: "python"
+    dataFlowType: "stream"
+    timeout: 10000000
+    pyTaskName: "MetadataSemanticDirectoryMetaInfo"
+    outputPrefix: "directoryMetaInfo"
+  - taskType: "sql"
+    dataFlowType: "stream"
+    timeout: 10000000
+    sqlList:
+      - SELECT * FROM (SELECT key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, isValid, knowledgeExtractStatus, semanticKeywords FROM storage.meta WHERE storage.meta.logicalPath = (SELECT assetPath FROM directoryMetaInfo)) FULL OUTER JOIN (SELECT metaKey AS dirMeta_key, logicalPath AS dirMeta_logicalPath, assetPath AS dirMeta_assetPath, fileName AS dirMeta_fileName, createTime AS dirMeta_createTime FROM directoryMetaInfo);
+  - taskType: "python"
+    dataFlowType: "batch"
+    timeout: 10000000
+    pyTaskName: "MetadataSemanticDirectoryExecutor"
+
+exportType: "none"
+schedule: "every 5 second"
+stopOnFailure: false

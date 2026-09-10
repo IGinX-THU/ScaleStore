@@ -3,13 +3,16 @@
     "enabled": true,
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "apiKey": "sk-xx",
-    "model": "qwen3.6-27b",
-    "visionModel": "qwen3.6-27b"
+    "model": "qwen3.8-27b",
+    "visionModel": "qwen3.8-27b"
   },
   "neo4j": {
     "enabled": true,
     "uri": "bolt://127.0.0.1:7687",
     "username": "neo4j",
     "password": "password"
+  },
+  "webserver": {
+    "baseUrl": "http://127.0.0.1:8080"
   }
 }

@@ -129,6 +129,12 @@ eval "$SSH_CMD '
     sed -i \"s|^port=.*|port=$IGINX_PORT|\" $CONFIG_FILE
 '" || error "修改 IGinX 端口失败"
 
+# 降低每个存储引擎的物理任务线程池大小
+info "设置 physicalTaskThreadPoolSizePerStorage=10 ..."
+eval "$SSH_CMD '
+    sed -i \"s|^physicalTaskThreadPoolSizePerStorage=100|physicalTaskThreadPoolSizePerStorage=10|\" $CONFIG_FILE
+'" || error "设置 physicalTaskThreadPoolSizePerStorage 失败"
+
 # 修改 pythonCMD
 info "修改 pythonCMD 为 $PYTHON_CMD ..."
 eval "$SSH_CMD '

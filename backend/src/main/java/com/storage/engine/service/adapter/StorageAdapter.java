@@ -1,17 +1,15 @@
 package com.storage.engine.service.adapter;
 
-import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.util.List;
 
 /**
  * Adapter interface for heterogeneous data operations.
- * Each data type (timeseries, relational, image, document, keyvalue)
+ * Each data type (timeseries, relational, file, document, keyvalue)
  * provides one implementation for:
  * 1) store
  * 2) access preview/download
- * 3) metadata extraction
  */
 public interface StorageAdapter {
 

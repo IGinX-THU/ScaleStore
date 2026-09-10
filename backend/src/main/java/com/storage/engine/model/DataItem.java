@@ -3,14 +3,15 @@ package com.storage.engine.model;
 public class DataItem {
     private Integer id;
     private String logicalPath;
-    private String dataType;     // timeseries, relational, image, document, keyvalue
+    private String dataType;     // timeseries, relational, file, document, keyvalue
     private String fileName;
     private Long fileSize;
-    private String fileFormat;   // csv, txt, jpg, png, bmp, json, xml, yaml
+    private String fileFormat;   // csv, txt, json, xml, properties, env, or any file suffix
     private String createTime;
     private Boolean isValid;
     private String knowledgeExtractStatus;
     private String contentPath;
+    private String semanticKeywords;
 
     // For preview / access response
     private Object previewData;
@@ -44,6 +45,9 @@ public class DataItem {
 
     public String getContentPath() { return contentPath; }
     public void setContentPath(String contentPath) { this.contentPath = contentPath; }
+
+    public String getSemanticKeywords() { return semanticKeywords; }
+    public void setSemanticKeywords(String semanticKeywords) { this.semanticKeywords = semanticKeywords; }
 
     public Object getPreviewData() { return previewData; }
     public void setPreviewData(Object previewData) { this.previewData = previewData; }

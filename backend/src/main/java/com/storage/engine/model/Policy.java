@@ -3,15 +3,15 @@ package com.storage.engine.model;
 public class Policy {
     private Boolean extractionEnabled;
     private Long extractionScanIntervalMs;
-    private Integer metadataGraphMaxTriples;
+    private Integer metadataGraphMaxNodes;
 
     private String extractionEnabledSource;
     private String extractionScanIntervalMsSource;
-    private String metadataGraphMaxTriplesSource;
+    private String metadataGraphMaxNodesSource;
 
     private String extractionEnabledDesc;
     private String extractionScanIntervalMsDesc;
-    private String metadataGraphMaxTriplesDesc;
+    private String metadataGraphMaxNodesDesc;
 
     public Boolean getExtractionEnabled() {
         return extractionEnabled;
@@ -29,12 +29,12 @@ public class Policy {
         this.extractionScanIntervalMs = extractionScanIntervalMs;
     }
 
-    public Integer getMetadataGraphMaxTriples() {
-        return metadataGraphMaxTriples;
+    public Integer getMetadataGraphMaxNodes() {
+        return metadataGraphMaxNodes;
     }
 
-    public void setMetadataGraphMaxTriples(Integer metadataGraphMaxTriples) {
-        this.metadataGraphMaxTriples = metadataGraphMaxTriples;
+    public void setMetadataGraphMaxNodes(Integer metadataGraphMaxNodes) {
+        this.metadataGraphMaxNodes = metadataGraphMaxNodes;
     }
 
     public String getExtractionEnabledSource() {
@@ -53,12 +53,12 @@ public class Policy {
         this.extractionScanIntervalMsSource = extractionScanIntervalMsSource;
     }
 
-    public String getMetadataGraphMaxTriplesSource() {
-        return metadataGraphMaxTriplesSource;
+    public String getMetadataGraphMaxNodesSource() {
+        return metadataGraphMaxNodesSource;
     }
 
-    public void setMetadataGraphMaxTriplesSource(String metadataGraphMaxTriplesSource) {
-        this.metadataGraphMaxTriplesSource = metadataGraphMaxTriplesSource;
+    public void setMetadataGraphMaxNodesSource(String metadataGraphMaxNodesSource) {
+        this.metadataGraphMaxNodesSource = metadataGraphMaxNodesSource;
     }
 
     public String getExtractionEnabledDesc() {
@@ -77,11 +77,12 @@ public class Policy {
         this.extractionScanIntervalMsDesc = extractionScanIntervalMsDesc;
     }
 
-    public String getMetadataGraphMaxTriplesDesc() {
-        return metadataGraphMaxTriplesDesc;
+    public String getMetadataGraphMaxNodesDesc() {
+        return metadataGraphMaxNodesDesc;
     }
 
-    public void setMetadataGraphMaxTriplesDesc(String metadataGraphMaxTriplesDesc) {
-        this.metadataGraphMaxTriplesDesc = metadataGraphMaxTriplesDesc;
+    public void setMetadataGraphMaxNodesDesc(String metadataGraphMaxNodesDesc) {
+        this.metadataGraphMaxNodesDesc = metadataGraphMaxNodesDesc;
     }
+
 }

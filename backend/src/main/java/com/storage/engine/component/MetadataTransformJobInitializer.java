@@ -37,7 +37,8 @@ public class MetadataTransformJobInitializer {
 
     private static final Logger logger = LoggerFactory.getLogger(MetadataTransformJobInitializer.class);
 
-    private static final String METADATA_WORKFLOW_RELATIVE_PATH = "init/metadata-extraction-workflow.yaml";
+    private static final String LEAF_WORKFLOW_RELATIVE_PATH = "init/metadata-semantic-leaf-workflow.yaml";
+    private static final String DIRECTORY_WORKFLOW_RELATIVE_PATH = "init/metadata-semantic-directory-workflow.yaml";
     private static final String TRANSFORM_SQL_TAIL_QUERY = "select key from sys.user where key = 1;";
 
     @Value("${resource.base-path:classpath:/}")
@@ -124,14 +125,11 @@ public class MetadataTransformJobInitializer {
     }
 
     private synchronized void registerScheduledJobsForAllNodes(long scanIntervalMs, String reason) throws Exception {
-        String workflowLocation = resolveWorkflowLocation();
-        WorkflowSpec workflowSpec = loadWorkflowSpec(workflowLocation);
-        if (workflowSpec == null || workflowSpec.taskInfoList.isEmpty()) {
-            logger.warn("Metadata transform workflow file {} has no valid task definitions.", workflowLocation);
+        List<WorkflowRegistration> workflowRegistrations = buildWorkflowRegistrations();
+        if (workflowRegistrations.isEmpty()) {
+            logger.warn("Metadata transform workflow registration skipped because no workflow definitions were available.");
             return;
         }
-
-        workflowSpec.schedule = buildScheduleFromIntervalMs(scanIntervalMs);
 
         List<Endpoint> endpoints = listClusterEndpoints();
         if (endpoints.isEmpty()) {
@@ -140,16 +138,22 @@ public class MetadataTransformJobInitializer {
 
         Map<String, RegisteredJob> nextJobs = new LinkedHashMap<String, RegisteredJob>();
         int successCount = 0;
+        int totalCount = endpoints.size() * workflowRegistrations.size();
         for (Endpoint endpoint : endpoints) {
-            try {
-                long jobId = registerWorkflow(endpoint, workflowSpec);
-                successCount++;
-                nextJobs.put(endpoint.key(), new RegisteredJob(endpoint, jobId, workflowSpec.schedule));
-                logger.info("Metadata transform workflow submitted: endpoint={}, jobId={}, schedule={}, reason={}",
-                        endpoint, jobId, safe(workflowSpec.schedule), safe(reason));
-            } catch (Exception e) {
-                logger.error("Metadata transform workflow registration failed on endpoint {}: {}",
-                        endpoint, e.getMessage(), e);
+            for (WorkflowRegistration registration : workflowRegistrations) {
+                try {
+                    WorkflowSpec workflowSpec = copyWorkflowSpec(registration.spec);
+                    workflowSpec.schedule = buildScheduleFromIntervalMs(scanIntervalMs);
+                    long jobId = registerWorkflow(endpoint, workflowSpec);
+                    successCount++;
+                    nextJobs.put(endpoint.key() + "#" + registration.name,
+                            new RegisteredJob(registration.name, endpoint, jobId, workflowSpec.schedule));
+                    logger.info("Metadata transform workflow submitted: workflow={}, endpoint={}, jobId={}, schedule={}, reason={}",
+                            registration.name, endpoint, jobId, safe(workflowSpec.schedule), safe(reason));
+                } catch (Exception e) {
+                    logger.error("Metadata transform workflow registration failed: workflow={}, endpoint={}, error={}",
+                            registration.name, endpoint, e.getMessage(), e);
+                }
             }
         }
 
@@ -161,7 +165,7 @@ public class MetadataTransformJobInitializer {
         registeredJobs.putAll(nextJobs);
 
         logger.info("Metadata transform workflow registration completed: success={}/{}, reason={}, schedule={}",
-                successCount, endpoints.size(), safe(reason), safe(workflowSpec.schedule));
+                successCount, totalCount, safe(reason), buildScheduleFromIntervalMs(scanIntervalMs));
     }
 
     private synchronized int cancelAllRegisteredJobs(String reason) {
@@ -190,7 +194,7 @@ public class MetadataTransformJobInitializer {
         try {
             session = new Session(endpoint.host, endpoint.port, iginxUsername, iginxPassword);
             session.openSession();
-            session.executeSql("CANCEL TRANSFORM JOB " + jobId + ";");
+            session.cancelTransformJob(jobId);
             logger.info("Canceled metadata transform job: endpoint={}, jobId={}", endpoint, jobId);
             return true;
         } catch (Exception e) {
@@ -388,6 +392,35 @@ public class MetadataTransformJobInitializer {
         return spec;
     }
 
+    private List<WorkflowRegistration> buildWorkflowRegistrations() throws Exception {
+        List<WorkflowRegistration> registrations = new ArrayList<WorkflowRegistration>();
+        appendWorkflowRegistration(registrations, "leaf", resolveWorkflowLocation(LEAF_WORKFLOW_RELATIVE_PATH));
+        appendWorkflowRegistration(registrations, "directory", resolveWorkflowLocation(DIRECTORY_WORKFLOW_RELATIVE_PATH));
+        return registrations;
+    }
+
+    private void appendWorkflowRegistration(
+            List<WorkflowRegistration> registrations,
+            String name,
+            String workflowLocation) throws Exception {
+        WorkflowSpec workflowSpec = loadWorkflowSpec(workflowLocation);
+        if (workflowSpec == null || workflowSpec.taskInfoList == null || workflowSpec.taskInfoList.isEmpty()) {
+            logger.warn("Metadata transform workflow file {} has no valid task definitions.", workflowLocation);
+            return;
+        }
+        registrations.add(new WorkflowRegistration(name, workflowLocation, workflowSpec));
+    }
+
+    private WorkflowSpec copyWorkflowSpec(WorkflowSpec source) {
+        WorkflowSpec target = new WorkflowSpec();
+        target.taskInfoList = new ArrayList<TaskInfo>(source.taskInfoList);
+        target.exportType = source.exportType;
+        target.exportFile = source.exportFile;
+        target.schedule = source.schedule;
+        target.stopOnFailure = source.stopOnFailure;
+        return target;
+    }
+
     private List<TaskInfo> parseTaskInfoList(List<?> taskList) {
         List<TaskInfo> out = new ArrayList<TaskInfo>();
         for (Object taskObj : taskList) {
@@ -488,13 +521,13 @@ public class MetadataTransformJobInitializer {
         return ExportType.LOG;
     }
 
-    private String resolveWorkflowLocation() {
+    private String resolveWorkflowLocation(String workflowRelativePath) {
         if (isClasspathRoot()) {
-            return joinClasspathPath(METADATA_WORKFLOW_RELATIVE_PATH);
+            return joinClasspathPath(workflowRelativePath);
         }
 
         String root = normalizeFileRoot(removeFilePrefix(resourceBasePath));
-        return new File(root, METADATA_WORKFLOW_RELATIVE_PATH.replace("/", File.separator)).getPath();
+        return new File(root, workflowRelativePath.replace("/", File.separator)).getPath();
     }
 
     private boolean isClasspathRoot() {
@@ -650,6 +683,18 @@ public class MetadataTransformJobInitializer {
         private boolean stopOnFailure;
     }
 
+    private static class WorkflowRegistration {
+        private final String name;
+        private final String workflowLocation;
+        private final WorkflowSpec spec;
+
+        private WorkflowRegistration(String name, String workflowLocation, WorkflowSpec spec) {
+            this.name = name;
+            this.workflowLocation = workflowLocation;
+            this.spec = spec;
+        }
+    }
+
     private static class Endpoint {
         private final String host;
         private final int port;
@@ -670,11 +715,13 @@ public class MetadataTransformJobInitializer {
     }
 
     private static class RegisteredJob {
+        private final String workflowName;
         private final Endpoint endpoint;
         private final long jobId;
         private final String schedule;
 
-        private RegisteredJob(Endpoint endpoint, long jobId, String schedule) {
+        private RegisteredJob(String workflowName, Endpoint endpoint, long jobId, String schedule) {
+            this.workflowName = workflowName;
             this.endpoint = endpoint;
             this.jobId = jobId;
             this.schedule = schedule;

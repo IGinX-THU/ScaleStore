@@ -4,7 +4,6 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
-import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -13,8 +12,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.*;
 
 /**
- * Adapter for key-value data (JSON/YAML).
- * Parses the file into flat key-value pairs; each key becomes a column stored as BINARY.
+ * Adapter for key-value data (.properties/.env).
+ * Parses flat key-value pairs; each key becomes a column stored as BINARY.
  */
 @Component
 public class KeyValueAdapter implements StorageAdapter {
@@ -29,7 +28,7 @@ public class KeyValueAdapter implements StorageAdapter {
 
     @Override
     public List<String> getSupportedFormats() {
-        return Arrays.asList("json", "yaml", "yml");
+        return Arrays.asList("properties", "env");
     }
 
     @Override

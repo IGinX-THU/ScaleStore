@@ -192,6 +192,36 @@ public final class StorageUtils {
         if (val == null) return null;
         if (val instanceof byte[]) return new String((byte[]) val, StandardCharsets.UTF_8);
         if (val instanceof ByteBuffer) return new String(toByteArray(val), StandardCharsets.UTF_8);
+        if (val instanceof Map) {
+            Map<?, ?> map = (Map<?, ?>) val;
+            if (map.containsKey("$oid")) {
+                return "ObjectId(\"" + String.valueOf(map.get("$oid")) + "\")";
+            }
+            return mapToDisplayString(map);
+        }
+        if (val instanceof Iterable) {
+            List<String> parts = new ArrayList<String>();
+            for (Object item : (Iterable<?>) val) {
+                Object converted = convertValue(item);
+                parts.add(converted == null ? "" : String.valueOf(converted));
+            }
+            return String.join(", ", parts);
+        }
+        Class<?> valueClass = val.getClass();
+        if (valueClass.isArray()) {
+            if (val instanceof Object[]) {
+                List<String> parts = new ArrayList<String>();
+                for (Object item : (Object[]) val) {
+                    Object converted = convertValue(item);
+                    parts.add(converted == null ? "" : String.valueOf(converted));
+                }
+                return String.join(", ", parts);
+            }
+            if (val instanceof int[]) return Arrays.toString((int[]) val);
+            if (val instanceof long[]) return Arrays.toString((long[]) val);
+            if (val instanceof double[]) return Arrays.toString((double[]) val);
+            if (val instanceof boolean[]) return Arrays.toString((boolean[]) val);
+        }
         return val;
     }
 
@@ -202,7 +232,37 @@ public final class StorageUtils {
         if (val == null) return "";
         if (val instanceof byte[]) return new String((byte[]) val, StandardCharsets.UTF_8);
         if (val instanceof ByteBuffer) return new String(toByteArray(val), StandardCharsets.UTF_8);
-        return val.toString();
+        Object converted = convertValue(val);
+        return converted == null ? "" : converted.toString();
+    }
+
+    public static String escapeCsvCell(Object value) {
+        String text = value == null ? "" : String.valueOf(value);
+        boolean needsQuotes = text.indexOf(',') >= 0
+                || text.indexOf('"') >= 0
+                || text.indexOf('\n') >= 0
+                || text.indexOf('\r') >= 0;
+        if (!needsQuotes) {
+            return text;
+        }
+        return "\"" + text.replace("\"", "\"\"") + "\"";
+    }
+
+    private static String mapToDisplayString(Map<?, ?> map) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("{");
+        int count = 0;
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (count > 0) {
+                sb.append(", ");
+            }
+            sb.append(String.valueOf(entry.getKey())).append(": ");
+            Object value = convertValue(entry.getValue());
+            sb.append(value == null ? "null" : String.valueOf(value));
+            count++;
+        }
+        sb.append("}");
+        return sb.toString();
     }
 
     /**
@@ -232,27 +292,53 @@ public final class StorageUtils {
         return value.replace("'", "\\'");
     }
 
-    // ==================== JSON / YAML Parsing for Key-Value ====================
+    // ==================== Properties / .env Parsing for Key-Value ====================
 
     /**
-     * Parse flat key-value content from JSON or YAML format.
+     * Parse flat key-value content from .properties or .env format.
      */
     public static Map<String, String> parseKeyValueContent(String content, String format) {
         Map<String, String> result = new LinkedHashMap<>();
-        content = content.trim();
+        parsePropertiesLike(content == null ? "" : content, result);
+        return result;
+    }
 
-        if ("json".equalsIgnoreCase(format)) {
-            parseJsonKV(content, "", result);
-        } else if ("yaml".equalsIgnoreCase(format) || "yml".equalsIgnoreCase(format)) {
-            parseYamlKV(content, result);
-        } else {
-            if (content.startsWith("{")) {
-                parseJsonKV(content, "", result);
-            } else {
-                parseYamlKV(content, result);
+    public static void parsePropertiesLike(String content, Map<String, String> result) {
+        String[] lines = content.split("\\r?\\n");
+        for (String rawLine : lines) {
+            String line = rawLine == null ? "" : rawLine.trim();
+            if (line.isEmpty() || line.startsWith("#") || line.startsWith("!")) {
+                continue;
+            }
+            if (line.startsWith("export ")) {
+                line = line.substring("export ".length()).trim();
+            }
+            int sep = findKeyValueSeparator(line);
+            if (sep <= 0) {
+                continue;
+            }
+            String key = line.substring(0, sep).trim();
+            String value = line.substring(sep + 1).trim();
+            if ((value.startsWith("\"") && value.endsWith("\""))
+                    || (value.startsWith("'") && value.endsWith("'"))) {
+                value = value.substring(1, value.length() - 1);
+            }
+            if (!key.isEmpty()) {
+                result.put(key, value);
             }
         }
-        return result;
+    }
+
+    private static int findKeyValueSeparator(String line) {
+        int eq = line.indexOf('=');
+        int colon = line.indexOf(':');
+        if (eq < 0) {
+            return colon;
+        }
+        if (colon < 0) {
+            return eq;
+        }
+        return Math.min(eq, colon);
     }
 
     /**

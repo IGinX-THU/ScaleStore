@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+﻿<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
@@ -189,11 +189,6 @@
             <input type="text" id="metadata-quick-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词">
 
             <div id="metadata-fullscreen-controls" class="metadata-fullscreen-controls hidden">
-              <div class="metadata-mode-switch" role="tablist" aria-label="元数据查询模式">
-                <button id="metadata-mode-system-btn" type="button" class="metadata-mode-btn active" data-mode="system">参数化查询</button>
-                <button id="metadata-mode-llm-btn" type="button" class="metadata-mode-btn" data-mode="llm">LLM自然语言</button>
-              </div>
-
               <div id="metadata-system-filters" class="metadata-query-inline-panel">
                 <input type="text" id="metadata-path-input" class="input input-sm metadata-inline-input" placeholder="逻辑路径（可空，如 /test）">
                 <select id="metadata-type-input" class="input input-sm metadata-inline-input metadata-type-select">
@@ -202,13 +197,9 @@
                   <option value="relational">relational</option>
                   <option value="keyvalue">keyvalue</option>
                   <option value="document">document</option>
-                  <option value="image">image</option>
+                  <option value="file">file</option>
                 </select>
                 <input type="text" id="metadata-keyword-input" class="input input-sm metadata-inline-input" placeholder="实体或字段关键词（可空）">
-              </div>
-
-              <div id="metadata-llm-panel" class="metadata-query-inline-panel hidden">
-                <input type="text" id="metadata-llm-input" class="input input-sm metadata-inline-input metadata-llm-input" placeholder="输入自然语言问题，例如：查找document类型里与合同相关的实体关系">
               </div>
             </div>
           </div>
@@ -220,6 +211,7 @@
       </div>
       <div class="panel-body" style="padding: 4px;">
         <div id="metadata-graph" class="chart-container"></div>
+        <div id="metadata-graph-summary" style="padding: 2px 8px; color: #83a6be; font-size: 12px;"></div>
       </div>
     </section>
 
@@ -240,7 +232,7 @@
             <option value="relational">关系数据</option>
             <option value="timeseries">时序数据</option>
             <option value="document">文档数据</option>
-            <option value="image">图像数据</option>
+            <option value="file">文件数据</option>
             <option value="keyvalue">键值数据</option>
           </select>
         </div>
@@ -317,6 +309,8 @@
           <span class="agent-live-indicator"></span>
           <span class="agent-live-text">IGinX智能体消息流</span>
           <button id="agent-clear-btn" class="btn btn-secondary btn-sm">清空</button>
+          <button id="agent-expand-btn" class="btn btn-secondary btn-sm">放大</button>
+          <button id="agent-collapse-btn" class="btn btn-danger btn-sm hidden">退出放大</button>
         </div>
       </div>
       <div class="panel-body panel-body-agent">
@@ -551,6 +545,8 @@
             <option value="mysql">mysql</option>
             <option value="postgres">postgres</option>
             <option value="iotdb">iotdb</option>
+            <option value="mongodb">mongodb</option>
+            <option value="redis">redis</option>
           </select>
         </div>
 

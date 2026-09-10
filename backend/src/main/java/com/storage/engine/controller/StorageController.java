@@ -43,7 +43,7 @@ public class StorageController {
      * Parameters:
      *   - file: the uploaded file (multipart)
      *   - logicalPath: logical storage path (e.g., /project/sensor/data)
-     *   - dataType: data type (timeseries/relational/image/document/keyvalue)
+     *   - dataType: data type (timeseries/relational/file/document/keyvalue)
      */
     @PostMapping("/storage")
     public ResponseEntity<Response<DataItem>> storeData(

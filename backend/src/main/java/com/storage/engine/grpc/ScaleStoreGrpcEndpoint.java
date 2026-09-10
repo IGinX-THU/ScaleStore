@@ -293,6 +293,9 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
             if (request.hasExtractionScanIntervalMs()) {
                 patch.setExtractionScanIntervalMs(request.getExtractionScanIntervalMs());
             }
+            if (request.hasMetadataGraphMaxNodes()) {
+                patch.setMetadataGraphMaxNodes(request.getMetadataGraphMaxNodes());
+            }
             sendJson(responseObserver, 200, "Success", policyService.updatePolicy(patch));
         } catch (Exception e) {
             sendError(responseObserver, 500, "Update policies failed: " + safeMessage(e));
@@ -302,8 +305,7 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
     @Override
     public void getMetadataGraph(MetadataGraphRequest request, StreamObserver<JsonResponse> responseObserver) {
         try {
-            int limit = request.getLimit() > 0 ? request.getLimit() : 300;
-            Map<String, Object> graph = metadataKnowledgeService.getGraph(emptyToNull(request.getLogicalPath()), limit);
+            Map<String, Object> graph = metadataKnowledgeService.getGraph(emptyToNull(request.getLogicalPath()), request.getMaxNodes());
             sendJson(responseObserver, 200, "Success", graph);
         } catch (Exception e) {
             sendError(responseObserver, 500, "Get metadata graph failed: " + safeMessage(e));
@@ -313,15 +315,10 @@ public class ScaleStoreGrpcEndpoint extends ScaleStoreGrpcServiceGrpc.ScaleStore
     @Override
     public void queryMetadata(MetadataQueryRequest request, StreamObserver<JsonResponse> responseObserver) {
         try {
-            Map<String, Object> graph;
-            if ("llm".equalsIgnoreCase(request.getMode())) {
-                graph = metadataKnowledgeService.queryByLlmNaturalLanguage(request.getQ());
-            } else {
-                graph = metadataKnowledgeService.queryBySystemFilters(
-                        emptyToNull(request.getLogicalPath()),
-                        emptyToNull(request.getDataType()),
-                        emptyToNull(request.getKeyword()));
-            }
+            Map<String, Object> graph = metadataKnowledgeService.queryBySystemFilters(
+                    emptyToNull(request.getLogicalPath()),
+                    emptyToNull(request.getDataType()),
+                    emptyToNull(request.getKeyword()));
             sendJson(responseObserver, 200, "Success", graph);
         } catch (Exception e) {
             sendError(responseObserver, 500, "Query metadata failed: " + safeMessage(e));

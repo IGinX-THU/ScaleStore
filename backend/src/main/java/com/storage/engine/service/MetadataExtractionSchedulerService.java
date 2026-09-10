@@ -1,59 +1,345 @@
 package com.storage.engine.service;
 
 import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
 import com.storage.engine.model.AgentMessageEvent;
 import com.storage.engine.model.DataItem;
+import com.storage.engine.model.MetadataSemanticLeafCallbackRequest;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import javax.annotation.PostConstruct;
+import javax.annotation.PreDestroy;
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
-import java.util.Collections;
-import java.util.Comparator;
 import java.util.Deque;
-import java.util.HashSet;
-import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Locale;
-import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
 
 @Service
 public class MetadataExtractionSchedulerService {
 
     private static final Logger logger = LoggerFactory.getLogger(MetadataExtractionSchedulerService.class);
-
     private static final int MAX_EVENT_CACHE = 300;
-    private static final int TRANSFORM_FETCH_LIMIT = 80;
-
-    private final Set<Long> seenTransformKeys = Collections.synchronizedSet(new HashSet<Long>());
-
-    @Autowired
-    private AccessService accessService;
 
     @Autowired
     private IGinxDao iginxDao;
 
+    @Value("${metadata.extraction.enabled:true}")
+    private boolean extractionEnabled;
+
+    private final int treePersistenceConcurrency = 1;
+
     private final Deque<AgentMessageEvent> eventBuffer = new LinkedList<AgentMessageEvent>();
     private final AtomicLong eventSeq = new AtomicLong(0L);
-    private final ObjectMapper objectMapper = new ObjectMapper();
+    private final AtomicLong treeWorkerSeq = new AtomicLong(0L);
+    private final Set<String> relationExpansionInFlight = ConcurrentHashMap.newKeySet();
+    private ThreadPoolExecutor metadataTreeExecutor;
 
     @PostConstruct
     public void init() {
-        publishEvent("info", "INIT", "Transform mode is enabled. Extraction event polling started.", "IGinX-Transform");
+        int workerCount = Math.max(1, treePersistenceConcurrency);
+        metadataTreeExecutor = new ThreadPoolExecutor(
+                workerCount,
+                workerCount,
+                0L,
+                TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<Runnable>(),
+                new ThreadFactory() {
+                    @Override
+                    public Thread newThread(Runnable runnable) {
+                        Thread thread = new Thread(runnable,
+                                "metadata-tree-worker-" + treeWorkerSeq.incrementAndGet());
+                        thread.setDaemon(false);
+                        return thread;
+                    }
+                });
+        String message = extractionEnabled
+                ? "Metadata extraction transform jobs enabled."
+                : "Metadata extraction transform jobs disabled.";
+        publishEvent("info", "INIT", message, "Metadata-UDF");
     }
 
-    @Scheduled(fixedDelay = 2000)
-    public void scanAndExtract() {
-        pollTransformAgentEvents();
+    @PreDestroy
+    public void shutdown() {
+        if (metadataTreeExecutor != null) {
+            metadataTreeExecutor.shutdown();
+        }
+    }
+
+    public void persistMetadataTreeAsync(DataItem item) {
+        if (item == null || item.getId() == null) {
+            return;
+        }
+        final String assetPath = assetPath(item);
+        final String whereClause = buildTreePersistWhereClause(item);
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_tree_persist(*) from " + IGinxConstants.STORAGE_META_PATH
+                            + " where " + whereClause + ";";
+                    logger.info("[Metadata-UDF][TREE-SQL] path={}, sql={}", assetPath, sql);
+                    iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "TREE_DONE", "Metadata directory tree persisted to Neo4j: path=" + assetPath, "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Persist metadata tree failed: {}", e.getMessage());
+                    publishEvent("warn", "TREE_FAILED", "Metadata directory tree persist failed: path=" + assetPath + ", reason=" + safe(e.getMessage()), "Metadata-UDF");
+                }
+            }
+        }, metadataTreeExecutor);
+    }
+
+    public void persistMetadataTreeForSourceAsync(String sourcePath, List<DataItem> importedItems) {
+        final String whereClause = buildTreePersistWhereClause(importedItems);
+        if (whereClause.isEmpty()) {
+            return;
+        }
+        final String normalizedSourcePath = normalizePath(sourcePath);
+        final int assetCount = countPersistableItems(importedItems);
+        logger.info("[Metadata-UDF][TREE-SOURCE-QUEUED] sourcePath={}, assets={}, queued={}",
+                normalizedSourcePath,
+                assetCount,
+                metadataTreeExecutor.getQueue().size());
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_tree_persist(*) from " + IGinxConstants.STORAGE_META_PATH
+                            + " where " + whereClause + ";";
+                    logger.info("[Metadata-UDF][TREE-SOURCE-SQL] sourcePath={}, assets={}, sql={}",
+                            normalizedSourcePath,
+                            assetCount,
+                            sql);
+                    iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "TREE_SOURCE_DONE",
+                            "Metadata directory tree persisted to Neo4j: sourcePath=" + normalizedSourcePath
+                                    + ", assets=" + assetCount,
+                            "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Persist metadata tree failed: sourcePath={}, reason={}",
+                            normalizedSourcePath,
+                            e.getMessage());
+                    publishEvent("warn", "TREE_SOURCE_FAILED",
+                            "Metadata directory tree persist failed: sourcePath=" + normalizedSourcePath
+                                    + ", reason=" + safe(e.getMessage()),
+                            "Metadata-UDF");
+                }
+            }
+        }, metadataTreeExecutor);
+    }
+
+    public void expandEntityRelationsAsync(String focusEntity, List<Long> metaKeys) {
+        final String focus = safe(focusEntity);
+        final String whereClause = buildMetaKeyWhereClause(metaKeys);
+        if (focus.isEmpty() || whereClause.isEmpty() || !relationExpansionInFlight.add(focus)) {
+            return;
+        }
+        CompletableFuture.runAsync(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String sql = "select metadata_semantic_entity_relation_expand(*, '"
+                            + escapeSql(focus) + "') from " + IGinxConstants.STORAGE_META_PATH
+                            + " where " + whereClause + ";";
+                    logger.info("[Metadata-UDF][ENTITY-RELATION-SQL] focus={}, sql={}", focus, sql);
+                    publishEvent("running", "ENTITY_RELATION_BATCH",
+                            "Entity relation expansion started: focus=" + focus + ", candidates=" + metaKeys.size(),
+                            "Metadata-UDF");
+                    SessionExecuteSqlResult result = iginxDao.executeLongRunningSql(sql);
+                    publishEvent("success", "ENTITY_RELATION_DONE",
+                            "Entity relation expansion completed: focus=" + focus + ", "
+                                    + extractEntityRelationSummary(result),
+                            "Metadata-UDF");
+                } catch (Exception e) {
+                    logger.warn("Expand entity relations failed: focus={}, reason={}", focus, e.getMessage());
+                    publishEvent("warn", "ENTITY_RELATION_FAILED",
+                            "Entity relation expansion failed: focus=" + focus + ", reason=" + safe(e.getMessage()),
+                            "Metadata-UDF");
+                } finally {
+                    relationExpansionInFlight.remove(focus);
+                }
+            }
+        });
+    }
+
+    private String buildMetaKeyWhereClause(List<Long> metaKeys) {
+        if (metaKeys == null || metaKeys.isEmpty()) {
+            return "";
+        }
+        StringBuilder where = new StringBuilder();
+        for (Long metaKey : metaKeys) {
+            if (metaKey == null || metaKey.longValue() <= 0L) {
+                continue;
+            }
+            if (where.length() > 0) {
+                where.append(" OR ");
+            }
+            where.append("key = ").append(metaKey.longValue());
+        }
+        return where.toString();
+    }
+
+    private String extractEntityRelationSummary(SessionExecuteSqlResult result) {
+        if (result == null || result.getValues() == null) {
+            return "entity relation results: unavailable";
+        }
+        for (List<Object> row : result.getValues()) {
+            if (row == null) {
+                continue;
+            }
+            for (Object value : row) {
+                String text = decodeSqlValue(value);
+                int index = text.indexOf("entity relation results:");
+                if (index >= 0) {
+                    return text.substring(index).trim();
+                }
+            }
+        }
+        return "entity relation results: unavailable";
+    }
+
+    private String decodeSqlValue(Object value) {
+        if (value instanceof byte[]) {
+            return new String((byte[]) value, StandardCharsets.UTF_8);
+        }
+        if (value instanceof ByteBuffer) {
+            ByteBuffer buffer = ((ByteBuffer) value).duplicate();
+            byte[] bytes = new byte[buffer.remaining()];
+            buffer.get(bytes);
+            return new String(bytes, StandardCharsets.UTF_8);
+        }
+        return value == null ? "" : String.valueOf(value);
+    }
+
+    private String buildTreePersistWhereClause(DataItem item) {
+        StringBuilder where = new StringBuilder();
+        where.append("key = ").append(item.getId().longValue());
+
+        String directoryRoot = isDirectory(item) ? assetPath(item) : normalizePath(item.getLogicalPath());
+        List<String> directories = buildDirectoryAssetPaths(directoryRoot);
+        for (String dirPath : directories) {
+            String parentPath = parentPath(dirPath);
+            String dirName = leafName(dirPath);
+            where.append(" OR (dataType = '")
+                    .append(IGinxConstants.TYPE_DIRECTORY)
+                    .append("' AND logicalPath = '")
+                    .append(escapeSql(parentPath))
+                    .append("' AND fileName = '")
+                    .append(escapeSql(dirName))
+                    .append("')");
+        }
+        return where.toString();
+    }
+
+    private String buildTreePersistWhereClause(List<DataItem> items) {
+        LinkedHashSet<Long> metaKeys = new LinkedHashSet<Long>();
+        LinkedHashSet<String> directoryClauses = new LinkedHashSet<String>();
+        if (items != null) {
+            for (DataItem item : items) {
+                if (item == null || item.getId() == null) {
+                    continue;
+                }
+                metaKeys.add(item.getId().longValue());
+
+                String directoryRoot = isDirectory(item) ? assetPath(item) : normalizePath(item.getLogicalPath());
+                for (String directoryPath : buildDirectoryAssetPaths(directoryRoot)) {
+                    String parentPath = parentPath(directoryPath);
+                    String directoryName = leafName(directoryPath);
+                    directoryClauses.add("(dataType = '" + IGinxConstants.TYPE_DIRECTORY
+                            + "' AND logicalPath = '" + escapeSql(parentPath)
+                            + "' AND fileName = '" + escapeSql(directoryName) + "')");
+                }
+            }
+        }
+
+        StringBuilder where = new StringBuilder();
+        for (Long metaKey : metaKeys) {
+            appendOrClause(where, "key = " + metaKey.longValue());
+        }
+        for (String directoryClause : directoryClauses) {
+            appendOrClause(where, directoryClause);
+        }
+        return where.toString();
+    }
+
+    private void appendOrClause(StringBuilder where, String clause) {
+        if (where.length() > 0) {
+            where.append(" OR ");
+        }
+        where.append(clause);
+    }
+
+    private int countPersistableItems(List<DataItem> items) {
+        if (items == null || items.isEmpty()) {
+            return 0;
+        }
+        LinkedHashSet<Long> metaKeys = new LinkedHashSet<Long>();
+        for (DataItem item : items) {
+            if (item != null && item.getId() != null) {
+                metaKeys.add(item.getId().longValue());
+            }
+        }
+        return metaKeys.size();
+    }
+
+    private List<String> buildDirectoryAssetPaths(String assetPath) {
+        List<String> out = new ArrayList<String>();
+        String normalized = normalizePath(assetPath);
+        if ("/".equals(normalized)) {
+            return out;
+        }
+        String[] parts = normalized.substring(1).split("/");
+        StringBuilder current = new StringBuilder();
+        for (String part : parts) {
+            String seg = safe(part);
+            if (seg.isEmpty()) {
+                continue;
+            }
+            current.append('/').append(seg);
+            out.add(current.toString());
+        }
+        return out;
+    }
+
+    private String parentPath(String path) {
+        String normalized = normalizePath(path);
+        if ("/".equals(normalized)) {
+            return "/";
+        }
+        int idx = normalized.lastIndexOf('/');
+        if (idx <= 0) {
+            return "/";
+        }
+        return normalized.substring(0, idx);
+    }
+
+    private String leafName(String path) {
+        String normalized = normalizePath(path);
+        if ("/".equals(normalized)) {
+            return "/";
+        }
+        int idx = normalized.lastIndexOf('/');
+        return idx >= 0 ? normalized.substring(idx + 1) : normalized;
+    }
+
+    private String escapeSql(String value) {
+        return safe(value).replace("\\", "\\\\").replace("'", "''");
     }
 
     public List<AgentMessageEvent> listEventsSince(long sinceSeq, int limit) {
@@ -81,120 +367,124 @@ public class MetadataExtractionSchedulerService {
         publishEvent(level, status, text, agentName);
     }
 
-    private void pollTransformAgentEvents() {
-        try {
-            SessionExecuteSqlResult result = iginxDao.getTransformMetaExtractRows(TRANSFORM_FETCH_LIMIT);
-            if (result == null || result.getValues() == null || result.getValues().isEmpty()) {
-                return;
-            }
+    public void handleLeafSemanticCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticCallback("Leaf", request);
+    }
 
-            List<String> paths = result.getPaths() == null ? new ArrayList<String>() : result.getPaths();
-            int keyIdx = findColumnIndex(paths, "key");
-            int statusIdx = findColumnIndex(paths, "transform.metaExtract.status");
-            int messageIdx = findColumnIndex(paths, "transform.metaExtract.message");
-            int errorIdx = findColumnIndex(paths, "transform.metaExtract.error");
-            int entityCountIdx = findColumnIndex(paths, "transform.metaExtract.entityCount");
-            int relationCountIdx = findColumnIndex(paths, "transform.metaExtract.relationCount");
-            int detailsJsonIdx = findColumnIndex(paths, "transform.metaExtract.detailsJson");
-            int logicalPathIdx = findColumnIndex(paths, "transform.metaExtract.logicalPath");
-            int fileNameIdx = findColumnIndex(paths, "transform.metaExtract.fileName");
-            int metaKeyIdx = findAnyColumnIndex(paths,
-                    "transform.metaExtract.metaKey",
-                    "transform.metaExtract.key");
+    public void handleLeafSemanticStartCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticStartCallback("Leaf", request);
+    }
 
-            if (keyIdx < 0 || statusIdx < 0) {
-                return;
-            }
+    public void handleDirectorySemanticCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticCallback("Directory", request);
+    }
 
-            Map<Long, DataItem> metaById = null;
-            List<TransformMetaRow> items = new ArrayList<TransformMetaRow>();
-            List<List<Object>> rows = result.getValues();
-            for (List<Object> row : rows) {
-                if (row == null || keyIdx >= row.size()) {
-                    continue;
-                }
+    public void handleDirectorySemanticStartCallback(MetadataSemanticLeafCallbackRequest request) {
+        handleSemanticStartCallback("Directory", request);
+    }
 
-                Long transformKey = asLong(row.get(keyIdx));
-                if (transformKey == null) {
-                    continue;
-                }
-                if (!seenTransformKeys.add(transformKey)) {
-                    continue;
-                }
-
-                String status = asString(row, statusIdx).toUpperCase(Locale.ROOT);
-                String message = asString(row, messageIdx);
-                String error = asString(row, errorIdx);
-                Long entityCount = asLong(row, entityCountIdx);
-                Long relationCount = asLong(row, relationCountIdx);
-                String detailsJson = asString(row, detailsJsonIdx);
-                String logicalPath = asString(row, logicalPathIdx);
-                String fileName = asString(row, fileNameIdx);
-                Long metaKey = asLong(row, metaKeyIdx);
-                Long fieldCount = extractCountFromDetails(detailsJson, "fieldCount");
-
-                Long entityFromDetails = extractCountFromDetails(detailsJson, "entityCount");
-                if ((entityCount == null || entityCount.longValue() <= 0L) && entityFromDetails != null) {
-                    entityCount = entityFromDetails;
-                }
-
-                Long relationFromDetails = extractCountFromDetails(detailsJson, "relationCount");
-                if ((relationCount == null || relationCount.longValue() <= 0L) && relationFromDetails != null) {
-                    relationCount = relationFromDetails;
-                }
-
-                if ((safe(logicalPath).isEmpty() || safe(fileName).isEmpty()) && metaKey != null) {
-                    if (metaById == null) {
-                        metaById = buildMetaByIdIndex();
-                    }
-                    DataItem meta = metaById.get(metaKey);
-                    if (meta != null) {
-                        if (safe(logicalPath).isEmpty()) {
-                            logicalPath = safe(meta.getLogicalPath());
-                        }
-                        if (safe(fileName).isEmpty()) {
-                            fileName = safe(meta.getFileName());
-                        }
-                    }
-                }
-
-                items.add(new TransformMetaRow(
-                        transformKey,
-                        status,
-                        message,
-                        error,
-                        entityCount,
-                        relationCount,
-                        fieldCount,
-                        logicalPath,
-                        fileName));
-            }
-
-            Collections.sort(items, new Comparator<TransformMetaRow>() {
-                @Override
-                public int compare(TransformMetaRow a, TransformMetaRow b) {
-                    return Long.compare(a.key, b.key);
-                }
-            });
-
-            for (TransformMetaRow item : items) {
-                if ("SUCCESS".equals(item.status)) {
-                    String text = buildTransformSuccessText(
-                            item.logicalPath,
-                            item.fileName,
-                            item.entityCount,
-                            item.relationCount,
-                            item.fieldCount,
-                            item.message);
-                    publishEvent("success", "DONE", text, "IGinX-Transform");
-                } else {
-                    String text = buildTransformFailText(item);
-                    publishEvent("warn", "FAILED", text, "IGinX-Transform");
-                }
-            }
-        } catch (Exception e) {
-            logger.debug("pollTransformAgentEvents skipped: {}", e.getMessage());
+    private void handleSemanticCallback(String assetKind, MetadataSemanticLeafCallbackRequest request) {
+        if (request == null || request.getMetaKey() == null) {
+            throw new IllegalArgumentException("metaKey is required");
         }
+
+        long startedAt = System.currentTimeMillis();
+        long metaKey = request.getMetaKey().longValue();
+        String status = normalizeSemanticStatus(request.getStatus());
+        String keywords = safe(request.getKeywords());
+        if (keywords.isEmpty()) {
+            keywords = "[]";
+        }
+        String message = safe(request.getMessage());
+        String assetPath = safe(request.getAssetPath());
+        if (assetPath.isEmpty()) {
+            assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
+        }
+
+        iginxDao.updateMetaSemanticKeywords(metaKey, status, keywords);
+
+        String dataType = safe(request.getDataType()).toLowerCase(Locale.ROOT);
+        String fileFormat = safe(request.getFileFormat()).toLowerCase(Locale.ROOT);
+        String title = assetPath.isEmpty() ? String.valueOf(metaKey) : assetPath;
+        if ("SUCCESS".equals(status)) {
+            publishEvent(
+                    "success",
+                    assetKind.toUpperCase(Locale.ROOT) + "_SEMANTIC_SUCCESS",
+                    assetKind + " semantic extraction completed: path=" + title
+                            + ", dataType=" + dataType
+                            + ", fileFormat=" + fileFormat
+                            + ", keywords=" + keywords,
+                    "Metadata-UDF");
+        } else {
+            publishEvent(
+                    "warn",
+                    assetKind.toUpperCase(Locale.ROOT) + "_SEMANTIC_FAILED",
+                    assetKind + " semantic extraction failed: path=" + title
+                            + ", dataType=" + dataType
+                            + ", fileFormat=" + fileFormat
+                            + ", reason=" + message,
+                    "Metadata-UDF");
+        }
+        logger.info(
+                "[MetadataSemanticCallback] persisted kind={}, metaKey={}, status={}, dataType={}, fileFormat={}, assetPath={}, keywordLength={}, elapsedMs={}",
+                assetKind.toLowerCase(Locale.ROOT),
+                metaKey,
+                status,
+                dataType,
+                fileFormat,
+                assetPath,
+                keywords.length(),
+                System.currentTimeMillis() - startedAt);
+    }
+
+    private void handleSemanticStartCallback(String assetKind, MetadataSemanticLeafCallbackRequest request) {
+        if (request == null || request.getMetaKey() == null) {
+            throw new IllegalArgumentException("metaKey is required");
+        }
+
+        long metaKey = request.getMetaKey().longValue();
+        iginxDao.updateMetaKnowledgeStatus(metaKey, "PROCESSING");
+        String assetPath = safe(request.getAssetPath());
+        if (assetPath.isEmpty()) {
+            assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
+        }
+        String dataType = safe(request.getDataType()).toLowerCase(Locale.ROOT);
+        String fileName = safe(request.getFileName());
+        String title = assetPath.isEmpty() ? String.valueOf(metaKey) : assetPath;
+
+        publishEvent(
+                "running",
+                "STARTED",
+                assetKind + " semantic extraction started: path=" + title
+                        + ", dataType=" + dataType
+                        + ", fileName=" + fileName,
+                "Metadata-UDF");
+        logger.info(
+                "[MetadataSemanticStartCallback] kind={}, metaKey={}, dataType={}, fileName={}, assetPath={}",
+                assetKind.toLowerCase(Locale.ROOT),
+                metaKey,
+                dataType,
+                fileName,
+                assetPath);
+    }
+
+    private boolean isDirectory(DataItem item) {
+        return item != null && IGinxConstants.TYPE_DIRECTORY.equals(safe(item.getDataType()).toLowerCase(Locale.ROOT));
+    }
+
+    private String assetPath(DataItem item) {
+        if (item == null) {
+            return "/";
+        }
+        String logicalPath = normalizePath(item.getLogicalPath());
+        String fileName = safe(item.getFileName());
+        if (fileName.isEmpty()) {
+            return logicalPath;
+        }
+        if (logicalPath.endsWith("/" + fileName)) {
+            return logicalPath;
+        }
+        return normalizePath(logicalPath + "/" + fileName);
     }
 
     private void publishEvent(String level, String status, String text, String agentName) {
@@ -233,201 +523,41 @@ public class MetadataExtractionSchedulerService {
         return "info";
     }
 
-    private String buildTransformSuccessText(
-            String logicalPath,
-            String fileName,
-            Long entityCount,
-            Long relationCount,
-            Long fieldCount,
-            String message) {
-        long safeEntityCount = entityCount == null ? 0L : entityCount.longValue();
-        long safeRelationCount = relationCount == null ? 0L : relationCount.longValue();
-        long safeFieldCount = fieldCount == null ? 0L : fieldCount.longValue();
-
-        String pathPart = safe(logicalPath).isEmpty() ? "(unknown)" : safe(logicalPath);
-        String filePart = safe(fileName).isEmpty() ? "(unknown)" : safe(fileName);
-        String text;
-        if (safeEntityCount <= 0L && safeRelationCount <= 0L && safeFieldCount > 0L) {
-            text = "Transform extraction completed: path=" + pathPart + ", file=" + filePart
-                + ", fields=" + safeFieldCount + ".";
-        } else {
-            text = "Transform extraction completed: path=" + pathPart + ", file=" + filePart
-                + ", entities=" + safeEntityCount + ", relations=" + safeRelationCount + ".";
+    private String normalizeSemanticStatus(String status) {
+        String normalized = safe(status).toUpperCase(Locale.ROOT);
+        if ("SUCCESS".equals(normalized)) {
+            return "SUCCESS";
         }
-
-        String clean = sanitizeUdfMessage(message);
-        if (!clean.isEmpty()) {
-            text = text + " " + clean;
-        }
-        return text;
+        return "FAILED";
     }
 
-    private String buildTransformFailText(TransformMetaRow item) {
-        String pathPart = safe(item.logicalPath).isEmpty() ? "(unknown)" : safe(item.logicalPath);
-        String filePart = safe(item.fileName).isEmpty() ? "(unknown)" : safe(item.fileName);
-        String reason = item.error.isEmpty() ? item.message : item.error;
-        return "Transform extraction failed: path=" + pathPart + ", file=" + filePart + ", reason=" + safe(reason);
+    private String normalizePath(String path) {
+        String p = safe(path);
+        if (p.isEmpty()) {
+            return "/";
+        }
+        if (!p.startsWith("/")) {
+            p = "/" + p;
+        }
+        while (p.length() > 1 && p.endsWith("/")) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p;
     }
 
-    private String sanitizeUdfMessage(String message) {
-        return safe(message)
-                .replaceAll("(?i)[a-z]+(?:\\s+[a-z]+)*\\s+extraction by udf;\\s*neo4j persisted\\.?", "")
-                .replaceAll("\\s{2,}", " ")
-                .trim();
-    }
-
-    private int findAnyColumnIndex(List<String> paths, String... tails) {
-        if (tails == null) {
-            return -1;
+    private String buildAssetPath(String logicalPath, String fileName) {
+        String normalizedPath = normalizePath(logicalPath);
+        String safeFileName = safe(fileName);
+        if (safeFileName.isEmpty()) {
+            return normalizedPath;
         }
-        for (String tail : tails) {
-            int idx = findColumnIndex(paths, tail);
-            if (idx >= 0) {
-                return idx;
-            }
+        if (normalizedPath.endsWith("/" + safeFileName)) {
+            return normalizedPath;
         }
-        return -1;
-    }
-
-    private int findColumnIndex(List<String> paths, String tail) {
-        if (paths == null || tail == null) {
-            return -1;
-        }
-        String normalizedTail = tail.toLowerCase(Locale.ROOT);
-        for (int i = 0; i < paths.size(); i++) {
-            String path = paths.get(i);
-            if (path == null) {
-                continue;
-            }
-            String normalizedPath = path.trim().toLowerCase(Locale.ROOT);
-            if (normalizedPath.equals(normalizedTail) || normalizedPath.endsWith(normalizedTail)) {
-                return i;
-            }
-        }
-        return -1;
-    }
-
-    private String asString(List<Object> row, int idx) {
-        if (row == null || idx < 0 || idx >= row.size()) {
-            return "";
-        }
-        Object value = row.get(idx);
-        if (value == null) {
-            return "";
-        }
-        if (value instanceof byte[]) {
-            return new String((byte[]) value).trim();
-        }
-        return String.valueOf(value).trim();
-    }
-
-    private Long asLong(List<Object> row, int idx) {
-        if (row == null || idx < 0 || idx >= row.size()) {
-            return null;
-        }
-        return asLong(row.get(idx));
-    }
-
-    private Long asLong(Object value) {
-        if (value == null) {
-            return null;
-        }
-        if (value instanceof Number) {
-            return ((Number) value).longValue();
-        }
-        if (value instanceof byte[]) {
-            try {
-                return Long.parseLong(new String((byte[]) value).trim());
-            } catch (Exception ignore) {
-                return null;
-            }
-        }
-        try {
-            return Long.parseLong(String.valueOf(value).trim());
-        } catch (Exception e) {
-            return null;
-        }
-    }
-
-    private Long extractCountFromDetails(String detailsJson, String countName) {
-        String raw = safe(detailsJson);
-        if (raw.isEmpty() || safe(countName).isEmpty()) {
-            return null;
-        }
-        try {
-            JsonNode root = objectMapper.readTree(raw);
-
-            JsonNode counts = root.get("counts");
-            if (counts != null) {
-                JsonNode direct = counts.get(countName);
-                if (direct != null && direct.isNumber()) {
-                    return Long.valueOf(direct.longValue());
-                }
-            }
-
-            JsonNode fallback = root.get(countName);
-            if (fallback != null && fallback.isNumber()) {
-                return Long.valueOf(fallback.longValue());
-            }
-        } catch (Exception ignore) {
-            return null;
-        }
-        return null;
-    }
-
-    private Map<Long, DataItem> buildMetaByIdIndex() {
-        Map<Long, DataItem> out = new LinkedHashMap<Long, DataItem>();
-        try {
-            List<DataItem> all = accessService.getAllMeta();
-            if (all == null) {
-                return out;
-            }
-            for (DataItem item : all) {
-                if (item == null || item.getId() == null) {
-                    continue;
-                }
-                out.put(Long.valueOf(item.getId().longValue()), item);
-            }
-        } catch (Exception e) {
-            logger.debug("buildMetaByIdIndex skipped: {}", e.getMessage());
-        }
-        return out;
+        return normalizePath(normalizedPath + "/" + safeFileName);
     }
 
     private String safe(String value) {
         return value == null ? "" : value.trim();
-    }
-
-    private static class TransformMetaRow {
-        private final long key;
-        private final String status;
-        private final String message;
-        private final String error;
-        private final Long entityCount;
-        private final Long relationCount;
-        private final Long fieldCount;
-        private final String logicalPath;
-        private final String fileName;
-
-        private TransformMetaRow(
-                long key,
-                String status,
-                String message,
-                String error,
-                Long entityCount,
-                Long relationCount,
-                Long fieldCount,
-                String logicalPath,
-                String fileName) {
-            this.key = key;
-            this.status = status;
-            this.message = message;
-            this.error = error;
-            this.entityCount = entityCount;
-            this.relationCount = relationCount;
-            this.fieldCount = fieldCount;
-            this.logicalPath = logicalPath;
-            this.fileName = fileName;
-        }
     }
 }

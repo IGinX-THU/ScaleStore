@@ -2,6 +2,9 @@ package com.storage.engine.controller;
 
 import com.storage.engine.model.Response;
 import com.storage.engine.model.AgentMessageEvent;
+import com.storage.engine.model.DataItem;
+import com.storage.engine.model.MetadataSemanticLeafCallbackRequest;
+import com.storage.engine.service.AccessService;
 import com.storage.engine.service.MetadataExtractionSchedulerService;
 import com.storage.engine.service.MetadataKnowledgeService;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,40 +21,47 @@ public class MetadataController {
     private MetadataKnowledgeService metadataKnowledgeService;
 
     @Autowired
+    private AccessService accessService;
+
+    @Autowired
     private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
 
     /**
      * Build/query metadata graph from Neo4j.
-     * GET /metadata/graph?logicalPath=/test&limit=200
+     * GET /metadata/graph?logicalPath=/test&maxNodes=200
      */
     @GetMapping("/metadata/graph")
     public Response<Map<String, Object>> getGraph(
             @RequestParam(value = "logicalPath", required = false) String logicalPath,
-            @RequestParam(value = "limit", required = false) Integer limit) {
-        Map<String, Object> graph = metadataKnowledgeService.getGraph(logicalPath, limit == null ? 0 : limit);
+            @RequestParam(value = "maxNodes", required = false) Integer maxNodes) {
+        Map<String, Object> graph = metadataKnowledgeService.getGraph(logicalPath, maxNodes == null ? 0 : maxNodes);
         return Response.success(graph);
     }
 
     /**
      * Metadata query endpoint.
-     * mode=system: structured query by logicalPath/dataType/keyword.
-     * mode=llm: natural language query by q.
+     * Structured query by logicalPath/dataType/keyword.
      */
     @GetMapping("/metadata/query")
     public Response<Map<String, Object>> query(
-            @RequestParam(value = "mode", required = false, defaultValue = "system") String mode,
-            @RequestParam(value = "q", required = false) String q,
             @RequestParam(value = "logicalPath", required = false) String logicalPath,
             @RequestParam(value = "dataType", required = false) String dataType,
-            @RequestParam(value = "keyword", required = false) String keyword) {
+            @RequestParam(value = "keyword", required = false) String keyword,
+            @RequestParam(value = "expandRelations", required = false) Boolean expandRelations) {
 
-        Map<String, Object> result;
-        if ("llm".equalsIgnoreCase(mode)) {
-            result = metadataKnowledgeService.queryByLlmNaturalLanguage(q);
-        } else {
-            result = metadataKnowledgeService.queryBySystemFilters(logicalPath, dataType, keyword);
-        }
+        Map<String, Object> result = metadataKnowledgeService.queryBySystemFilters(
+                logicalPath, dataType, keyword, expandRelations == null || expandRelations.booleanValue());
         return Response.success(result);
+    }
+
+    /**
+     * Query one storage.meta row by key.
+     * GET /metadata/meta?key=123
+     */
+    @GetMapping("/metadata/meta")
+    public Response<DataItem> getMetaByKey(@RequestParam("key") Long key) {
+        DataItem item = accessService.getMetaByKey(key == null ? -1L : key.longValue());
+        return Response.success(item);
     }
 
     /**
@@ -71,5 +81,29 @@ public class MetadataController {
         payload.put("serverTime", System.currentTimeMillis());
 
         return Response.success(payload);
+    }
+
+    @PostMapping("/metadata/extraction/semantic/leaf-callback")
+    public Response<Void> leafSemanticCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleLeafSemanticCallback(request);
+        return Response.success();
+    }
+
+    @PostMapping("/metadata/extraction/semantic/leaf-start-callback")
+    public Response<Void> leafSemanticStartCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleLeafSemanticStartCallback(request);
+        return Response.success();
+    }
+
+    @PostMapping("/metadata/extraction/semantic/directory-callback")
+    public Response<Void> directorySemanticCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleDirectorySemanticCallback(request);
+        return Response.success();
+    }
+
+    @PostMapping("/metadata/extraction/semantic/directory-start-callback")
+    public Response<Void> directorySemanticStartCallback(@RequestBody MetadataSemanticLeafCallbackRequest request) {
+        metadataExtractionSchedulerService.handleDirectorySemanticStartCallback(request);
+        return Response.success();
     }
 }

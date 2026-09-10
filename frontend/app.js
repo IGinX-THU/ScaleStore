@@ -30,22 +30,30 @@ let dataSourceSummary = { totalDataSize: 0, dataSources: [] };
 let clusterHeartbeatTimer = null;
 let deployInProgress = false;
 let metadataFullscreen = false;
-let metadataQueryMode = 'system';
+let agentExpanded = false;
 let agentLastNodeSnapshot = '';
 let agentEventCursor = 0;
 let agentEventPollTimer = null;
+let agentDisplayQueue = [];
+let agentDisplayTimer = null;
+let agentDisplayCatchUp = false;
 let metadataGraphSignature = '';
 let metadataGraphNodeIds = new Set();
 let metadataCurrentLogicalPath = '';
 let metadataActiveSearchKeyword = '';
 let metadataAutoRefreshInFlight = false;
 let metadataAutoRefreshPending = false;
+const metadataMetaCache = new Map();
 
-const DEFAULT_GRAPH_MAX_TRIPLES = 200;
-const MIN_GRAPH_MAX_TRIPLES = 20;
-const MAX_GRAPH_MAX_TRIPLES = 500;
+const DEFAULT_GRAPH_MAX_NODES = 200;
+const MIN_GRAPH_MAX_NODES = 20;
+const MAX_GRAPH_MAX_NODES = 500;
 
 const AGENT_MAX_MESSAGES = 80;
+const AGENT_SLOW_QUEUE_THRESHOLD = 50;
+const AGENT_CATCH_UP_QUEUE_THRESHOLD = 100;
+const AGENT_CATCH_UP_BATCH_SIZE = 10;
+const AGENT_CATCH_UP_INTERVAL_MS = 50;
 
 const PAGE_SIZE = 5;
 const paginationState = {
@@ -228,14 +236,14 @@ function mapPolicyFromBackend(policy) {
       inputType: 'number',
     },
     {
-      id: 'metadata-graph-max-triples',
-      key: 'metadataGraphMaxTriples',
-      name: 'metadata.graph-max-triples',
-      value: String(policy.metadataGraphMaxTriples ?? DEFAULT_GRAPH_MAX_TRIPLES),
-      desc: policy.metadataGraphMaxTriplesDesc || '知识图谱展示的最大三元组数量（20-500）',
+      id: 'metadata-graph-max-nodes',
+      key: 'metadataGraphMaxNodes',
+      name: 'metadata.graph-max-nodes',
+      value: String(policy.metadataGraphMaxNodes ?? DEFAULT_GRAPH_MAX_NODES),
+      desc: policy.metadataGraphMaxNodesDesc || '知识图谱单次最多展示的节点数（范围 20-500）',
       inputType: 'number',
-      min: MIN_GRAPH_MAX_TRIPLES,
-      max: MAX_GRAPH_MAX_TRIPLES,
+      min: MIN_GRAPH_MAX_NODES,
+      max: MAX_GRAPH_MAX_NODES,
       step: 1,
     },
   ];
@@ -251,23 +259,6 @@ function parsePolicyInteger(value, fallback, min, max) {
   return Math.min(max, Math.max(min, normalized));
 }
 
-function getPolicyValue(key, fallback) {
-  const row = policyData.find(item => String(item.key) === String(key));
-  if (!row) {
-    return fallback;
-  }
-  return row.value;
-}
-
-function getGraphMaxTriplesLimit() {
-  return parsePolicyInteger(
-    getPolicyValue('metadataGraphMaxTriples', DEFAULT_GRAPH_MAX_TRIPLES),
-    DEFAULT_GRAPH_MAX_TRIPLES,
-    MIN_GRAPH_MAX_TRIPLES,
-    MAX_GRAPH_MAX_TRIPLES
-  );
-}
-
 function buildPolicyPayloadFromRows(rows) {
   const rowByKey = {};
   rows.forEach(row => {
@@ -277,7 +268,7 @@ function buildPolicyPayloadFromRows(rows) {
   return {
     extractionEnabled: String(rowByKey.extractionEnabled?.value || 'false').toLowerCase() === 'true',
     extractionScanIntervalMs: parsePolicyInteger(rowByKey.extractionScanIntervalMs?.value, 60000, 1000, Number.MAX_SAFE_INTEGER),
-    metadataGraphMaxTriples: parsePolicyInteger(rowByKey.metadataGraphMaxTriples?.value, DEFAULT_GRAPH_MAX_TRIPLES, MIN_GRAPH_MAX_TRIPLES, MAX_GRAPH_MAX_TRIPLES),
+    metadataGraphMaxNodes: parsePolicyInteger(rowByKey.metadataGraphMaxNodes?.value, DEFAULT_GRAPH_MAX_NODES, MIN_GRAPH_MAX_NODES, MAX_GRAPH_MAX_NODES),
   };
 }
 
@@ -294,6 +285,31 @@ async function savePolicies(rows) {
     body: JSON.stringify(payload),
   });
   policyData = mapPolicyFromBackend(policy);
+}
+
+async function refreshMetadataGraphAfterPolicyUpdate() {
+  if (!metadataChart) {
+    return;
+  }
+
+  const searchKeyword = String(metadataActiveSearchKeyword || '').trim();
+  if (searchKeyword) {
+    const filters = { keyword: searchKeyword, expandRelations: false };
+    if (metadataFullscreen) {
+      filters.logicalPath = $('metadata-path-input')?.value.trim() || '';
+      filters.dataType = $('metadata-type-input')?.value.trim() || '';
+    }
+    const graph = await queryMetadataBySystem(filters);
+    renderAndTrackMetadataGraph(graph, {
+      focusKeyword: searchKeyword,
+      focusMode: 'search',
+      logicalPath: filters.logicalPath || metadataCurrentLogicalPath,
+      searchKeyword,
+    });
+    return;
+  }
+
+  await initMetadataGraph(metadataCurrentLogicalPath);
 }
 
 function mapRestfulApiFromBackend(item) {
@@ -635,16 +651,23 @@ function pickAgentName() {
   return pickRandom(getAgentNodeNames()) || 'IGinX1';
 }
 
+function getAgentStatusLabel(level) {
+  const statusLabels = {
+    running: '进行中',
+    success: '完成',
+    warn: '失败',
+    info: '通知',
+  };
+  return statusLabels[level] || statusLabels.info;
+}
+
 function pushAgentMessage({ level = 'info', status = '', text = '', agentName = '', smooth = true, timestamp = null } = {}) {
   const list = $('agent-stream-list');
   if (!list || !text) return;
 
   const validLevels = ['running', 'success', 'warn', 'info'];
   const normalizedLevel = validLevels.includes(level) ? level : 'info';
-  const defaultStatus = normalizedLevel === 'running'
-    ? '进行中'
-    : (normalizedLevel === 'success' ? '完成' : (normalizedLevel === 'warn' ? '失败' : '通知'));
-  const statusText = status || defaultStatus;
+  const statusText = getAgentStatusLabel(normalizedLevel);
   const lineText = agentName ? `智能体【${agentName}】${text}` : text;
   const clock = (timestamp && Number.isFinite(Number(timestamp)))
     ? formatClockTime(new Date(Number(timestamp)))
@@ -667,6 +690,66 @@ function pushAgentMessage({ level = 'info', status = '', text = '', agentName = 
     top: list.scrollHeight,
     behavior: smooth ? 'smooth' : 'auto',
   });
+}
+
+function getAgentDisplayIntervalMs() {
+  if (agentDisplayCatchUp) return AGENT_CATCH_UP_INTERVAL_MS;
+  return agentDisplayQueue.length > AGENT_SLOW_QUEUE_THRESHOLD ? 500 : 1000;
+}
+
+function stopAgentDisplayQueue() {
+  if (agentDisplayTimer) {
+    clearTimeout(agentDisplayTimer);
+    agentDisplayTimer = null;
+  }
+}
+
+function scheduleAgentDisplayQueue() {
+  if (agentDisplayTimer || agentDisplayQueue.length === 0) return;
+  agentDisplayTimer = setTimeout(() => {
+    agentDisplayTimer = null;
+    const isCatchingUp = agentDisplayCatchUp
+      && agentDisplayQueue.length > AGENT_CATCH_UP_QUEUE_THRESHOLD;
+    const displayCount = isCatchingUp
+      ? Math.min(AGENT_CATCH_UP_BATCH_SIZE, agentDisplayQueue.length - AGENT_CATCH_UP_QUEUE_THRESHOLD)
+      : 1;
+    for (let index = 0; index < displayCount; index += 1) {
+      const next = agentDisplayQueue.shift();
+      if (next) {
+        pushAgentMessage({ ...next, smooth: !isCatchingUp });
+      }
+    }
+    if (agentDisplayQueue.length <= AGENT_CATCH_UP_QUEUE_THRESHOLD) {
+      agentDisplayCatchUp = false;
+    }
+    if (agentDisplayQueue.length > 0) {
+      scheduleAgentDisplayQueue();
+    }
+  }, getAgentDisplayIntervalMs());
+}
+
+function startAgentDisplayCatchUp() {
+  if (agentDisplayCatchUp) return;
+  agentDisplayCatchUp = true;
+  stopAgentDisplayQueue();
+  scheduleAgentDisplayQueue();
+}
+
+function enqueueAgentMessage(message) {
+  if (!message || !message.text) return;
+  agentDisplayQueue.push(message);
+  if (agentDisplayQueue.length > AGENT_CATCH_UP_QUEUE_THRESHOLD) {
+    startAgentDisplayCatchUp();
+  }
+  if (!agentDisplayTimer) {
+    scheduleAgentDisplayQueue();
+  }
+}
+
+function clearAgentDisplayQueue() {
+  agentDisplayQueue = [];
+  agentDisplayCatchUp = false;
+  stopAgentDisplayQueue();
 }
 
 function sanitizeAgentEventText(text) {
@@ -724,7 +807,7 @@ async function pollAgentEvents() {
   for (const evt of events) {
     const rawLevel = String(evt.level || '').toLowerCase();
     const level = ['running', 'success', 'warn', 'info'].includes(rawLevel) ? rawLevel : 'info';
-    pushAgentMessage({
+    enqueueAgentMessage({
       level,
       status: evt.status || '',
       text: sanitizeAgentEventText(evt.text || ''),
@@ -766,6 +849,7 @@ function startAgentEventPolling() {
 function clearAgentStream() {
   const list = $('agent-stream-list');
   if (list) list.innerHTML = '';
+  clearAgentDisplayQueue();
 }
 
 function initAgentPanel() {
@@ -785,6 +869,22 @@ function initAgentPanel() {
     });
   }
 
+  const expandBtn = $('agent-expand-btn');
+  if (expandBtn && !expandBtn.dataset.bound) {
+    expandBtn.dataset.bound = 'true';
+    expandBtn.addEventListener('click', () => {
+      enterAgentExpanded();
+    });
+  }
+
+  const collapseBtn = $('agent-collapse-btn');
+  if (collapseBtn && !collapseBtn.dataset.bound) {
+    collapseBtn.dataset.bound = 'true';
+    collapseBtn.addEventListener('click', () => {
+      exitAgentExpanded();
+    });
+  }
+
   clearAgentStream();
   agentEventCursor = 0;
   pushAgentMessage({
@@ -795,6 +895,26 @@ function initAgentPanel() {
   });
   syncAgentPoolNodeState(true);
   startAgentEventPolling();
+}
+
+function enterAgentExpanded() {
+  const grid = document.querySelector('.dashboard-grid');
+  if (!grid || agentExpanded) return;
+  agentExpanded = true;
+  grid.classList.add('agent-expanded');
+  document.body.classList.add('agent-expanded-active');
+  $('agent-expand-btn')?.classList.add('hidden');
+  $('agent-collapse-btn')?.classList.remove('hidden');
+}
+
+function exitAgentExpanded() {
+  const grid = document.querySelector('.dashboard-grid');
+  if (!grid || !agentExpanded) return;
+  agentExpanded = false;
+  grid.classList.remove('agent-expanded');
+  document.body.classList.remove('agent-expanded-active');
+  $('agent-expand-btn')?.classList.remove('hidden');
+  $('agent-collapse-btn')?.classList.add('hidden');
 }
 
 // ==================== 集群管理 ====================
@@ -1500,6 +1620,12 @@ $('policy-save-btn').addEventListener('click', async () => {
 
   try {
     await savePolicies(policyData);
+    try {
+      await refreshMetadataGraphAfterPolicyUpdate();
+    } catch (refreshError) {
+      console.error('Refresh metadata graph after policy update failed:', refreshError);
+      alert('策略已保存，但图谱刷新失败: ' + refreshError.message);
+    }
     exitPolicyEdit();
   } catch (e) {
     alert('策略保存失败: ' + e.message);
@@ -1639,13 +1765,18 @@ function queueMetadataAutoRefresh(hints = []) {
 async function performMetadataAutoRefresh(hints = []) {
   metadataAutoRefreshInFlight = true;
   try {
-    if (metadataFullscreen || !metadataChart) {
+    if (!metadataChart) {
       return;
     }
 
     const activeSearchKeyword = String(metadataActiveSearchKeyword || '').trim();
     if (activeSearchKeyword) {
-      const nextGraph = await queryMetadataBySystem({ keyword: activeSearchKeyword });
+      const activeFilters = { keyword: activeSearchKeyword, expandRelations: false };
+      if (metadataFullscreen) {
+        activeFilters.logicalPath = $('metadata-path-input')?.value.trim() || '';
+        activeFilters.dataType = $('metadata-type-input')?.value.trim() || '';
+      }
+      const nextGraph = await queryMetadataBySystem(activeFilters);
       const delta = calculateGraphDelta(nextGraph);
       if (!delta.changed) {
         return;
@@ -1705,7 +1836,6 @@ async function initMetadataGraph(logicalPath = '') {
 async function fetchMetadataGraph(logicalPath = '') {
   const params = new URLSearchParams();
   if (logicalPath) params.set('logicalPath', logicalPath);
-  params.set('limit', String(getGraphMaxTriplesLimit()));
   const url = `${API_BASE}/metadata/graph?${params.toString()}`;
 
   const response = await fetch(url);
@@ -1718,10 +1848,10 @@ async function fetchMetadataGraph(logicalPath = '') {
 
 async function queryMetadataBySystem(filters) {
   const params = new URLSearchParams();
-  params.set('mode', 'system');
   if (filters?.logicalPath) params.set('logicalPath', filters.logicalPath);
   if (filters?.dataType) params.set('dataType', filters.dataType);
   if (filters?.keyword) params.set('keyword', filters.keyword);
+  if (filters?.expandRelations === false) params.set('expandRelations', 'false');
 
   const url = `${API_BASE}/metadata/query?${params.toString()}`;
   const response = await fetch(url);
@@ -1732,22 +1862,170 @@ async function queryMetadataBySystem(filters) {
   return result.data;
 }
 
-async function queryMetadataByLLM(question) {
-  const params = new URLSearchParams();
-  params.set('mode', 'llm');
-  params.set('q', question || '');
-  const url = `${API_BASE}/metadata/query?${params.toString()}`;
-  const response = await fetch(url);
-  const result = await response.json();
-  if (!response.ok || result.code !== 200 || !result.data) {
-    throw new Error(result?.message || 'LLM查询失败');
+async function fetchMetadataMetaByKey(metaKey) {
+  const key = String(metaKey || '').trim();
+  if (!key) return null;
+  if (metadataMetaCache.has(key)) {
+    return metadataMetaCache.get(key);
   }
-  return result.data;
+
+  const promise = fetch(`${API_BASE}/metadata/meta?key=${encodeURIComponent(key)}`)
+    .then(async response => {
+      const result = await response.json();
+      if (!response.ok || result.code !== 200) {
+        throw new Error(result?.message || 'metadata meta query failed');
+      }
+      return result.data || null;
+    })
+    .catch(error => ({ __error: error.message || String(error) }));
+
+  metadataMetaCache.set(key, promise);
+  const value = await promise;
+  metadataMetaCache.set(key, value);
+  return value;
 }
 
+function getNodeMetaKey(node) {
+  const props = node?.properties || {};
+  const candidates = [props.metaKey, props.meta_key, node?.metaKey];
+  for (const value of candidates) {
+    if (value != null && String(value).trim()) {
+      return String(value).trim();
+    }
+  }
+  return '';
+}
+
+function getNodeLogicalPath(node) {
+  const props = node?.properties || {};
+  const candidates = [props.path, props.logicalPath, node?.path, node?.logicalPath, node?.name];
+  for (const value of candidates) {
+    if (value != null && String(value).trim()) {
+      return normalizeAccessPath(String(value).trim());
+    }
+  }
+  return '';
+}
+
+function isRootLogicalPathNode(node) {
+  return String(node?.categoryName || '') === 'LogicalPath' && getNodeLogicalPath(node) === '/';
+}
+
+function joinLogicalPath(basePath, childName) {
+  const base = normalizeAccessPath(basePath || '/');
+  const child = String(childName || '').trim();
+  if (!child) return base;
+  if (base.endsWith('/' + child)) return base;
+  return normalizeAccessPath(base === '/' ? '/' + child : base + '/' + child);
+}
+
+function buildMetadataNodeTooltip(data, metaItem, options = {}) {
+  const props = data?.properties || {};
+  const metaKey = getNodeMetaKey(data);
+  const rows = [];
+  const add = (label, value) => {
+    if (value == null || String(value).trim() === '') return;
+    rows.push(`<tr><td style="color:#83a6be;padding:2px 10px 2px 0;">${escapeHtml(label)}</td><td style="color:#dce8f5;padding:2px 0;">${escapeHtml(String(value))}</td></tr>`);
+  };
+
+  add('metaKey', metaKey);
+  add('nodeType', data?.categoryName);
+  if (metaItem && !metaItem.__error) {
+    add('logicalPath', metaItem.logicalPath);
+    add('dataType', metaItem.dataType);
+    add('fileName', metaItem.fileName);
+    add('fileFormat', metaItem.fileFormat);
+    add('fileSize', metaItem.fileSize);
+    add('createTime', metaItem.createTime);
+    add('status', metaItem.knowledgeExtractStatus);
+    add('semanticKeywords', metaItem.semanticKeywords);
+  } else {
+    Object.keys(props).slice(0, 8).forEach(k => add(k, props[k]));
+  }
+
+  const statusText = options.loading
+    ? '<div style="color:#b8c7d8;margin-top:6px;">Loading storage.meta...</div>'
+    : (metaItem?.__error
+      ? `<div style="color:#ff9cae;margin-top:6px;">storage.meta query failed: ${escapeHtml(metaItem.__error)}</div>`
+      : (!metaItem && metaKey ? '<div style="color:#b8c7d8;margin-top:6px;">No storage.meta row found.</div>' : ''));
+
+  return [
+    `<strong>${escapeHtml(data?.name || '')}</strong>`,
+    rows.length ? `<table style="margin-top:6px;border-collapse:collapse;">${rows.join('')}</table>` : '',
+    statusText,
+  ].filter(Boolean).join('');
+}
+
+async function openMetadataNodeInAccess(node) {
+  if (!node || !node.categoryName) return;
+  const accessAgentName = pickAgentName();
+
+  if (isRootLogicalPathNode(node)) {
+    await openFolderView('/', {
+      recordHistory: true,
+      accessAgentName,
+      showRunningMessage: true,
+    });
+    return;
+  }
+
+  const metaKey = getNodeMetaKey(node);
+
+  if (!metaKey) {
+    return;
+  }
+
+  const metaItem = await fetchMetadataMetaByKey(metaKey);
+  if (metaItem?.__error) {
+    alert('storage.meta query failed: ' + metaItem.__error);
+    return;
+  }
+  if (!metaItem) {
+    alert('No storage.meta row found for key=' + metaKey);
+    return;
+  }
+
+  const logicalPath = metaItem.logicalPath || '';
+  const fileName = metaItem.fileName || '';
+  const dataType = String(metaItem.dataType || '').toLowerCase();
+  if (!logicalPath) {
+    alert('storage.meta row has no logicalPath for key=' + metaKey);
+    return;
+  }
+
+  if (dataType === 'directory') {
+    await openFolderView(joinLogicalPath(logicalPath, fileName), {
+      recordHistory: true,
+      accessAgentName,
+      showRunningMessage: true,
+    });
+    return;
+  }
+
+  if (fileName) {
+    await openFileInFolder(logicalPath, fileName, accessAgentName);
+    return;
+  }
+
+  await openFolderView(logicalPath, {
+    recordHistory: true,
+    accessAgentName,
+    showRunningMessage: true,
+  });
+}
 function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search') {
   const container = $('metadata-graph');
   if (!container) return;
+  const summary = $('metadata-graph-summary');
+  if (summary) {
+    const nodeCount = Number(graphData?.nodeCount || 0);
+    const linkCount = Number(graphData?.linkCount || 0);
+    const graphLimit = Number(graphData?.graphLimit || 0);
+    const omittedNodeCount = Number(graphData?.omittedNodeCount || 0);
+    summary.textContent = graphLimit > 0
+      ? `显示 ${nodeCount} / ${graphLimit} 个节点，${linkCount} 条关系${omittedNodeCount > 0 ? `；已隐藏 ${omittedNodeCount} 个节点` : ''}`
+      : `显示 ${nodeCount} 个节点，${linkCount} 条关系`;
+  }
   if (!metadataChart) {
     metadataChart = echarts.init(container);
   }
@@ -1789,9 +2067,10 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   const relationColor = {
     CONTAINS: 'rgba(104, 176, 233, 0.75)',
     HAS_DATA: '#00c389',
-    HAS_FILED: '#57d6b2',
+    HAS_FIELD: '#57d6b2',
     MENTIONS: '#ffb347',
-    SEMANTIC_RELATION: '#ff9a3c'
+    CONTAINS_ASSET: '#7aa7ff',
+    SEMANTIC_RELATION: '#ff6f91'
   };
 
   if (nodes.length === 0) {
@@ -1808,6 +2087,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   }
 
   const focus = (focusKeyword || '').toLowerCase();
+  const hasBackendMatches = nodes.some(n => n?.matched === true);
 
   const styledNodes = nodes.map(n => {
     const categoryName = String(n.categoryName || 'Other');
@@ -1817,18 +2097,35 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     const displayName = (!rawName || rawName === '(unknown)')
       ? (categoryName === 'LogicalPath' ? '(路径节点)' : `(未命名${categoryName})`)
       : rawName;
-    const matched = !!focus && displayName.toLowerCase().includes(focus);
+    const matched = hasBackendMatches ? n.matched === true : (!!focus && displayName.toLowerCase().includes(focus));
+    const muteAsContext = hasBackendMatches
+      && !matched
+      && (categoryName === 'LogicalPath' || categoryName === 'DataAsset');
     const symbolSize = isRootPath ? Math.max(56, Number(n.symbolSize || 42)) : Number(n.symbolSize || 26);
+    const mutedStyle = {
+      color: '#7f8b96',
+      shadowBlur: 0,
+      shadowColor: 'rgba(0, 0, 0, 0)',
+      borderColor: 'rgba(174, 184, 194, 0.42)',
+      borderWidth: isRootPath ? 1.8 : 1,
+      opacity: 0.58
+    };
 
     const matchStyle = focusMode === 'new'
       ? {
           color: baseColor,
           shadowBlur: isRootPath ? 20 : 16,
-          shadowColor: baseColor + 'cc',
+          shadowColor: 'rgba(255, 255, 255, 0.82)',
           borderColor: 'rgba(255, 255, 255, 0.95)',
           borderWidth: isRootPath ? 2.8 : 2.2,
         }
-      : { color: '#ff4466', shadowBlur: 22, shadowColor: '#ff4466' };
+      : {
+          color: baseColor,
+          shadowBlur: isRootPath ? 22 : 18,
+          shadowColor: 'rgba(255, 68, 102, 0.9)',
+          borderColor: '#ff4466',
+          borderWidth: isRootPath ? 3 : 2.4,
+        };
 
     return {
       ...n,
@@ -1836,16 +2133,16 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       symbolSize,
       itemStyle: matched
         ? matchStyle
-        : {
+        : (muteAsContext ? mutedStyle : {
             color: baseColor,
             shadowBlur: isRootPath ? 16 : 8,
             shadowColor: baseColor + '80',
             borderColor: 'rgba(235, 242, 249, 0.86)',
             borderWidth: isRootPath ? 2 : 1.1
-          },
+          }),
       label: {
         show: true,
-        color: isRootPath ? '#f0f6ff' : '#dce8f5',
+        color: muteAsContext ? '#9aa6b2' : (isRootPath ? '#f0f6ff' : '#dce8f5'),
         fontWeight: isRootPath ? 700 : 400
       }
     };
@@ -1859,40 +2156,50 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
   const styledLinks = links.map(l => {
     const src = nodeById[String(l.source)];
     const tgt = nodeById[String(l.target)];
-    const matched = !!focus
-      && ((src && String(src.name || '').toLowerCase().includes(focus))
-      || (tgt && String(tgt.name || '').toLowerCase().includes(focus)));
+    const matched = hasBackendMatches
+      ? !!((src && src.matched === true) || (tgt && tgt.matched === true))
+      : (!!focus
+        && ((src && String(src.name || '').toLowerCase().includes(focus))
+        || (tgt && String(tgt.name || '').toLowerCase().includes(focus))));
     const relType = String(l.type || l.label || '').toUpperCase();
+    const isEntityRelation = relType === 'SEMANTIC_RELATION';
     const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
-    const semanticEdge = relType === 'SEMANTIC_RELATION';
     const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
     return {
       ...l,
       relationText,
-      lineStyle: matched
-        ? (focusMode === 'new'
-          ? {
-              color: baseEdgeColor,
-              width: semanticEdge ? 3 : 2.6,
-              opacity: 1,
-              type: 'solid',
-            }
-          : { color: '#ff4466', width: 3 })
-        : {
-            color: baseEdgeColor,
-            curveness: semanticEdge ? 0.2 : 0.1,
-            width: semanticEdge ? 2.2 : 1.5,
-            opacity: 0.95,
-            type: semanticEdge ? 'solid' : 'dashed'
-          },
+      lineStyle: isEntityRelation
+        ? {
+            color: matched ? 'rgba(168, 178, 190, 0.82)' : 'rgba(142, 152, 164, 0.58)',
+            curveness: 0.24,
+            width: matched ? 1.2 : 0.9,
+            opacity: matched ? 0.9 : 0.62,
+            type: 'dashed',
+          }
+        : (matched
+          ? (focusMode === 'new'
+            ? {
+                color: baseEdgeColor,
+                width: 2.6,
+                opacity: 1,
+                type: 'solid',
+              }
+            : { color: '#ff4466', width: 3 })
+          : {
+              color: hasBackendMatches ? 'rgba(142, 152, 164, 0.42)' : baseEdgeColor,
+              curveness: 0.1,
+              width: 1.5,
+              opacity: hasBackendMatches ? 0.55 : 0.95,
+              type: 'dashed'
+            }),
       label: {
         show: false,
         formatter: relationText,
-        color: semanticEdge ? '#ffd6aa' : '#c4d6e8',
-        fontSize: semanticEdge ? 11 : 10,
-        backgroundColor: semanticEdge ? 'rgba(23,31,44,0.72)' : 'transparent',
-        padding: semanticEdge ? [2, 4] : [0, 0],
-        borderRadius: semanticEdge ? 3 : 0
+        color: isEntityRelation ? '#c5cbd3' : '#c4d6e8',
+        fontSize: 10,
+        backgroundColor: 'transparent',
+        padding: [0, 0],
+        borderRadius: 0
       },
     };
   });
@@ -1903,7 +2210,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       backgroundColor: 'rgba(8,28,54,0.95)',
       borderColor: 'rgba(0,207,255,0.3)',
       textStyle: { color: '#cce4f5', fontSize: 11 },
-      formatter: params => {
+      formatter: (params, ticket, callback) => {
         if (params.dataType === 'edge') {
           const edge = params.data || {};
           const relType = String(edge.type || '').toUpperCase();
@@ -1913,31 +2220,24 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
           const targetName = String(targetNode.name || edge.target || '');
           const relationText = extractRelationText(edge.relationText != null ? edge.relationText : edge.label);
 
-          if (relType === 'SEMANTIC_RELATION' && relationText) {
-            return [
-              '<strong>语义关系</strong>',
-              `关系: ${relationText}`,
-              `起点: ${sourceName}`,
-              `终点: ${targetName}`,
-            ].join('<br/>');
-          }
-
           return [
             '<strong>结构关系</strong>',
             `类型: ${relType || 'RELATION'}`,
             `起点: ${sourceName}`,
             `终点: ${targetName}`,
+            ...(relationText && relationText.toUpperCase() !== relType ? [`关系: ${relationText}`] : []),
           ].join('<br/>');
         }
 
         const data = params.data || {};
-        const p = data.properties || {};
-        const rows = Object.keys(p).slice(0, 8).map(k => `${k}: ${String(p[k])}`);
-        return [
-          `<strong>${data.name || ''}</strong>`,
-          data.categoryName ? `类型: ${data.categoryName}` : '',
-          ...rows,
-        ].filter(Boolean).join('<br/>');
+        const metaKey = getNodeMetaKey(data);
+        if (metaKey) {
+          fetchMetadataMetaByKey(metaKey).then(metaItem => {
+            callback(ticket, buildMetadataNodeTooltip(data, metaItem));
+          });
+          return buildMetadataNodeTooltip(data, null, { loading: true });
+        }
+        return buildMetadataNodeTooltip(data, null);
       },
     },
     legend: {
@@ -1961,11 +2261,24 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
       force: { repulsion: 300, gravity: 0.05, edgeLength: 150, friction: 0.12 },
       lineStyle: { color: 'rgba(100,160,200,0.35)', curveness: 0.14, width: 1.5 },
       emphasis: { focus: 'adjacency', lineStyle: { width: 3 } },
-      edgeSymbol: ['none', 'arrow'],
-      edgeSymbolSize: [0, 8],
+      edgeSymbol: ['none', 'none'],
+      edgeSymbolSize: [0, 0],
     }],
   };
   metadataChart.setOption(option, true);
+  metadataChart.off('click');
+  metadataChart.on('click', params => {
+    if (params.dataType !== 'node') {
+      return;
+    }
+    if (!isRootLogicalPathNode(params.data) && !getNodeMetaKey(params.data)) {
+      return;
+    }
+    openMetadataNodeInAccess(params.data).catch(error => {
+      console.error('Open metadata node in access failed:', error);
+      alert('访问服务打开失败: ' + (error.message || String(error)));
+    });
+  });
   recenterMetadataGraph();
 }
 
@@ -2054,7 +2367,6 @@ function enterMetadataFullscreen() {
   const panel = document.querySelector('.panel-metadata');
   if (!panel || metadataFullscreen) return;
   metadataFullscreen = true;
-  syncMetadataQueryModeUI('system');
   syncMetadataHeaderControls();
   panel.classList.add('metadata-fullscreen');
   document.body.classList.add('metadata-fullscreen-active');
@@ -2104,6 +2416,7 @@ $('metadata-search-btn').addEventListener('click', async () => {
   try {
     let graph;
     let focusKeyword = '';
+    let logicalPath = '';
     if (!metadataFullscreen) {
       // 非全屏：仅按实体关键词进行快速查询。
       graph = await queryMetadataBySystem({
@@ -2111,35 +2424,23 @@ $('metadata-search-btn').addEventListener('click', async () => {
       });
       focusKeyword = quickKeyword;
     } else {
-      const mode = metadataQueryMode;
-      if (mode === 'llm') {
-        const llmQuestion = $('metadata-llm-input')?.value.trim() || '';
-        if (!llmQuestion) {
-          alert('请填写LLM查询问题');
-          return;
-        }
-        graph = await queryMetadataByLLM(llmQuestion);
-        // LLM 查询不强行沿用非全屏关键词，避免历史高亮残留。
-        focusKeyword = '';
-      } else {
-        const logicalPath = $('metadata-path-input')?.value.trim() || '';
-        const dataType = $('metadata-type-input')?.value.trim() || '';
-        const keyword = $('metadata-keyword-input')?.value.trim() || '';
+      logicalPath = $('metadata-path-input')?.value.trim() || '';
+      const dataType = $('metadata-type-input')?.value.trim() || '';
+      const keyword = $('metadata-keyword-input')?.value.trim() || '';
 
-        graph = await queryMetadataBySystem({
-          logicalPath,
-          dataType,
-          keyword,
-        });
-        focusKeyword = keyword;
-      }
+      graph = await queryMetadataBySystem({
+        logicalPath,
+        dataType,
+        keyword,
+      });
+      focusKeyword = keyword;
     }
 
     renderAndTrackMetadataGraph(graph, {
       focusKeyword,
       focusMode: 'search',
-      logicalPath: metadataCurrentLogicalPath,
-      searchKeyword: metadataFullscreen ? '' : quickKeyword,
+      logicalPath: logicalPath || metadataCurrentLogicalPath,
+      searchKeyword: focusKeyword,
     });
     if (graph.cypher) {
       console.log('Metadata query cypher:', graph.cypher);
@@ -2168,9 +2469,6 @@ $('metadata-quick-keyword-input').addEventListener('keydown', e => {
 $('metadata-keyword-input')?.addEventListener('keydown', e => {
   if (e.key === 'Enter') $('metadata-search-btn').click();
 });
-$('metadata-llm-input')?.addEventListener('keydown', e => {
-  if (e.key === 'Enter') $('metadata-search-btn').click();
-});
 
 $('metadata-fullscreen-btn').addEventListener('click', () => {
   enterMetadataFullscreen();
@@ -2179,20 +2477,6 @@ $('metadata-fullscreen-btn').addEventListener('click', () => {
 $('metadata-exit-fullscreen-btn').addEventListener('click', () => {
   exitMetadataFullscreen();
 });
-
-function syncMetadataQueryModeUI(mode) {
-  metadataQueryMode = (mode || 'system').toLowerCase() === 'llm' ? 'llm' : 'system';
-
-  const systemBtn = $('metadata-mode-system-btn');
-  const llmBtn = $('metadata-mode-llm-btn');
-  const systemPanel = $('metadata-system-filters');
-  const llmPanel = $('metadata-llm-panel');
-
-  if (systemBtn) systemBtn.classList.toggle('active', metadataQueryMode === 'system');
-  if (llmBtn) llmBtn.classList.toggle('active', metadataQueryMode === 'llm');
-  if (systemPanel) systemPanel.classList.toggle('hidden', metadataQueryMode !== 'system');
-  if (llmPanel) llmPanel.classList.toggle('hidden', metadataQueryMode !== 'llm');
-}
 
 function syncMetadataHeaderControls() {
   const quickInput = $('metadata-quick-keyword-input');
@@ -2206,14 +2490,14 @@ function syncMetadataHeaderControls() {
   }
 }
 
-$('metadata-mode-system-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('system'));
-$('metadata-mode-llm-btn')?.addEventListener('click', () => syncMetadataQueryModeUI('llm'));
-syncMetadataQueryModeUI('system');
 syncMetadataHeaderControls();
 
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && metadataFullscreen) {
     exitMetadataFullscreen();
+  }
+  if (e.key === 'Escape' && agentExpanded) {
+    exitAgentExpanded();
   }
 });
 
@@ -2226,6 +2510,8 @@ const storageSourceDefaultPorts = {
   mysql: '3306',
   postgres: '5432',
   iotdb: '6667',
+  mongodb: '27017',
+  redis: '6379',
 };
 
 function getStorageSourceLabel(sourceType) {
@@ -2234,6 +2520,8 @@ function getStorageSourceLabel(sourceType) {
     mysql: 'MySQL',
     postgres: 'PostgreSQL',
     iotdb: 'IoTDB',
+    mongodb: 'MongoDB',
+    redis: 'Redis',
   };
   return labels[sourceType] || sourceType;
 }
@@ -2245,7 +2533,7 @@ function syncStorageSourceFormOptions(resetPort = false) {
   const portInput = $('storage-source-port-input');
 
   fsFields.classList.toggle('hidden', sourceType !== 'filesystem');
-  authFields.classList.toggle('hidden', sourceType === 'filesystem');
+  authFields.classList.toggle('hidden', sourceType === 'filesystem' || sourceType === 'mongodb' || sourceType === 'redis');
 
   const defaultPort = storageSourceDefaultPorts[sourceType] || '';
   if (resetPort || !portInput.value.trim()) {
@@ -2255,6 +2543,7 @@ function syncStorageSourceFormOptions(resetPort = false) {
   if (sourceType === 'filesystem' && !$('storage-source-iginx-port-input').value.trim()) {
     $('storage-source-iginx-port-input').value = '6888';
   }
+
 }
 
 function syncStorageSourceSizeStrategyOptions() {
@@ -2337,7 +2626,7 @@ function buildStorageSourcePayload() {
       payload.sshPassword = sshPassword;
       payload.sshPort = sshPort;
     }
-  } else {
+  } else if (sourceType !== 'mongodb' && sourceType !== 'redis') {
     const username = $('storage-source-username-input').value.trim();
     const password = $('storage-source-password-input').value;
     if (!username || !password) {
@@ -2413,8 +2702,8 @@ const acceptMap = {
   relational: '.csv,.txt',
   timeseries: '.csv,.txt',
   document:   '.json,.xml',
-  image:      '.jpg,.jpeg,.png,.bmp',
-  keyvalue:   '.json,.yaml,.yml',
+  file:       '',
+  keyvalue:   '.properties,.env',
 };
 
 function updateFileAccept() {
@@ -2514,7 +2803,7 @@ $('storage-save-btn').addEventListener('click', async () => {
       relational: '关系数据',
       timeseries: '时序数据',
       document: '文档数据',
-      image: '图像数据',
+      file: '文件数据',
       keyvalue: '键值数据',
     };
     const typeLabel = typeLabelMap[type] || type;
@@ -2603,7 +2892,7 @@ function renderAccessItem(item) {
   const previewData = item?.previewData;
 
   const typeLabels = {
-    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    timeseries: '时序数据', relational: '关系数据', file: '文件数据',
     document: '文档数据', keyvalue: '键值数据', directory: '目录'
   };
 
@@ -2623,12 +2912,16 @@ function renderAccessItem(item) {
     return;
   }
 
-  if (dataType === 'image') {
-    renderImagePreview(preview, previewData, item);
+  if (dataType === 'file') {
+    renderFilePreview(preview, previewData, item);
   } else if (dataType === 'timeseries' || dataType === 'relational') {
     renderTablePreview(preview, previewData, dataType);
   } else if (dataType === 'document') {
-    renderDocumentPreview(preview, previewData, item);
+    if (previewData && previewData.columns && previewData.rows) {
+      renderTablePreview(preview, previewData, dataType);
+    } else {
+      renderDocumentPreview(preview, previewData, item);
+    }
   } else if (dataType === 'keyvalue') {
     renderKeyValuePreview(preview, previewData);
   } else {
@@ -2820,26 +3113,41 @@ $('access-back-btn').addEventListener('click', async () => {
 
 updateAccessBackButtonState();
 
-function renderImagePreview(container, previewData, meta) {
+function renderFilePreview(container, previewData, meta) {
   if (!previewData || !previewData.base64) {
-    container.innerHTML = '<div class="preview-placeholder">无法加载图像数据</div>';
+    container.innerHTML = '<div class="preview-placeholder">无法加载文件数据</div>';
     return;
   }
-  const format = (meta.fileFormat || 'png').toLowerCase();
-  const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp' };
-  const mime = mimeMap[format] || 'image/png';
+  const format = (meta.fileFormat || '').toLowerCase();
+  const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', bmp: 'image/bmp', gif: 'image/gif', webp: 'image/webp', txt: 'text/plain', json: 'application/json', xml: 'application/xml', pdf: 'application/pdf' };
+  const mime = mimeMap[format] || 'application/octet-stream';
+  const isImage = mime.startsWith('image/');
+  if (!isImage && typeof previewData.textPreview === 'string') {
+    const previewLimitText = previewData.previewLimit || 'file preview reads up to 1MB';
+    container.innerHTML = `<div style="text-align:left;padding:12px;overflow:auto;max-height:100%;">
+      <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
+        ${escapeHtml(previewLimitText)}
+      </div>
+      <pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:280px;margin:0;padding:8px;">${escapeHtml(previewData.textPreview)}</pre>
+      <p style="color:var(--text-dim);margin-top:8px;font-size:11px;text-align:center;">${escapeHtml(meta.fileName || 'file preview')}</p>
+    </div>`;
+    return;
+  }
   
-  // 显示预览限制提示
-  const previewLimitText = previewData.previewLimit || '图像数据最多预览前5MB数据';
+  const previewLimitText = previewData.previewLimit
+    || (isImage ? '图片文件最多预览前5MB数据' : '文件数据最多预览前1MB字节流');
+  const body = isImage
+    ? `<img src="data:${mime};base64,${previewData.base64}" 
+         style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
+         alt="${escapeHtml(meta.fileName || 'file')}">`
+    : `<div class="preview-placeholder">文件已存储，可通过下载访问完整内容</div>`;
   
   container.innerHTML = `<div style="text-align:center;padding:12px;overflow:auto;max-height:100%;">
     <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
-      ℹ️ ${escapeHtml(previewLimitText)}
+      ${escapeHtml(previewLimitText)}
     </div>
-    <img src="data:${mime};base64,${previewData.base64}" 
-         style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
-         alt="${meta.fileName || 'image'}">
-    <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${meta.fileName || '图像预览'}</p>
+    ${body}
+    <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${escapeHtml(meta.fileName || '文件预览')}</p>
   </div>`;
 }
 
@@ -2861,7 +3169,7 @@ function renderTablePreview(container, previewData, dataType) {
     const row = rows[i];
     for (let j = 0; j < cols.length; j++) {
       const val = j < row.length ? row[j] : '';
-      html += `<td>${escapeHtml(String(val != null ? val : ''))}</td>`;
+      html += `<td>${escapeHtml(formatPreviewCell(val))}</td>`;
     }
     html += '</tr>';
   }
@@ -2871,6 +3179,26 @@ function renderTablePreview(container, previewData, dataType) {
   }
   html += '</div>';
   container.innerHTML = html;
+}
+
+function formatPreviewCell(value) {
+  if (value == null) return '';
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (Array.isArray(value)) return value.map(formatPreviewCell).join(', ');
+  if (typeof value === 'object') {
+    if (typeof value.value === 'string' || typeof value.value === 'number' || typeof value.value === 'boolean') {
+      return String(value.value);
+    }
+    if (typeof value.text === 'string') return value.text;
+    if (typeof value.base64 === 'string') return value.base64;
+    try {
+      return JSON.stringify(value);
+    } catch (e) {
+      return String(value);
+    }
+  }
+  return String(value);
 }
 
 function renderDocumentPreview(container, content, meta) {
@@ -2892,7 +3220,7 @@ function renderDocumentPreview(container, content, meta) {
 
   container.innerHTML = `
     <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin:8px;font-size:11px;color:#ffb347;">
-      ℹ️ ${escapeHtml(previewLimitText)}
+      ${escapeHtml(previewLimitText)}
     </div>
     <pre class="code-block" style="white-space:pre-wrap;font-size:11px;overflow:auto;max-height:100%;margin:0;padding:8px;">${escapeHtml(displayContent)}</pre>`;
 }
@@ -2904,7 +3232,7 @@ function renderKeyValuePreview(container, kvData) {
   }
   let html = '<div class="table-wrapper" style="overflow:auto;max-height:100%;"><table style="font-size:11px;"><thead><tr><th>键 (Key)</th><th>值 (Value)</th></tr></thead><tbody>';
   for (const [key, value] of Object.entries(kvData)) {
-    html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(String(value))}</td></tr>`;
+    html += `<tr><td>${escapeHtml(key)}</td><td>${escapeHtml(formatPreviewCell(value))}</td></tr>`;
   }
   html += '</tbody></table></div>';
   container.innerHTML = html;
@@ -2920,12 +3248,12 @@ function renderDirectoryListing(container, children, parentPath) {
     return;
   }
   const typeLabels = {
-    timeseries: '时序数据', relational: '关系数据', image: '图像数据',
+    timeseries: '时序数据', relational: '关系数据', file: '文件数据',
     document: '文档数据', keyvalue: '键值数据', directory: '📁 子目录'
   };
   const typeColors = {
-    timeseries: '#00cfff', relational: '#00e68a', image: '#ff6b9d',
-    document: '#ffa800', keyvalue: '#a78bfa', directory: '#8cb8d0'
+    timeseries: '#00cfff', relational: '#00e68a', file: '#ffb347',
+    document: '#a78bfa', keyvalue: '#7dd3fc', directory: '#8cb8d0'
   };
 
   let html = '<div style="padding:8px;overflow:auto;max-height:100%;">';
@@ -2999,6 +3327,10 @@ $('access-download-btn').addEventListener('click', async () => {
 
   try {
     const response = await fetch(`${API_BASE}/access/download?logicalPath=${encodeURIComponent(folderPath)}&fileName=${encodeURIComponent(fileName)}`);
+    if (response.status === 204) {
+      alert('当前资产没有可下载内容');
+      return;
+    }
     if (!response.ok) {
       const errorText = await response.text();
       throw new Error(errorText || 'HTTP ' + response.status);
@@ -3015,6 +3347,10 @@ $('access-download-btn').addEventListener('click', async () => {
     }
 
     const blob = await response.blob();
+    if (!blob || blob.size === 0) {
+      alert('当前资产没有可下载内容');
+      return;
+    }
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;

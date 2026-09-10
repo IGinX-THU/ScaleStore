@@ -611,6 +611,60 @@ tbody tr:hover {
   font-weight: 500;
 }
 
+.form-switch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.switch-control {
+  position: relative;
+  display: inline-flex;
+  width: 46px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+
+.switch-control input {
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.switch-slider {
+  position: absolute;
+  inset: 0;
+  cursor: pointer;
+  background: rgba(77, 122, 153, 0.36);
+  border: 1px solid rgba(0, 180, 255, 0.2);
+  border-radius: 999px;
+  transition: all 0.2s ease;
+}
+
+.switch-slider::before {
+  content: "";
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+  background: #d8e8f5;
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.switch-control input:checked + .switch-slider {
+  background: rgba(0, 207, 255, 0.34);
+  border-color: rgba(0, 207, 255, 0.65);
+  box-shadow: 0 0 12px rgba(0, 207, 255, 0.18);
+}
+
+.switch-control input:checked + .switch-slider::before {
+  transform: translateX(22px);
+  background: var(--accent);
+}
+
 select {
   cursor: pointer;
   appearance: none;
@@ -943,6 +997,22 @@ body.metadata-fullscreen-active {
   overflow: hidden;
 }
 
+body.agent-expanded-active {
+  overflow: hidden;
+}
+
+.dashboard-grid.agent-expanded {
+  grid-template-areas:
+    "cluster cluster metadata metadata metadata metadata storage storage"
+    "topology topology metadata metadata metadata metadata storage storage"
+    "user user agent agent agent agent access access"
+    "policy policy agent agent agent agent access access";
+}
+
+.dashboard-grid.agent-expanded .panel-interface {
+  display: none;
+}
+
 .panel-metadata.metadata-fullscreen {
   position: fixed;
   inset: 18px;
@@ -1046,37 +1116,6 @@ body.metadata-fullscreen-active {
   white-space: nowrap;
 }
 
-.metadata-mode-switch {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px;
-  border-radius: 999px;
-  border: 1px solid rgba(0, 180, 255, 0.25);
-  background: rgba(2, 16, 32, 0.72);
-}
-
-.metadata-mode-btn {
-  border: none;
-  background: transparent;
-  color: #7ca6c4;
-  border-radius: 999px;
-  padding: 4px 10px;
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: all 0.2s ease;
-}
-
-.metadata-mode-btn:hover {
-  color: #cfe6f7;
-}
-
-.metadata-mode-btn.active {
-  color: #07233d;
-  background: linear-gradient(120deg, #00b8f5 0%, #42deff 100%);
-  box-shadow: 0 0 12px rgba(0, 207, 255, 0.42);
-}
-
 .metadata-query-inline-panel {
   display: flex;
   align-items: center;
@@ -1094,11 +1133,6 @@ body.metadata-fullscreen-active {
 .metadata-query-inline-panel .metadata-type-select {
   width: 140px;
   max-width: 140px;
-}
-
-.metadata-query-inline-panel .metadata-llm-input {
-  width: 420px;
-  max-width: 420px;
 }
 
 /* -- Agent Pool -- */

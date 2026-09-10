@@ -20,7 +20,8 @@ public class IGinxConstants {
     // Data types
     public static final String TYPE_TIMESERIES = "timeseries";
     public static final String TYPE_RELATIONAL = "relational";
-    public static final String TYPE_IMAGE = "image";
+    public static final String TYPE_FILE = "file";
     public static final String TYPE_DOCUMENT = "document";
     public static final String TYPE_KEYVALUE = "keyvalue";
+    public static final String TYPE_DIRECTORY = "directory";
 }

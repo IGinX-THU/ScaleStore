@@ -113,12 +113,12 @@ message UserLoginRequest {
 message PolicyUpdateRequest {
   optional bool extraction_enabled = 1;
   optional int64 extraction_scan_interval_ms = 2;
-  optional int32 metadata_graph_max_triples = 3;
+  optional int32 metadata_graph_max_nodes = 3;
 }
 
 message MetadataGraphRequest {
   string logical_path = 1;
-  int32 limit = 2;
+  int32 max_nodes = 2;
 }
 
 message MetadataQueryRequest {

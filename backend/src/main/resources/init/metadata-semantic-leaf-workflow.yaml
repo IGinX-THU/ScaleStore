@@ -1,0 +1,29 @@
+taskList:
+  - taskType: "sql"
+    dataFlowType: "stream"
+    timeout: 10000000
+    sqlList:
+      - SELECT key, logicalPath, dataType, fileName, contentPath, fileSize, fileFormat, createTime, knowledgeExtractStatus, semanticKeywords
+        FROM storage.meta
+        WHERE dataType != 'directory'
+          AND (knowledgeExtractStatus = 'PENDING' OR knowledgeExtractStatus = 'FAILED')
+        ORDER BY key ASC
+        LIMIT 1;
+  - taskType: "python"
+    dataFlowType: "stream"
+    timeout: 10000000
+    pyTaskName: "MetadataSemanticLeafMetaInfo"
+    outputPrefix: "leafMetaInfo"
+  - taskType: "sql"
+    dataFlowType: "stream"
+    timeout: 10000000
+    sqlList:
+      - SELECT * FROM (SELECT VALUE2META(SELECT contentPath FROM leafMetaInfo) FROM data) FULL OUTER JOIN (SELECT metaKey AS metaInfo_key, logicalPath AS metaInfo_logicalPath, assetPath AS metaInfo_assetPath, fileName AS metaInfo_fileName, dataType AS metaInfo_dataType, fileFormat AS metaInfo_fileFormat, fileSize AS metaInfo_fileSize, createTime AS metaInfo_createTime, contentPath AS metaInfo_contentPath FROM leafMetaInfo);
+  - taskType: "python"
+    dataFlowType: "batch"
+    timeout: 10000000
+    pyTaskName: "MetadataSemanticLeafExecutor"
+
+exportType: "none"
+schedule: "every 5 second"
+stopOnFailure: false

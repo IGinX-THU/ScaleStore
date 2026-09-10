@@ -98,6 +98,10 @@ API地址: http://localhost:8080/storage/sources
 - ...
 - 数据源 #700: 端口 7369
 
+### Schema 推理配置
+
+filesystem 添加后默认执行 schema 推理，脚本不再发送 `readSchema`。
+
 ### 性能优化
 
 - 每个请求之间有 0.1秒 的延迟，避免请求过快

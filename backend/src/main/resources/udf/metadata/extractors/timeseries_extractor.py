@@ -6,17 +6,17 @@ class TimeSeriesMetadataExtractor(BaseMetadataExtractor):
         fields = self.extract_fields()
         trimmed = []
         for field in fields:
-            lower = field.lower()
-            if lower in ("key", "time", "timestamp"):
+            normalized = self.normalize_iginx_duplicate_key_name(field)
+            lower = normalized.lower()
+            # 时间轴是时序存储的技术字段，不应成为业务语义关键词。
+            if lower in ("time", "timestamp"):
                 continue
-            trimmed.append(field)
+            trimmed.append(normalized)
         if trimmed:
-            fields = trimmed
+            fields = self.dedup_strings(trimmed, 120)
 
-        return {
-            "fieldKind": "column",
-            "fields": fields,
-            "entities": [],
-            "triples": [],
-            "message": "timeseries field extraction by udf",
-        }
+        return self.build_result(
+            "column",
+            fields=fields,
+            message="timeseries field extraction by udf",
+        )

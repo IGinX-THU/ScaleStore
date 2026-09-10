@@ -4,7 +4,6 @@ import cn.edu.tsinghua.iginx.session.SessionExecuteSqlResult;
 import cn.edu.tsinghua.iginx.thrift.DataType;
 import com.storage.engine.constant.IGinxConstants;
 import com.storage.engine.dao.IGinxDao;
-import com.storage.engine.model.MetadataExtractResult;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.multipart.MultipartFile;
@@ -142,7 +141,7 @@ public class RelationalAdapter implements StorageAdapter {
 
         for (int p = valueStart; p < paths.size(); p++) {
             if (p > valueStart) sb.append(",");
-            sb.append(extractColumnName(paths.get(p)));
+            sb.append(StorageUtils.escapeCsvCell(extractColumnName(paths.get(p))));
         }
         sb.append("\n");
 
@@ -152,7 +151,7 @@ public class RelationalAdapter implements StorageAdapter {
             }
             for (int j = valueStart; j < row.size(); j++) {
                 if (j > valueStart) sb.append(",");
-                sb.append(StorageUtils.convertValueToString(row.get(j)));
+                sb.append(StorageUtils.escapeCsvCell(StorageUtils.convertValueToString(row.get(j))));
             }
             sb.append("\n");
         }

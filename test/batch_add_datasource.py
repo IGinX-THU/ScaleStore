@@ -25,8 +25,8 @@ SSH_PASSWORD = ""  # 必填
 SSH_PORT = 22
 
 REQUEST_DELAY = 0.1  # 请求间隔（秒）
-BATCH_SIZE = 10 # 每批请求数量
-BATCH_REQUEST_DELAY = 0 # 每批请求间隔（秒）
+BATCH_SIZE = 10  # 每批请求数量
+BATCH_REQUEST_DELAY = 0  # 每批请求间隔（秒）
 TIMEOUT = 60  # 请求超时（秒）
 
 # ==================== 颜色输出 ====================
@@ -102,6 +102,7 @@ def main():
     print(f"API地址: {API_URL}")
     print(f"数据源类型: {SOURCE_TYPE}")
     print(f"大小计算方式: {SIZE_CALCULATION_STRATEGY}")
+    print("Schema推理: filesystem 默认开启")
     print("=" * 50)
     print()
     
