@@ -1,5 +1,7 @@
 package com.storage.engine.model;
 
+import java.util.Map;
+
 public class DataItem {
     private Integer id;
     private String logicalPath;
@@ -12,6 +14,7 @@ public class DataItem {
     private String knowledgeExtractStatus;
     private String contentPath;
     private String semanticKeywords;
+    private Map<String, Object> drawingAnalysis;
 
     // For preview / access response
     private Object previewData;
@@ -48,6 +51,9 @@ public class DataItem {
 
     public String getSemanticKeywords() { return semanticKeywords; }
     public void setSemanticKeywords(String semanticKeywords) { this.semanticKeywords = semanticKeywords; }
+
+    public Map<String, Object> getDrawingAnalysis() { return drawingAnalysis; }
+    public void setDrawingAnalysis(Map<String, Object> drawingAnalysis) { this.drawingAnalysis = drawingAnalysis; }
 
     public Object getPreviewData() { return previewData; }
     public void setPreviewData(Object previewData) { this.previewData = previewData; }

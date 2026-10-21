@@ -11,6 +11,7 @@ public class MetadataSemanticLeafCallbackRequest {
     private String fileName;
     private String dataType;
     private String fileFormat;
+    private String drawingAnalysis;
 
     public Long getMetaKey() {
         return metaKey;
@@ -82,5 +83,13 @@ public class MetadataSemanticLeafCallbackRequest {
 
     public void setFileFormat(String fileFormat) {
         this.fileFormat = fileFormat;
+    }
+
+    public String getDrawingAnalysis() {
+        return drawingAnalysis;
+    }
+
+    public void setDrawingAnalysis(String drawingAnalysis) {
+        this.drawingAnalysis = drawingAnalysis;
     }
 }

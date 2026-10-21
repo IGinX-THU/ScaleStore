@@ -1658,7 +1658,8 @@ function getGraphNodeIds(graphData) {
 }
 
 function buildGraphSignature(graphData) {
-  const nodePart = getGraphNodeIds(graphData).join(',');
+  const nodePart = (graphData?.nodes || []).map(node =>
+    `${node.id}:${node.properties?.analysisId || ''}`).sort().join(',');
   const links = Array.isArray(graphData?.links) ? graphData.links : [];
   const linkPart = links
     .map(l => `${String(l?.source ?? '')}->${String(l?.target ?? '')}:${String(l?.type ?? '')}:${String(l?.label ?? '')}`)
@@ -1919,6 +1920,13 @@ function joinLogicalPath(basePath, childName) {
   return normalizeAccessPath(base === '/' ? '/' + child : base + '/' + child);
 }
 
+function componentLabel(node) {
+  if (node.engineeringLabel) return node.engineeringLabel;
+  const props = node.properties || {};
+  if (node.categoryName !== 'Component') return node.name;
+  return `${props.itemNo != null ? `${props.itemNo} · ` : ''}${node.name}${props.quantity != null ? ` ×${props.quantity}${props.unit || ''}` : ''}`;
+}
+
 function buildMetadataNodeTooltip(data, metaItem, options = {}) {
   const props = data?.properties || {};
   const metaKey = getNodeMetaKey(data);
@@ -1930,7 +1938,17 @@ function buildMetadataNodeTooltip(data, metaItem, options = {}) {
 
   add('metaKey', metaKey);
   add('nodeType', data?.categoryName);
-  if (metaItem && !metaItem.__error) {
+  const engineering = ['DrawingAnalysis', 'Component', 'Dimension'].includes(data?.categoryName);
+  if (engineering) {
+    const labels = { analysisVersion: '解析版本', itemNo: '序号', quantity: '数量', unit: '单位',
+      partNumber: '料号', drawingNo: '图号', material: '材料', specification: '规格',
+      role: '节点角色', kind: '特征类型',
+      childCount: '直接子项', dimensionCount: '尺寸数', rawText: '尺寸原文',
+      nominal: '标称值', upperTolerance: '上偏差', lowerTolerance: '下偏差', fit: '配合', featureName: '特征' };
+    Object.entries(labels).forEach(([key, label]) => add(label, props[key]));
+    if (props.status) add('解析状态', formatDrawingStatus(props.status));
+    if (props.structureKind) add('结构类型', formatStructureKind(props.structureKind));
+  } else if (metaItem && !metaItem.__error) {
     add('logicalPath', metaItem.logicalPath);
     add('dataType', metaItem.dataType);
     add('fileName', metaItem.fileName);
@@ -1953,7 +1971,25 @@ function buildMetadataNodeTooltip(data, metaItem, options = {}) {
     `<strong>${escapeHtml(data?.name || '')}</strong>`,
     rows.length ? `<table style="margin-top:6px;border-collapse:collapse;">${rows.join('')}</table>` : '',
     statusText,
+    engineering ? '<div style="margin-top:6px">点击查看图纸解析并定位</div>' : '',
   ].filter(Boolean).join('');
+}
+
+async function openDrawingAnalysisFromGraph(node, graphNodes, graphLinks) {
+  const props = node.properties || {};
+  if (props.sourceMetaKey == null) return;
+  const meta = await fetchMetadataMetaByKey(String(props.sourceMetaKey));
+  if (!meta || meta.__error) throw new Error(meta?.__error || '找不到图纸资产');
+  let component = node.categoryName === 'Component' ? node : null;
+  if (node.categoryName === 'Dimension') {
+    const ownerLink = graphLinks.find(link => link.type === 'HAS_DIMENSION' && String(link.target) === String(node.id));
+    component = graphNodes.find(item => String(item.id) === String(ownerLink?.source));
+  }
+  await openDrawingAnalysisBoard({ ...meta, id: props.sourceMetaKey }, null, null, {
+    analysisId: props.analysisId,
+    componentId: component?.properties?.sourceId || '__drawing_root__',
+    dimensionId: node.categoryName === 'Dimension' ? props.sourceId : null,
+  });
 }
 
 async function openMetadataNodeInAccess(node) {
@@ -2025,6 +2061,9 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     summary.textContent = graphLimit > 0
       ? `显示 ${nodeCount} / ${graphLimit} 个节点，${linkCount} 条关系${omittedNodeCount > 0 ? `；已隐藏 ${omittedNodeCount} 个节点` : ''}`
       : `显示 ${nodeCount} 个节点，${linkCount} 条关系`;
+    if (graphData?.drawingProjectionWarning) summary.textContent += `；${graphData.drawingProjectionWarning}`;
+    if (graphData?.graphLimit > graphData?.configuredGraphLimit) summary.textContent += '；为完整展示工程结构已保留全部 Component';
+    if (graphData?.omittedDimensionCount > 0) summary.textContent += `；另有 ${graphData.omittedDimensionCount} 条尺寸可在图纸解析中查看`;
   }
   if (!metadataChart) {
     metadataChart = echarts.init(container);
@@ -2052,6 +2091,9 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     else if (name === 'DataAsset') categoryColor[name] = paletteByType.asset;
     else if (name === 'Field') categoryColor[name] = paletteByType.schema;
     else if (name === 'Entity') categoryColor[name] = paletteByType.semantic;
+    else if (name === 'DrawingAnalysis') categoryColor[name] = '#a88bff';
+    else if (name === 'Component') categoryColor[name] = '#35c9a2';
+    else if (name === 'Dimension') categoryColor[name] = '#ff6fb5';
     else categoryColor[name] = paletteByType.other;
   });
 
@@ -2070,7 +2112,8 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     HAS_FIELD: '#57d6b2',
     MENTIONS: '#ffb347',
     CONTAINS_ASSET: '#7aa7ff',
-    SEMANTIC_RELATION: '#ff6f91'
+    SEMANTIC_RELATION: '#ff6f91',
+    HAS_ANALYSIS: '#a88bff', DEPICTS: '#35c9a2', HAS_PART: '#35c9a2', HAS_DIMENSION: '#ff6fb5'
   };
 
   if (nodes.length === 0) {
@@ -2093,7 +2136,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     const categoryName = String(n.categoryName || 'Other');
     const isRootPath = categoryName === 'LogicalPath' && String(n.name || '') === '/';
     const baseColor = isRootPath ? paletteByType.root : (categoryColor[categoryName] || paletteByType.other);
-    const rawName = String(n.name || '').trim();
+    const rawName = String(componentLabel(n) || '').trim();
     const displayName = (!rawName || rawName === '(unknown)')
       ? (categoryName === 'LogicalPath' ? '(路径节点)' : `(未命名${categoryName})`)
       : rawName;
@@ -2130,6 +2173,7 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     return {
       ...n,
       name: displayName,
+      engineeringLabel: categoryName === 'Component' ? displayName : undefined,
       symbolSize,
       itemStyle: matched
         ? matchStyle
@@ -2163,12 +2207,17 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
         || (tgt && String(tgt.name || '').toLowerCase().includes(focus))));
     const relType = String(l.type || l.label || '').toUpperCase();
     const isEntityRelation = relType === 'SEMANTIC_RELATION';
+    const isDrawingRelation = ['HAS_ANALYSIS', 'DEPICTS', 'HAS_PART', 'HAS_DIMENSION'].includes(relType);
     const baseEdgeColor = relationColor[relType] || 'rgba(93, 165, 218, 0.50)';
     const relationText = extractRelationText(l.relationText != null ? l.relationText : l.label);
     return {
       ...l,
       relationText,
-      lineStyle: isEntityRelation
+      symbol: ['none', isDrawingRelation ? 'arrow' : 'none'],
+      symbolSize: [0, isDrawingRelation ? 6 : 0],
+      lineStyle: isDrawingRelation
+        ? { color: baseEdgeColor, curveness: 0.04, width: 1.6, opacity: 0.9, type: 'solid' }
+        : isEntityRelation
         ? {
             color: matched ? 'rgba(168, 178, 190, 0.82)' : 'rgba(142, 152, 164, 0.58)',
             curveness: 0.24,
@@ -2271,6 +2320,12 @@ function renderMetadataGraph(graphData, focusKeyword = '', focusMode = 'search')
     if (params.dataType !== 'node') {
       return;
     }
+    if (['DrawingAnalysis', 'Component', 'Dimension'].includes(params.data.categoryName)) {
+      openDrawingAnalysisFromGraph(params.data, nodes, links).catch(error => {
+        alert('图纸解析打开失败：' + (error.message || String(error)));
+      });
+      return;
+    }
     if (!isRootLogicalPathNode(params.data) && !getNodeMetaKey(params.data)) {
       return;
     }
@@ -2324,6 +2379,9 @@ function searchMetadataNode(keyword) {
     DataAsset: '#00a8e8',
     Field: '#00c389',
     Entity: '#ffb347',
+    DrawingAnalysis: '#a88bff',
+    Component: '#35c9a2',
+    Dimension: '#ff6fb5',
     Node: '#5f8fb8'
   };
 
@@ -3141,6 +3199,16 @@ function renderFilePreview(container, previewData, meta) {
          style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid rgba(0,180,255,0.2);"
          alt="${escapeHtml(meta.fileName || 'file')}">`
     : `<div class="preview-placeholder">文件已存储，可通过下载访问完整内容</div>`;
+  const drawingSummary = isImage && meta?.drawingAnalysis?.available ? meta.drawingAnalysis : null;
+  const drawingEntry = drawingSummary
+    ? `<div class="drawing-analysis-entry">
+        <div class="drawing-analysis-entry-copy">
+          <strong>${escapeHtml(drawingSummary.objectName || '工程图纸')}</strong>
+          <span>${escapeHtml(formatDrawingType(drawingSummary.drawingType))} · ${escapeHtml(formatStructureKind(drawingSummary.structureKind))} · ${escapeHtml(formatDrawingStatus(drawingSummary.status))}</span>
+        </div>
+        <button type="button" class="btn btn-primary btn-sm" data-drawing-analysis-open>查看图纸解析</button>
+      </div>`
+    : '';
   
   container.innerHTML = `<div style="text-align:center;padding:12px;overflow:auto;max-height:100%;">
     <div style="background:rgba(255,180,0,0.15);border:1px solid rgba(255,180,0,0.3);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:#ffb347;">
@@ -3148,7 +3216,418 @@ function renderFilePreview(container, previewData, meta) {
     </div>
     ${body}
     <p style="color:var(--text-dim);margin-top:8px;font-size:11px;">${escapeHtml(meta.fileName || '文件预览')}</p>
+    ${drawingEntry}
   </div>`;
+
+  const openButton = container.querySelector('[data-drawing-analysis-open]');
+  if (openButton) {
+    openButton.addEventListener('click', () => openDrawingAnalysisBoard(meta, previewData, mime));
+  }
+}
+
+function formatDrawingType(type) {
+  const labels = {
+    ASSEMBLY_DRAWING: '装配图', PART_DRAWING: '零件图', EXPLODED_VIEW: '爆炸图',
+    MAINTENANCE_ILLUSTRATION: '维修插图', STRUCTURE_DIAGRAM: '结构示意图',
+    ELECTRICAL_SCHEMATIC: '电气原理图', PID: '工艺流程图', UNKNOWN: '工程图纸'
+  };
+  return labels[String(type || '').toUpperCase()] || type || '工程图纸';
+}
+
+function formatStructureKind(kind) {
+  const labels = {
+    EBOM: '工程 BOM', INFERRED_ASSEMBLY: '推断装配结构', FEATURE_TREE: '零件特征树',
+    ILLUSTRATED_STRUCTURE: '图示结构树', NONE: '无结构结果'
+  };
+  return labels[String(kind || '').toUpperCase()] || kind || '结构解析';
+}
+
+function formatDrawingStatus(status) {
+  const labels = {
+    PENDING: '等待识别', RUNNING: '识别中', AUTO_ACCEPTED: '机器已接受',
+    NEEDS_REVIEW: '待复核', APPROVED: '已批准', REJECTED: '已驳回', FAILED: '识别失败'
+  };
+  return labels[String(status || '').toUpperCase()] || status || '未知状态';
+}
+
+async function openDrawingAnalysisBoard(meta, previewData, mime, navigation = {}) {
+  if (meta?.id == null) return;
+  let overlay = document.querySelector('.drawing-board-overlay');
+  if (overlay) overlay.remove();
+
+  overlay = document.createElement('div');
+  overlay.className = 'drawing-board-overlay';
+  overlay.innerHTML = '<div class="drawing-board drawing-board-loading"><div class="preview-placeholder">正在加载图纸解析...</div></div>';
+  document.body.appendChild(overlay);
+
+  try {
+    const params = new URLSearchParams({ metaKey: String(meta.id) });
+    if (navigation.analysisId) params.set('analysisId', navigation.analysisId);
+    const response = await fetch(`${API_BASE}/access/drawing-analysis?${params}`);
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.code !== 200 || !result?.data) {
+      throw new Error(result?.message || `HTTP ${response.status}`);
+    }
+    if (!overlay.isConnected) return;
+    renderDrawingAnalysisBoard(overlay, result.data, meta, previewData, mime, navigation);
+  } catch (error) {
+    overlay.innerHTML = `<div class="drawing-board drawing-board-loading">
+      <button class="drawing-board-close" type="button" aria-label="关闭">×</button>
+      <div class="preview-placeholder">图纸解析加载失败：${escapeHtml(error.message)}</div>
+    </div>`;
+    overlay.querySelector('.drawing-board-close')?.addEventListener('click', () => overlay.remove());
+  }
+}
+
+function renderDrawingAnalysisBoard(overlay, analysis, meta, previewData, mime, navigation = {}) {
+  const classification = analysis.classification || {};
+  const structure = analysis.structure || {};
+  const validation = analysis.validation || {};
+  const confidence = Number(validation.score ?? classification.confidence ?? 0);
+  const title = analysis.documentInfo?.title || analysis.mainObjectName || meta.fileName || '图纸 BOM';
+  const summaryText = String(analysis.summaryText || '').trim() || '暂无图纸摘要，请重新执行图纸识别。';
+  const nonAuthoritative = ['INFERRED_ASSEMBLY', 'ILLUSTRATED_STRUCTURE', 'FEATURE_TREE'].includes(structure.kind);
+  const warning = nonAuthoritative
+    ? `<div class="drawing-board-warning">${structure.kind === 'FEATURE_TREE' ? '这是单件零件特征树，不是装配 BOM。' : structure.kind === 'ILLUSTRATED_STRUCTURE' ? '这是图示结构树，不代表制造或采购 BOM。' : '该层级来自图中标注推断，尚不是正式 EBOM。'}</div>`
+    : '';
+  const imageUrl = meta?.logicalPath && meta?.fileName
+    ? `${API_BASE}/access/download?logicalPath=${encodeURIComponent(meta.logicalPath)}&fileName=${encodeURIComponent(meta.fileName)}`
+    : (previewData?.base64 ? `data:${mime};base64,${previewData.base64}` : '');
+
+  overlay.innerHTML = `<div class="drawing-board">
+    <header class="drawing-board-header">
+      <div>
+        <h2>${escapeHtml(title)}</h2>
+        <div class="drawing-board-meta">
+          <span>${escapeHtml(formatDrawingType(classification.drawingType))}</span>
+          <span>${escapeHtml(formatStructureKind(structure.kind))}</span>
+          <span>${escapeHtml(formatDrawingStatus(analysis.status))}</span>
+          <span>置信度 ${Math.round(confidence * 100)}%</span>
+          <span>版本 v${escapeHtml(analysis.analysisVersion ?? 1)}</span>
+        </div>
+      </div>
+      <div class="drawing-board-actions">
+        <button class="drawing-board-close" type="button" aria-label="关闭">×</button>
+      </div>
+    </header>
+    ${warning}
+    <div class="drawing-board-summary">
+      <strong>图纸摘要</strong>
+      <span>${escapeHtml(summaryText)}</span>
+    </div>
+    <div class="drawing-board-grid">
+      <aside class="drawing-board-tree">
+        <div class="drawing-panel-title">${structure.kind === 'FEATURE_TREE' ? '零件特征结构' : 'BOM 结构'}</div>
+        <div data-drawing-bom-tree></div>
+      </aside>
+      <main class="drawing-board-canvas">
+        ${imageUrl ? `<div class="drawing-image-wrap"><img src="${imageUrl}" alt="${escapeHtml(meta.fileName || 'drawing')}"><div class="drawing-evidence-layer"></div></div>` : '<div class="preview-placeholder">无可用图片预览</div>'}
+      </main>
+      <aside class="drawing-board-detail" data-drawing-detail><div class="preview-placeholder">逐层展开结构树，点击节点查看尺寸、文字和原图位置</div></aside>
+    </div>
+  </div>`;
+
+  const tree = buildDrawingBomTree(analysis, title);
+  const state = { expanded: new Set(), selectedId: null };
+  const targetPath = findDrawingTreePath(tree, navigation.componentId);
+  if (targetPath.length) {
+    targetPath.forEach(node => state.expanded.add(node.id));
+    state.selectedId = targetPath[targetPath.length - 1].id;
+  }
+  renderDrawingBomTree(overlay, analysis, tree, state);
+  if (targetPath.length) {
+    const selected = targetPath[targetPath.length - 1];
+    renderDrawingPartDetail(overlay.querySelector('[data-drawing-detail]'), analysis, selected);
+    highlightDrawingEvidence(overlay, analysis.evidence || [], drawingGeometryEvidenceIds(analysis, selected));
+    overlay.querySelector('.drawing-tree-row.active')?.scrollIntoView({ block: 'nearest' });
+    if (navigation.dimensionId) {
+      const dimension = (analysis.dimensions || []).find(item => item.dimensionId === navigation.dimensionId);
+      const record = Array.from(overlay.querySelectorAll('[data-dimension-id]'))
+        .find(item => item.dataset.dimensionId === navigation.dimensionId);
+      if (dimension && record) {
+        record.classList.add('active');
+        record.scrollIntoView({ block: 'nearest' });
+        highlightDrawingEvidence(overlay, analysis.evidence || [], dimension.evidenceIds || []);
+      }
+    }
+  } else if (navigation.componentId) {
+    overlay.querySelector('[data-drawing-detail]').textContent = '该部件在此解析版本中不存在，请在结构树中重新选择。';
+  }
+  overlay.querySelector('.drawing-board-close')?.addEventListener('click', () => overlay.remove());
+  overlay.addEventListener('click', event => { if (event.target === overlay) overlay.remove(); });
+  const image = overlay.querySelector('.drawing-image-wrap > img');
+  if (image) {
+    image.addEventListener('load', () => syncDrawingEvidenceLayer(overlay), { once: true });
+    if (image.complete) syncDrawingEvidenceLayer(overlay);
+  }
+}
+
+function findDrawingTreePath(root, componentId) {
+  if (!componentId) return [];
+  const pending = [[root]];
+  while (pending.length) {
+    const path = pending.pop();
+    const node = path[path.length - 1];
+    if (node.id === componentId) return path;
+    for (const child of node.children || []) pending.push([...path, child]);
+  }
+  return [];
+}
+
+function buildDrawingBomTree(analysis, title) {
+  const partDefinitions = new Map((analysis.partDefinitions || []).map(part => [part.partDefinitionId, part]));
+  const structureKind = analysis.structure?.kind;
+  const occurrences = ['FEATURE_TREE', 'NONE'].includes(structureKind) ? [] : (analysis.occurrences || []);
+  const treeFeatures = structureKind === 'FEATURE_TREE' ? (analysis.features || []) : [];
+  const nodes = new Map();
+  occurrences.forEach((item, index) => {
+    const part = partDefinitions.get(item.partDefinitionId) || {};
+    const id = item.occurrenceId || `occ-${index + 1}`;
+    const quantity = item.quantity != null ? `× ${item.quantity}${item.unit || ''}` : '';
+    nodes.set(id, {
+      id, kind: 'part', refs: [id, item.partDefinitionId].filter(Boolean), data: { ...part, ...item }, children: [],
+      label: `${item.itemNo ? `${item.itemNo} ` : ''}${item.displayName || part.name || id}`,
+      sub: [quantity, item.material || part.material || ''].filter(Boolean).join(' · ')
+    });
+  });
+
+  const root = {
+    id: '__drawing_root__', kind: 'root', refs: [], data: analysis.documentInfo || {}, children: [],
+    label: title, sub: formatStructureKind(analysis.structure?.kind)
+  };
+  if (analysis.structure?.kind === 'FEATURE_TREE' && partDefinitions.size === 1) {
+    const part = partDefinitions.values().next().value;
+    root.refs = [part.partDefinitionId];
+    root.data = { ...part, ...root.data };
+  }
+  const attached = new Set();
+  const requestedRoots = new Set(analysis.structure?.rootOccurrenceIds || []);
+  const occurrenceById = new Map(occurrences.map(item => [item.occurrenceId, item]));
+  const createsCycle = (childId, parentId) => {
+    const visited = new Set([childId]);
+    let current = parentId;
+    while (current) {
+      if (visited.has(current)) return true;
+      visited.add(current);
+      current = occurrenceById.get(current)?.parentOccurrenceId;
+    }
+    return false;
+  };
+  occurrences.forEach(item => {
+    const node = nodes.get(item.occurrenceId);
+    const parent = nodes.get(item.parentOccurrenceId);
+    if (node && parent && node !== parent && !requestedRoots.has(node.id)
+        && !createsCycle(node.id, parent.id)) {
+      parent.children.push(node);
+      attached.add(node.id);
+    }
+  });
+  nodes.forEach(node => {
+    if (!attached.has(node.id)) root.children.push(node);
+  });
+
+  const featureNodes = new Map();
+  treeFeatures.forEach((feature, index) => {
+    const id = feature.featureId || `feature-${index + 1}`;
+    const node = { id, kind: 'feature', refs: [id], data: feature, children: [],
+      label: feature.name || id, sub: feature.kind || '特征' };
+    featureNodes.set(id, node);
+  });
+  const featureById = new Map(treeFeatures.map(feature => [feature.featureId, feature]));
+  const createsFeatureCycle = (childId, parentId) => {
+    const visited = new Set([childId]);
+    let current = parentId;
+    while (featureById.has(current)) {
+      if (visited.has(current)) return true;
+      visited.add(current);
+      current = featureById.get(current)?.parentRef;
+    }
+    return false;
+  };
+  treeFeatures.forEach((feature, index) => {
+    const id = feature.featureId || `feature-${index + 1}`;
+    const node = featureNodes.get(id);
+    const featureParent = featureNodes.get(feature.parentRef);
+    const occurrenceParent = nodes.get(feature.parentRef);
+    const parent = featureParent && !createsFeatureCycle(id, feature.parentRef)
+      ? featureParent : occurrenceParent;
+    (parent || root).children.push(node);
+  });
+
+  if (!occurrences.length && !treeFeatures.length && !['FEATURE_TREE', 'NONE'].includes(structureKind)) {
+    (analysis.partDefinitions || []).forEach((part, index) => {
+      const id = part.partDefinitionId || `part-${index + 1}`;
+      root.children.push({ id, kind: 'part', refs: [id], data: part, children: [],
+        label: part.name || id, sub: part.material || part.specification || '' });
+    });
+  }
+  return root;
+}
+
+function renderDrawingBomTree(overlay, analysis, root, state) {
+  const container = overlay.querySelector('[data-drawing-bom-tree]');
+  const detail = overlay.querySelector('[data-drawing-detail]');
+  if (!container || !detail) return;
+  container.innerHTML = '';
+
+  const renderNode = (node, depth) => {
+    const holder = document.createElement('div');
+    holder.className = 'drawing-tree-node';
+    const expanded = state.expanded.has(node.id);
+    const hasChildren = node.children.length > 0;
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `drawing-tree-row${state.selectedId === node.id ? ' active' : ''}`;
+    row.style.paddingLeft = `${8 + Math.min(depth, 8) * 16}px`;
+    row.innerHTML = `<span class="drawing-tree-toggle ${hasChildren ? '' : 'leaf'}">${hasChildren ? (expanded ? '▾' : '▸') : '•'}</span>
+      <span class="drawing-tree-label">${escapeHtml(node.label || '-')}</span>
+      <span class="drawing-tree-sub">${escapeHtml(node.sub || '')}</span>`;
+    row.addEventListener('click', () => {
+      state.selectedId = node.id;
+      if (hasChildren) {
+        if (state.expanded.has(node.id)) state.expanded.delete(node.id);
+        else state.expanded.add(node.id);
+      }
+      renderDrawingBomTree(overlay, analysis, root, state);
+      renderDrawingPartDetail(detail, analysis, node);
+      highlightDrawingEvidence(overlay, analysis.evidence || [], drawingGeometryEvidenceIds(analysis, node));
+    });
+    holder.appendChild(row);
+    if (hasChildren && expanded) node.children.forEach(child => holder.appendChild(renderNode(child, depth + 1)));
+    return holder;
+  };
+  container.appendChild(renderNode(root, 0));
+}
+
+function drawingRelatedRecords(analysis, node) {
+  const refs = new Set(node.refs || []);
+  const features = [];
+  const includedFeatures = new Set();
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of analysis.features || []) {
+      const parent = String(item?.parentRef || '').trim();
+      if (!includedFeatures.has(item.featureId) && (refs.has(parent) || (node.kind === 'root' && !parent))) {
+        features.push(item);
+        includedFeatures.add(item.featureId);
+        refs.add(item.featureId);
+        changed = true;
+      }
+    }
+  }
+  const matchesTarget = item => {
+    const target = String(item?.targetRef || '').trim();
+    return refs.has(target) || (node.kind === 'root' && !target);
+  };
+  return {
+    dimensions: (analysis.dimensions || []).filter(matchesTarget),
+    texts: (analysis.textBlocks || []).filter(matchesTarget),
+    features: node.kind === 'part' || node.kind === 'root' ? features : []
+  };
+}
+
+function renderDrawingPartDetail(container, analysis, node) {
+  const data = node.data || {};
+  const related = drawingRelatedRecords(analysis, node);
+  const geometryIds = drawingGeometryEvidenceIds(analysis, node);
+  const fields = [
+    ['序号', data.itemNo], ['名称', data.displayName || data.name], ['零件号', data.partNumber],
+    ['图号', data.drawingNo], ['数量', data.quantity], ['单位', data.unit], ['材料', data.material],
+    ['标准', data.standard], ['规格', data.specification], ['类型', data.kind],
+    ['置信度', data.confidence == null ? null : `${Math.round(Number(data.confidence) * 100)}%`]
+  ].filter(([, value]) => value != null && String(value).trim() !== '');
+
+  let html = `<h3>${escapeHtml(node.label || '详情')}</h3>`;
+  if (node.kind !== 'root') {
+    html += geometryIds.length
+      ? '<div class="drawing-geometry-status ok">已在原图中定位零件几何轮廓</div>'
+      : '<div class="drawing-geometry-status">该零件在当前图纸中无法可靠分离，未使用文字标注代替零件位置</div>';
+  }
+  if (fields.length) {
+    html += `<dl class="drawing-detail-list">${fields.map(([label, value]) =>
+      `<dt>${escapeHtml(label)}</dt><dd>${escapeHtml(String(value))}</dd>`).join('')}</dl>`;
+  }
+  if (related.dimensions.length) {
+    html += `<section class="drawing-detail-section"><h4>尺寸与公差</h4>${related.dimensions.map(item =>
+      `<button type="button" class="drawing-detail-record" data-dimension-id="${escapeHtml(item.dimensionId || '')}" data-evidence-ids="${escapeHtml(JSON.stringify(item.evidenceIds || []))}">
+        <strong>${escapeHtml(item.rawText || item.dimensionId || '尺寸')}</strong>
+        <span>${escapeHtml([item.kind, item.fit, item.unit].filter(Boolean).join(' · '))}</span>
+      </button>`).join('')}</section>`;
+  }
+  if (related.texts.length) {
+    html += `<section class="drawing-detail-section"><h4>相关文字</h4>${related.texts.map(item =>
+      `<button type="button" class="drawing-detail-record" data-evidence-ids="${escapeHtml(JSON.stringify(item.evidenceIds || []))}">
+        <strong>${escapeHtml(item.normalizedText || item.rawText || '文字')}</strong>
+        <span>${escapeHtml(item.kind || '')}</span>
+      </button>`).join('')}</section>`;
+  }
+  if (related.features.length) {
+    html += `<section class="drawing-detail-section"><h4>结构特征</h4>${related.features.map(item =>
+      `<div class="drawing-detail-record static"><strong>${escapeHtml(item.name || item.featureId || '特征')}</strong><span>${escapeHtml(item.kind || '')}</span></div>`).join('')}</section>`;
+  }
+  if (!fields.length && !related.dimensions.length && !related.texts.length && !related.features.length) {
+    html += '<div class="preview-placeholder">该节点暂无更多属性</div>';
+  }
+  container.innerHTML = html;
+  container.querySelectorAll('[data-evidence-ids]').forEach(button => button.addEventListener('click', event => {
+    event.stopPropagation();
+    let ids = [];
+    try { ids = JSON.parse(button.dataset.evidenceIds || '[]'); } catch (_) { ids = []; }
+    highlightDrawingEvidence(container.closest('.drawing-board-overlay'), analysis.evidence || [], ids);
+  }));
+}
+
+function drawingGeometryEvidenceIds(analysis, node) {
+  if (!node || node.kind === 'root') return [];
+  const evidenceById = new Map((analysis.evidence || []).map(item => [item.evidenceId, item]));
+  const allowedTypes = node.kind === 'feature'
+    ? new Set(['FEATURE_GEOMETRY'])
+    : new Set(['PART_GEOMETRY']);
+  const explicit = Array.isArray(node.data?.geometryEvidenceIds) ? node.data.geometryEvidenceIds : [];
+  const candidates = explicit.length
+    ? explicit
+    : (Array.isArray(node.data?.evidenceIds) ? node.data.evidenceIds : []);
+  return Array.from(new Set(candidates.filter(id => {
+    const regionType = String(evidenceById.get(id)?.regionType || '').toUpperCase();
+    return allowedTypes.has(regionType);
+  })));
+}
+
+function highlightDrawingEvidence(overlay, evidence, evidenceIds) {
+  clearDrawingEvidence(overlay);
+  syncDrawingEvidenceLayer(overlay);
+  const layer = overlay.querySelector('.drawing-evidence-layer');
+  if (!layer) return;
+  const idSet = new Set(evidenceIds || []);
+  evidence.filter(item => idSet.has(item.evidenceId) && Array.isArray(item.bbox) && item.bbox.length === 4)
+    .forEach(item => {
+      const [x1, y1, x2, y2] = item.bbox.map(Number);
+      if (![x1, y1, x2, y2].every(Number.isFinite) || x2 <= x1 || y2 <= y1) return;
+      const box = document.createElement('div');
+      box.className = 'drawing-evidence-box';
+      box.style.left = `${x1 * 100}%`; box.style.top = `${y1 * 100}%`;
+      box.style.width = `${(x2 - x1) * 100}%`; box.style.height = `${(y2 - y1) * 100}%`;
+      box.title = item.rawText || item.evidenceId || '证据';
+      layer.appendChild(box);
+    });
+}
+
+function syncDrawingEvidenceLayer(overlay) {
+  const image = overlay?.querySelector('.drawing-image-wrap > img');
+  const layer = overlay?.querySelector('.drawing-evidence-layer');
+  if (!image || !layer) return;
+  layer.style.left = `${image.offsetLeft}px`;
+  layer.style.top = `${image.offsetTop}px`;
+  layer.style.width = `${image.clientWidth}px`;
+  layer.style.height = `${image.clientHeight}px`;
+  layer.style.right = 'auto';
+  layer.style.bottom = 'auto';
+}
+
+function clearDrawingEvidence(overlay) {
+  const layer = overlay.querySelector('.drawing-evidence-layer');
+  if (layer) layer.innerHTML = '';
 }
 
 function renderTablePreview(container, previewData, dataType) {

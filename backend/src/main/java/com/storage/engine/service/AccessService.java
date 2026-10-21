@@ -22,6 +22,9 @@ public class AccessService {
     @Autowired
     private StorageAdapterFactory adapterFactory;
 
+    @Autowired
+    private DrawingAnalysisService drawingAnalysisService;
+
     /**
      * Get metadata by folder logical path + file name.
      */
@@ -146,6 +149,12 @@ public class AccessService {
             StorageAdapter adapter = adapterFactory.getAdapter(dataType);
             Object previewData = adapter.getPreviewData(iginxPath, 50);
             meta.setPreviewData(previewData);
+            if (IGinxConstants.TYPE_FILE.equalsIgnoreCase(dataType) && meta.getId() != null) {
+                Map<String, Object> drawingSummary = drawingAnalysisService.getLatestSummary(meta.getId().longValue());
+                if (!drawingSummary.isEmpty()) {
+                    meta.setDrawingAnalysis(drawingSummary);
+                }
+            }
         } catch (Exception e) {
             throw new RuntimeException("预览失败: " + e.getMessage(), e);
         }

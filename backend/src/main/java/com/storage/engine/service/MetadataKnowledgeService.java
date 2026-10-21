@@ -31,12 +31,16 @@ public class MetadataKnowledgeService {
     @Autowired
     private MetadataExtractionSchedulerService metadataExtractionSchedulerService;
 
+    @Autowired
+    private DrawingAnalysisService drawingAnalysisService;
+
     public Map<String, Object> getGraph(String logicalPath, int maxNodes) {
         if (!neo4jDao.isEnabled()) {
             return neo4jDao.emptyGraph("Neo4j disabled");
         }
         int effectiveMaxNodes = resolveGraphMaxNodes(maxNodes);
         Map<String, Object> graph = neo4jDao.queryGraph(logicalPath, effectiveMaxNodes);
+        if (synchronizeDrawings(graph)) graph = neo4jDao.queryGraph(logicalPath, effectiveMaxNodes);
         graph.put("cypher", "MATCH (n)-[r]->(m) ...");
         return graph;
     }
@@ -79,6 +83,7 @@ public class MetadataKnowledgeService {
         logger.info("Structured metadata query: logicalPath={}, dataType={}, keyword={}, cypher={}",
                 path, dt, kw, finalCypher);
         Map<String, Object> graph = neo4jDao.queryAssetsByKeyword(path, dt, kw, queryMaxNodes);
+        if (synchronizeDrawings(graph)) graph = neo4jDao.queryAssetsByKeyword(path, dt, kw, queryMaxNodes);
         graph.put("cypher", finalCypher);
         graph.put("strategy", "system");
         graph.put("strategyReason", "asset_directory_keyword_filters");
@@ -87,6 +92,16 @@ public class MetadataKnowledgeService {
             scheduleEntityRelationExpansion(graph, kw);
         }
         return graph;
+    }
+
+    private boolean synchronizeDrawings(Map<String, Object> graph) {
+        try {
+            return drawingAnalysisService.synchronizeProjections(extractMatchedAssetMetaKeys(graph));
+        } catch (RuntimeException e) {
+            logger.warn("Drawing projection synchronization failed: {}", e.getMessage());
+            graph.put("drawingProjectionWarning", "图纸投影同步失败，当前展示已有版本");
+            return false;
+        }
     }
 
     private void scheduleEntityRelationExpansion(Map<String, Object> graph, String keyword) {
@@ -123,7 +138,7 @@ public class MetadataKnowledgeService {
             Map<String, Object> properties = (Map<String, Object>) node.get("properties");
             try {
                 long metaKey = Long.parseLong(String.valueOf(properties.get("metaKey")));
-                if (metaKey > 0 && seen.add(metaKey)) {
+                if (metaKey >= 0 && seen.add(metaKey)) {
                     out.add(metaKey);
                 }
             } catch (Exception ignore) {

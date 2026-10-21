@@ -40,6 +40,9 @@ public class MetadataExtractionSchedulerService {
     @Autowired
     private IGinxDao iginxDao;
 
+    @Autowired
+    private DrawingAnalysisService drawingAnalysisService;
+
     @Value("${metadata.extraction.enabled:true}")
     private boolean extractionEnabled;
 
@@ -401,6 +404,16 @@ public class MetadataExtractionSchedulerService {
             assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
         }
 
+        String drawingAnalysis = safe(request.getDrawingAnalysis());
+        if ("SUCCESS".equals(status) && !drawingAnalysis.isEmpty()) {
+            try {
+                drawingAnalysisService.persistExtraction(metaKey, drawingAnalysis);
+            } catch (Exception e) {
+                iginxDao.updateMetaSemanticKeywords(metaKey, "FAILED", keywords);
+                throw new RuntimeException("drawing analysis persistence failed: " + e.getMessage(), e);
+            }
+        }
+
         iginxDao.updateMetaSemanticKeywords(metaKey, status, keywords);
 
         String dataType = safe(request.getDataType()).toLowerCase(Locale.ROOT);
@@ -426,7 +439,7 @@ public class MetadataExtractionSchedulerService {
                     "Metadata-UDF");
         }
         logger.info(
-                "[MetadataSemanticCallback] persisted kind={}, metaKey={}, status={}, dataType={}, fileFormat={}, assetPath={}, keywordLength={}, elapsedMs={}",
+                "[MetadataSemanticCallback] persisted kind={}, metaKey={}, status={}, dataType={}, fileFormat={}, assetPath={}, keywordLength={}, drawingAnalysis={}, elapsedMs={}",
                 assetKind.toLowerCase(Locale.ROOT),
                 metaKey,
                 status,
@@ -434,6 +447,7 @@ public class MetadataExtractionSchedulerService {
                 fileFormat,
                 assetPath,
                 keywords.length(),
+                !drawingAnalysis.isEmpty(),
                 System.currentTimeMillis() - startedAt);
     }
 

@@ -149,16 +149,17 @@ class _ExecutorBase(object):
     def _parse_udf_result(self, payload):
         # UDF 返回固定的“表头、类型、数据”二维表；解析失败统一转换成可回调的 FAILED 结果。
         if not isinstance(payload, list) or len(payload) < 3:
-            return "FAILED", "[]", "empty udf result"
+            return "FAILED", "[]", "empty udf result", ""
         row = payload[-1] if isinstance(payload[-1], list) else []
         status = _safe(row[0] if len(row) > 0 else "").upper()
         keywords = _safe(row[1] if len(row) > 1 else "")
         message = _safe(row[4] if len(row) > 4 else "")
+        drawing_analysis = _safe(row[5] if len(row) > 5 else "")
         if not status:
             status = "FAILED"
         if not keywords:
             keywords = "[]"
-        return status, keywords, message
+        return status, keywords, message, drawing_analysis
 
     def _to_binary(self, value):
         if value is None:
@@ -312,7 +313,7 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
         }
         udf_started = time.time()
         try:
-            status, keywords, message = self._parse_udf_result(udf_cls().transform(matrix, None, kvargs))
+            status, keywords, message, drawing_analysis = self._parse_udf_result(udf_cls().transform(matrix, None, kvargs))
         except Exception as exc:
             _trace(
                 "leaf_udf_exception",
@@ -333,6 +334,7 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
             "fileName": _safe(meta.get("fileName", "")),
             "dataType": data_type,
             "fileFormat": _safe(meta.get("fileFormat", "")),
+            "drawingAnalysis": drawing_analysis,
         }
         self._post_callback("leaf", callback_payload)
 
@@ -394,7 +396,7 @@ class MetadataSemanticDirectoryExecutor(_ExecutorBase):
         udf_started = time.time()
         try:
             udf_payload = DirectorySemanticKeywordExtract().transform(matrix, None, kvargs)
-            status, keywords, message = self._parse_udf_result(udf_payload)
+            status, keywords, message, _ = self._parse_udf_result(udf_payload)
         except Exception as exc:
             _trace(
                 "directory_udf_exception",

@@ -28,6 +28,9 @@
   --transition: 0.2s ease;
 }
 
+/* Engineering drawing analysis board */
+.drawing-analysis-entry{margin:10px auto 0;max-width:720px;display:flex;align-items:center;justify-content:space-between;gap:12px;padding:9px 10px;text-align:left;border:1px solid rgba(0,207,255,.28);border-radius:5px;background:linear-gradient(135deg,rgba(0,144,224,.13),rgba(0,207,255,.05))}.drawing-analysis-entry-copy{display:flex;flex-direction:column;min-width:0}.drawing-analysis-entry-copy strong{color:var(--text-bright);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.drawing-analysis-entry-copy span{font-size:10px;color:var(--text-label);margin-top:2px}.drawing-board-overlay{position:fixed;inset:0;z-index:13000;background:rgba(1,7,16,.9);backdrop-filter:blur(5px);display:flex;align-items:center;justify-content:center;padding:18px}.drawing-board{width:min(1540px,97vw);height:min(920px,94vh);display:flex;flex-direction:column;overflow:hidden;border:1px solid rgba(0,207,255,.35);border-radius:8px;background:linear-gradient(160deg,#07182dfc,#061221fc);box-shadow:0 24px 70px rgba(0,0,0,.65),0 0 50px rgba(0,180,255,.12)}.drawing-board-loading{align-items:center;justify-content:center;position:relative}.drawing-board-header{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:13px 18px;border-bottom:1px solid var(--border);background:linear-gradient(180deg,rgba(9,34,65,.98),rgba(5,21,42,.96))}.drawing-board-header h2{font-size:17px;color:var(--text-bright);margin:0 0 4px;max-width:800px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.drawing-board-meta{display:flex;flex-wrap:wrap;gap:6px}.drawing-board-meta span{font-size:10px;color:#91bed8;border:1px solid rgba(0,180,255,.2);border-radius:999px;padding:1px 7px;background:rgba(0,144,224,.09)}.drawing-board-actions{display:flex;align-items:center;gap:7px;flex-shrink:0}.drawing-board-close{border:0;background:transparent;color:#7198b3;font-size:26px;line-height:1;cursor:pointer;padding:0 2px}.drawing-board-close:hover{color:#fff}.drawing-board-warning{padding:7px 12px;color:#ffc266;background:rgba(255,168,0,.1);border-bottom:1px solid rgba(255,168,0,.22);font-size:11px}.drawing-board-tabs{display:flex;gap:5px;padding:7px 12px;border-bottom:1px solid var(--border);background:rgba(0,180,255,.025)}.drawing-board-tab{border:1px solid rgba(0,180,255,.16);border-radius:4px;background:transparent;color:var(--text-dim);font:inherit;font-size:11px;padding:5px 12px;cursor:pointer}.drawing-board-tab:hover{color:var(--text)}.drawing-board-tab.active{color:var(--accent);border-color:rgba(0,207,255,.55);background:rgba(0,207,255,.1)}.drawing-board-grid{min-height:0;flex:1;display:grid;grid-template-columns:minmax(250px,25%) minmax(420px,1fr) minmax(260px,25%)}.drawing-board-tree,.drawing-board-detail{min-width:0;overflow:auto;padding:10px;background:rgba(4,14,31,.5)}.drawing-board-tree{border-right:1px solid var(--border)}.drawing-board-detail{border-left:1px solid var(--border)}.drawing-board-canvas{min-width:0;overflow:auto;padding:14px;display:flex;align-items:flex-start;justify-content:center;background:radial-gradient(circle at center,rgba(0,144,224,.08),transparent 68%),#020a15}.drawing-image-wrap{position:relative;display:inline-block;line-height:0;max-width:100%}.drawing-image-wrap>img{display:block;max-width:100%;height:auto;border:1px solid rgba(0,180,255,.22);background:#fff}.drawing-evidence-layer{position:absolute;inset:0;pointer-events:none}.drawing-evidence-box{position:absolute;border:2px solid #ffb000;background:rgba(255,176,0,.18);box-shadow:0 0 12px rgba(255,176,0,.75);animation:drawing-evidence-pulse 1.4s ease-in-out infinite alternate}@keyframes drawing-evidence-pulse{from{opacity:.72}to{opacity:1}}.drawing-tree-row{width:100%;display:flex;align-items:center;justify-content:space-between;gap:8px;border:1px solid transparent;border-radius:4px;background:transparent;color:var(--text);font:inherit;text-align:left;padding:7px 8px;cursor:pointer;margin-bottom:3px}.drawing-tree-row:hover{background:rgba(0,180,255,.07);border-color:rgba(0,180,255,.13)}.drawing-tree-row.active{color:var(--text-bright);background:rgba(0,207,255,.12);border-color:rgba(0,207,255,.36)}.drawing-tree-row.depth-1{padding-left:20px}.drawing-tree-row.depth-2{padding-left:32px}.drawing-tree-row.depth-3{padding-left:44px}.drawing-tree-row.depth-4{padding-left:56px}.drawing-tree-row.depth-5,.drawing-tree-row.depth-6{padding-left:68px}.drawing-tree-label{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.drawing-tree-sub{font-size:10px;color:var(--text-dim);white-space:nowrap}.drawing-board-detail h3{font-size:14px;color:var(--text-bright);margin:0 0 10px;word-break:break-word}.drawing-detail-list{display:grid;grid-template-columns:minmax(70px,35%) 1fr;gap:0;border-top:1px solid rgba(0,180,255,.09)}.drawing-detail-list dt,.drawing-detail-list dd{padding:6px 4px;border-bottom:1px solid rgba(0,180,255,.07);word-break:break-word}.drawing-detail-list dt{font-size:10px;color:var(--text-dim)}.drawing-detail-list dd{margin:0;color:var(--text);font-size:11px}.drawing-evidence-refs{margin-top:10px;padding:8px;border-radius:4px;background:rgba(0,207,255,.07);color:#8bc7e7;font-size:10px;word-break:break-all}@media(max-width:1100px){.drawing-board-grid{grid-template-columns:280px 1fr}.drawing-board-detail{display:none}.drawing-board-actions .btn{display:none}}
+
 /* -- Reset -- */
 *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
@@ -1639,3 +1642,108 @@ body.agent-expanded-active {
 .view-mode-switch .btn + .btn {
   border-left: 1px solid rgba(0, 180, 255, 0.18);
 }
+
+/* ===== Engineering drawing BOM board ===== */
+.drawing-board-summary {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--border);
+  background: rgba(0, 180, 255, 0.04);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.7;
+}
+.drawing-board-summary strong {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+.drawing-panel-title {
+  margin: 0 0 8px;
+  color: var(--text-bright);
+  font-size: 12px;
+  font-weight: 600;
+}
+.drawing-tree-node {
+  width: 100%;
+}
+.drawing-tree-toggle {
+  flex: 0 0 14px;
+  color: var(--accent);
+  text-align: center;
+}
+.drawing-tree-toggle.leaf {
+  color: var(--text-dim);
+}
+.drawing-tree-row {
+  justify-content: flex-start;
+}
+.drawing-tree-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  text-align: left;
+}
+.drawing-tree-sub {
+  flex: 0 0 auto;
+  margin-left: auto;
+  text-align: right;
+}
+.drawing-image-wrap > img {
+  border: 0;
+  box-shadow: 0 0 0 1px rgba(0,180,255,.22);
+}
+.drawing-detail-section {
+  margin-top: 14px;
+}
+.drawing-geometry-status {
+  margin-bottom: 10px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255,176,0,.22);
+  border-radius: 4px;
+  background: rgba(255,176,0,.08);
+  color: #ffc266;
+  font-size: 10px;
+  line-height: 1.5;
+}
+.drawing-geometry-status.ok {
+  border-color: rgba(0,207,255,.24);
+  background: rgba(0,207,255,.07);
+  color: #8bc7e7;
+}
+.drawing-detail-section h4 {
+  margin: 0 0 6px;
+  color: #8bc7e7;
+  font-size: 11px;
+}
+.drawing-detail-record {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-bottom: 5px;
+  padding: 7px 8px;
+  border: 1px solid rgba(0,180,255,.12);
+  border-radius: 4px;
+  background: rgba(0,180,255,.04);
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.drawing-detail-record:hover {
+  border-color: rgba(0,207,255,.4);
+  background: rgba(0,207,255,.09);
+}
+.drawing-detail-record.static {
+  cursor: default;
+}
+.drawing-detail-record strong {
+  color: var(--text-bright);
+  font-size: 11px;
+}
+.drawing-detail-record span {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+.drawing-detail-record.active { border-color: #ffc266; background: rgba(255,194,102,.12); }

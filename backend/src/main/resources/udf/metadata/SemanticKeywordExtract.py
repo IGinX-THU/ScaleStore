@@ -388,17 +388,18 @@ class _RuntimeConfigMixin(object):
             return ""
         return str(value).strip()
 
-    def _result(self, status, keywords=None, fields=None, field_kind="field", message=""):
+    def _result(self, status, keywords=None, fields=None, field_kind="field", message="", drawing_analysis=None):
         # 所有叶子和目录 UDF 共用固定二维表返回协议，供 Executor 解析后回调 Java 服务。
         return [
-            ["status", "keywords", "fields", "fieldKind", "message"],
-            ["BINARY", "BINARY", "BINARY", "BINARY", "BINARY"],
+            ["status", "keywords", "fields", "fieldKind", "message", "drawingAnalysis"],
+            ["BINARY", "BINARY", "BINARY", "BINARY", "BINARY", "BINARY"],
             [
                 status,
                 json.dumps(keywords or [], ensure_ascii=False),
                 json.dumps(fields or [], ensure_ascii=False),
                 field_kind or "field",
                 message or "",
+                json.dumps(drawing_analysis, ensure_ascii=False) if drawing_analysis else "",
             ],
         ]
 
@@ -419,6 +420,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             extracted = extractor.extract()
 
             industrial = isinstance(extractor, FileMetadataExtractor) and extracted.get("isIndustrialDrawing") is True
+            drawing_analysis = extracted.get("drawingAnalysis") if industrial else None
             fields = dedup_strings(extracted.get("fields", []) or [], 120)
             entities = dedup_strings(extracted.get("entities", []) or [], None if industrial else 120)
             raw_keywords = dedup_strings(extracted.get("keywords", []) or [], None if industrial else 80)
@@ -475,7 +477,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 rejectedTripleCount=len(source_triples) - len(triples),
                 totalElapsedMs=int((time.time() - started) * 1000),
             )
-            return self._result("SUCCESS", keywords, fields, field_kind, message)
+            return self._result("SUCCESS", keywords, fields, field_kind, message, drawing_analysis)
         except Exception as exc:
             _trace(
                 "leaf_extract_failed",
