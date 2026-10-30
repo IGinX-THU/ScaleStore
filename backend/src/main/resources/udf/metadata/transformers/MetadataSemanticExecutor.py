@@ -149,17 +149,20 @@ class _ExecutorBase(object):
     def _parse_udf_result(self, payload):
         # UDF 返回固定的“表头、类型、数据”二维表；解析失败统一转换成可回调的 FAILED 结果。
         if not isinstance(payload, list) or len(payload) < 3:
-            return "FAILED", "[]", "empty udf result", ""
+            return "FAILED", "[]", "empty udf result", "", ""
         row = payload[-1] if isinstance(payload[-1], list) else []
-        status = _safe(row[0] if len(row) > 0 else "").upper()
-        keywords = _safe(row[1] if len(row) > 1 else "")
-        message = _safe(row[4] if len(row) > 4 else "")
-        drawing_analysis = _safe(row[5] if len(row) > 5 else "")
+        # Resolve by name; older deployed image/directory UDFs do not have semanticSummary.
+        values = {_decode(name): row[i] for i, name in enumerate(payload[0]) if i < len(row)}
+        status = _safe(values.get("status")).upper()
+        keywords = _safe(values.get("keywords"))
+        message = _safe(values.get("message"))
+        drawing_analysis = _safe(values.get("drawingAnalysis"))
+        semantic_summary = _safe(values.get("semanticSummary"))
         if not status:
             status = "FAILED"
         if not keywords:
             keywords = "[]"
-        return status, keywords, message, drawing_analysis
+        return status, keywords, message, drawing_analysis, semantic_summary
 
     def _to_binary(self, value):
         if value is None:
@@ -310,10 +313,12 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
             "fileFormat": _safe(meta.get("fileFormat", "")),
             "fileSize": _safe(meta.get("fileSize", "")),
             "createTime": _safe(meta.get("createTime", "")),
+            "contentPath": _safe(meta.get("contentPath", "")),
         }
         udf_started = time.time()
         try:
-            status, keywords, message, drawing_analysis = self._parse_udf_result(udf_cls().transform(matrix, None, kvargs))
+            status, keywords, message, drawing_analysis, semantic_summary = self._parse_udf_result(
+                udf_cls().transform(matrix, None, kvargs))
         except Exception as exc:
             _trace(
                 "leaf_udf_exception",
@@ -335,6 +340,7 @@ class MetadataSemanticLeafExecutor(_ExecutorBase):
             "dataType": data_type,
             "fileFormat": _safe(meta.get("fileFormat", "")),
             "drawingAnalysis": drawing_analysis,
+            "semanticSummary": semantic_summary,
         }
         self._post_callback("leaf", callback_payload)
 
@@ -396,7 +402,7 @@ class MetadataSemanticDirectoryExecutor(_ExecutorBase):
         udf_started = time.time()
         try:
             udf_payload = DirectorySemanticKeywordExtract().transform(matrix, None, kvargs)
-            status, keywords, message, _ = self._parse_udf_result(udf_payload)
+            status, keywords, message, _, _ = self._parse_udf_result(udf_payload)
         except Exception as exc:
             _trace(
                 "directory_udf_exception",

@@ -5,6 +5,7 @@ import time
 
 from metadata.extractors.document_extractor import DocumentMetadataExtractor
 from metadata.extractors.file_extractor import FileMetadataExtractor
+from metadata.extractors.office_file_extractor import OFFICE_DEFAULTS
 from metadata.extractors.keyvalue_extractor import KeyValueMetadataExtractor
 from metadata.extractors.relational_extractor import RelationalMetadataExtractor
 from metadata.extractors.timeseries_extractor import TimeSeriesMetadataExtractor
@@ -339,7 +340,7 @@ class _RuntimeConfigMixin(object):
             data = json.load(fh)
         llm = data.get("llm", {}) if isinstance(data.get("llm", {}), dict) else {}
         neo4j = data.get("neo4j", {}) if isinstance(data.get("neo4j", {}), dict) else {}
-        return {
+        params = {
             "llmEnabled": self._bool_to_str(self._first(data.get("llmEnabled"), llm.get("enabled"), True)),
             "llmBaseUrl": self._first(data.get("llmBaseUrl"), llm.get("baseUrl"), ""),
             "llmApiKey": self._first(data.get("llmApiKey"), llm.get("apiKey"), ""),
@@ -350,6 +351,11 @@ class _RuntimeConfigMixin(object):
             "neo4jUsername": self._first(data.get("neo4jUsername"), neo4j.get("username"), ""),
             "neo4jPassword": self._first(data.get("neo4jPassword"), neo4j.get("password"), ""),
         }
+        office = data.get("office", {})
+        office = office if isinstance(office, dict) else {}
+        for name, default in OFFICE_DEFAULTS.items():
+            params[name] = self._first(data.get(name), office.get(name), default)
+        return params
 
     def _decode_kvargs(self, kvargs):
         out = {}
@@ -388,11 +394,12 @@ class _RuntimeConfigMixin(object):
             return ""
         return str(value).strip()
 
-    def _result(self, status, keywords=None, fields=None, field_kind="field", message="", drawing_analysis=None):
+    def _result(self, status, keywords=None, fields=None, field_kind="field", message="", drawing_analysis=None,
+                semantic_summary=""):
         # 所有叶子和目录 UDF 共用固定二维表返回协议，供 Executor 解析后回调 Java 服务。
         return [
-            ["status", "keywords", "fields", "fieldKind", "message", "drawingAnalysis"],
-            ["BINARY", "BINARY", "BINARY", "BINARY", "BINARY", "BINARY"],
+            ["status", "keywords", "fields", "fieldKind", "message", "drawingAnalysis", "semanticSummary"],
+            ["BINARY", "BINARY", "BINARY", "BINARY", "BINARY", "BINARY", "BINARY"],
             [
                 status,
                 json.dumps(keywords or [], ensure_ascii=False),
@@ -400,6 +407,7 @@ class _RuntimeConfigMixin(object):
                 field_kind or "field",
                 message or "",
                 json.dumps(drawing_analysis, ensure_ascii=False) if drawing_analysis else "",
+                semantic_summary or "",
             ],
         ]
 
@@ -418,12 +426,16 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             # 不同数据类型只替换提取器；后续关键词归一化、三元组过滤、图持久化保持一致。
             extractor = self.EXTRACTOR(data, args, params)
             extracted = extractor.extract()
+            if extracted.get("status") == "SKIPPED":
+                return self._result("SKIPPED", message=extracted.get("message", ""))
 
             industrial = isinstance(extractor, FileMetadataExtractor) and extracted.get("isIndustrialDrawing") is True
+            preserve_semantics = industrial or (
+                isinstance(extractor, FileMetadataExtractor) and extracted.get("preserveSemantics") is True)
             drawing_analysis = extracted.get("drawingAnalysis") if industrial else None
             fields = dedup_strings(extracted.get("fields", []) or [], 120)
-            entities = dedup_strings(extracted.get("entities", []) or [], None if industrial else 120)
-            raw_keywords = dedup_strings(extracted.get("keywords", []) or [], None if industrial else 80)
+            entities = dedup_strings(extracted.get("entities", []) or [], None if preserve_semantics else 120)
+            raw_keywords = dedup_strings(extracted.get("keywords", []) or [], None if preserve_semantics else 80)
             field_kind = self._safe(extracted.get("fieldKind", self.FIELD_KIND)) or self.FIELD_KIND
             fallback = raw_keywords or fields or entities
             skip_keyword_normalization = bool(extracted.get("skipKeywordNormalization", False))
@@ -443,13 +455,16 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
             if industrial:
                 # 工业图纸保留具体实体名称，仅精确去重，不再调用文本模型归纳。
                 keywords = dedup_strings(raw_keywords + entities, None)
+            elif extracted.get("keywordsNormalized"):
+                keywords = dedup_strings(raw_keywords, None if preserve_semantics else 12)
             elif not skip_keyword_normalization:
                 keywords = normalize_asset_keywords(params, asset, fallback=fallback, max_count=12)
             # 同时保留提取器关系和关键词关系，但统一经过关键词白名单过滤。
             # 图纸仅使用视觉证据支持的关系，避免额外文本调用和关键词数量限制。
-            keyword_relations = [] if industrial else extract_keyword_relations(params, keywords)
+            keyword_relations = ([] if industrial or extracted.get("relationsExtracted") is True
+                                 else extract_keyword_relations(params, keywords))
             source_triples = (extracted.get("triples", []) or []) + keyword_relations
-            triples = filter_triples_by_keywords(source_triples, keywords, None if industrial else 180)
+            triples = filter_triples_by_keywords(source_triples, keywords, None if preserve_semantics else 180)
 
             writer = Neo4jGraphWriter(params)
             persist_message = writer.persist(
@@ -464,7 +479,7 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 entities=entities,
                 triples=triples,
                 keywords=keywords,
-                preserve_semantics=industrial,
+                preserve_semantics=preserve_semantics,
             )
             message = self._safe(extracted.get("message", ""))
             if persist_message:
@@ -477,7 +492,8 @@ class _LeafSemanticKeywordUDF(_RuntimeConfigMixin):
                 rejectedTripleCount=len(source_triples) - len(triples),
                 totalElapsedMs=int((time.time() - started) * 1000),
             )
-            return self._result("SUCCESS", keywords, fields, field_kind, message, drawing_analysis)
+            return self._result("SUCCESS", keywords, fields, field_kind, message, drawing_analysis,
+                                extracted.get("semanticSummary", ""))
         except Exception as exc:
             _trace(
                 "leaf_extract_failed",

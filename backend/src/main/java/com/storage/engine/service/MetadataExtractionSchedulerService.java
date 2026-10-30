@@ -403,18 +403,16 @@ public class MetadataExtractionSchedulerService {
         if (assetPath.isEmpty()) {
             assetPath = buildAssetPath(request.getLogicalPath(), request.getFileName());
         }
+        String semanticSummary = safe(request.getSemanticSummary());
 
-        String drawingAnalysis = safe(request.getDrawingAnalysis());
-        if ("SUCCESS".equals(status) && !drawingAnalysis.isEmpty()) {
-            try {
-                drawingAnalysisService.persistExtraction(metaKey, drawingAnalysis);
-            } catch (Exception e) {
-                iginxDao.updateMetaSemanticKeywords(metaKey, "FAILED", keywords);
-                throw new RuntimeException("drawing analysis persistence failed: " + e.getMessage(), e);
-            }
+        // 持久化工程图纸分析结果
+        persistDrawingAnalysis(metaKey, status, keywords, request.getDrawingAnalysis());
+
+        if (semanticSummary.isEmpty()) {
+            iginxDao.updateMetaSemanticKeywords(metaKey, status, keywords);
+        } else {
+            iginxDao.updateMetaSemanticKeywordsAndSemanticSummary(metaKey, status, keywords, semanticSummary);
         }
-
-        iginxDao.updateMetaSemanticKeywords(metaKey, status, keywords);
 
         String dataType = safe(request.getDataType()).toLowerCase(Locale.ROOT);
         String fileFormat = safe(request.getFileFormat()).toLowerCase(Locale.ROOT);
@@ -427,6 +425,9 @@ public class MetadataExtractionSchedulerService {
                             + ", dataType=" + dataType
                             + ", fileFormat=" + fileFormat
                             + ", keywords=" + keywords,
+                    "Metadata-UDF");
+        } else if ("SKIPPED".equals(status)) {
+            publishEvent("info", "SKIPPED", "Semantic extraction skipped: path=" + title + ", reason=" + message,
                     "Metadata-UDF");
         } else {
             publishEvent(
@@ -447,8 +448,23 @@ public class MetadataExtractionSchedulerService {
                 fileFormat,
                 assetPath,
                 keywords.length(),
-                !drawingAnalysis.isEmpty(),
+                !safe(request.getDrawingAnalysis()).isEmpty(),
                 System.currentTimeMillis() - startedAt);
+    }
+
+    /** Engineering-drawing-specific persistence for the full, versioned analysis payload. */
+    private void persistDrawingAnalysis(
+            long metaKey, String status, String keywords, String drawingAnalysis) {
+        String payload = safe(drawingAnalysis);
+        if (!"SUCCESS".equals(status) || payload.isEmpty()) {
+            return;
+        }
+        try {
+            drawingAnalysisService.persistExtraction(metaKey, payload);
+        } catch (Exception e) {
+            iginxDao.updateMetaSemanticKeywords(metaKey, "FAILED", keywords);
+            throw new RuntimeException("drawing analysis persistence failed: " + e.getMessage(), e);
+        }
     }
 
     private void handleSemanticStartCallback(String assetKind, MetadataSemanticLeafCallbackRequest request) {
@@ -542,6 +558,7 @@ public class MetadataExtractionSchedulerService {
         if ("SUCCESS".equals(normalized)) {
             return "SUCCESS";
         }
+        if ("SKIPPED".equals(normalized)) return "SKIPPED";
         return "FAILED";
     }
 
@@ -553,6 +570,7 @@ public class MetadataExtractionSchedulerService {
         if (!p.startsWith("/")) {
             p = "/" + p;
         }
+        p = p.replaceAll("/{2,}", "/");
         while (p.length() > 1 && p.endsWith("/")) {
             p = p.substring(0, p.length() - 1);
         }

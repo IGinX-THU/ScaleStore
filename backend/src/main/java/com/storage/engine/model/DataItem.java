@@ -14,6 +14,7 @@ public class DataItem {
     private String knowledgeExtractStatus;
     private String contentPath;
     private String semanticKeywords;
+    private String semanticSummary;
     private Map<String, Object> drawingAnalysis;
 
     // For preview / access response
@@ -51,6 +52,9 @@ public class DataItem {
 
     public String getSemanticKeywords() { return semanticKeywords; }
     public void setSemanticKeywords(String semanticKeywords) { this.semanticKeywords = semanticKeywords; }
+
+    public String getSemanticSummary() { return semanticSummary; }
+    public void setSemanticSummary(String semanticSummary) { this.semanticSummary = semanticSummary; }
 
     public Map<String, Object> getDrawingAnalysis() { return drawingAnalysis; }
     public void setDrawingAnalysis(Map<String, Object> drawingAnalysis) { this.drawingAnalysis = drawingAnalysis; }

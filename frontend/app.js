@@ -1957,6 +1957,7 @@ function buildMetadataNodeTooltip(data, metaItem, options = {}) {
     add('createTime', metaItem.createTime);
     add('status', metaItem.knowledgeExtractStatus);
     add('semanticKeywords', metaItem.semanticKeywords);
+    add('文件摘要', metaItem.semanticSummary);
   } else {
     Object.keys(props).slice(0, 8).forEach(k => add(k, props[k]));
   }
@@ -2944,7 +2945,10 @@ async function requestAccessData(logicalPath, fileName = '') {
   return { response, result };
 }
 
+let officePreviewAbort = null;
+
 function renderAccessItem(item) {
+  officePreviewAbort?.abort();
   const preview = $('access-preview');
   const dataType = item?.dataType || '';
   const previewData = item?.previewData;
@@ -2984,6 +2988,9 @@ function renderAccessItem(item) {
     renderKeyValuePreview(preview, previewData);
   } else {
     preview.innerHTML = '<div class="preview-placeholder">不支持预览此数据类型</div>';
+  }
+  if (item?.semanticSummary) {
+    preview.insertAdjacentHTML('afterbegin', officeSummaryCard(item.semanticSummary));
   }
 }
 
@@ -3172,6 +3179,10 @@ $('access-back-btn').addEventListener('click', async () => {
 updateAccessBackButtonState();
 
 function renderFilePreview(container, previewData, meta) {
+  if (['doc', 'docx', 'pdf', 'ppt', 'pptx'].includes(String(meta.fileFormat || meta.fileName?.split('.').pop() || '').toLowerCase().replace(/^\./, ''))) {
+    renderOfficeFilePreview(container, meta);
+    return;
+  }
   if (!previewData || !previewData.base64) {
     container.innerHTML = '<div class="preview-placeholder">无法加载文件数据</div>';
     return;
@@ -3223,6 +3234,156 @@ function renderFilePreview(container, previewData, meta) {
   if (openButton) {
     openButton.addEventListener('click', () => openDrawingAnalysisBoard(meta, previewData, mime));
   }
+}
+
+function officeSummaryCard(summary) {
+  return `<section class="file-summary-card" aria-label="文件摘要">
+    <div class="file-summary-heading"><span class="file-summary-icon" aria-hidden="true">≡</span>
+      <strong>文件摘要</strong><span class="file-summary-badge">内容概览</span></div>
+    <p>${escapeHtml(summary)}</p>
+  </section>`;
+}
+
+async function fetchOfficePreview(meta, signal, refresh = false) {
+  for (let attempt = 0; attempt < 180; attempt++) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const params = new URLSearchParams({ metaKey: String(meta.id) });
+    if (refresh && attempt === 0) params.set('refresh', 'true');
+    const response = await fetch(`${API_BASE}/access/document-preview?${params}`, { signal });
+    const result = await response.json().catch(() => null);
+    if (!response.ok || result?.code !== 200) throw new Error(result?.message || `HTTP ${response.status}`);
+    if (result.data?.status === 'READY') return result.data;
+    if (result.data?.status !== 'GENERATING') throw new Error(result.data?.message || '文档预览生成失败');
+    await new Promise((resolve, reject) => {
+      const abort = () => { clearTimeout(timer); reject(new DOMException('Aborted', 'AbortError')); };
+      const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, 1200);
+      signal.addEventListener('abort', abort, { once: true });
+    });
+  }
+  throw new Error('预览仍在生成，请稍后点击重试');
+}
+
+function renderOfficeFilePreview(container, meta) {
+  const format = String(meta.fileFormat || meta.fileName?.split('.').pop() || '').toUpperCase();
+  container.innerHTML = `<section class="office-preview-card">
+    <header class="office-preview-heading"><div><span class="office-format-badge">${escapeHtml(format)}</span>
+      <strong>原文预览</strong></div><button type="button" class="btn btn-primary btn-sm" data-office-details disabled>查看文档详情 ↗</button></header>
+    <div data-office-content></div>
+    <footer class="office-preview-note">预览前 3 页 · 下载原文件可查看完整内容</footer>
+  </section>`;
+  const panel = container.querySelector('[data-office-content]');
+  const details = container.querySelector('[data-office-details]');
+  async function load(refresh) {
+    officePreviewAbort?.abort();
+    const controller = new AbortController();
+    officePreviewAbort = controller;
+    details.disabled = true;
+    panel.innerHTML = '<div class="office-preview-loading" role="status"><span class="office-preview-spinner"></span><strong>正在生成原文预览</strong><p>首次打开需要转换文件，请稍候</p></div>';
+    try {
+      const manifest = await fetchOfficePreview(meta, controller.signal, refresh);
+      if (controller.signal.aborted || !panel.isConnected) return;
+      let page = 0;
+      panel.innerHTML = `<div class="office-page-toolbar"><button class="btn btn-sm" type="button" data-page-prev aria-label="上一页">← 上一页</button>
+        <span data-page-label></span><button class="btn btn-sm" type="button" data-page-next aria-label="下一页">下一页 →</button></div>
+        <button type="button" class="office-page-stage" data-page-open aria-label="放大查看文档"><img alt="文档第 1 页"><span>点击放大查看</span></button>
+        <div class="office-preview-footer"><span>已提供前 ${manifest.previewPages} 页，共 ${manifest.totalPages} 页</span>
+        <button type="button" class="btn btn-sm" data-preview-refresh>刷新预览</button></div>`;
+      const image = panel.querySelector('img');
+      function showPage() {
+        image.src = `${API_BASE}${manifest.pages[page].url}`;
+        image.alt = `文档第 ${page + 1} 页`;
+        panel.querySelector('[data-page-label]').textContent = `${page + 1} / ${manifest.previewPages}`;
+        panel.querySelector('[data-page-prev]').disabled = page === 0;
+        panel.querySelector('[data-page-next]').disabled = page === manifest.pages.length - 1;
+      }
+      panel.querySelector('[data-page-prev]').onclick = () => { page--; showPage(); };
+      panel.querySelector('[data-page-next]').onclick = () => { page++; showPage(); };
+      panel.querySelector('[data-page-open]').onclick = () => openOfficePreviewDialog(meta, manifest, page);
+      panel.querySelector('[data-preview-refresh]').onclick = () => load(true);
+      image.onerror = () => {
+        image.alt = '页面加载失败或缓存已过期，请点击刷新预览';
+        panel.querySelector('[data-page-label]').textContent = '页面加载失败，请刷新';
+      };
+      details.onclick = () => openOfficePreviewDialog(meta, manifest, page);
+      details.disabled = false;
+      showPage();
+    } catch (error) {
+      if (controller.signal.aborted || !panel.isConnected) return;
+      panel.innerHTML = `<div class="office-preview-loading office-preview-error"><strong>暂时无法预览</strong>
+        <p>${escapeHtml(error.message)}</p><button type="button" class="btn btn-sm">重新尝试</button></div>`;
+      panel.querySelector('button').onclick = () => load(true);
+    }
+  }
+  load(false);
+}
+
+function openOfficePreviewDialog(meta, manifest, initialPage = 0) {
+  document.querySelector('.office-preview-dialog')?.close();
+  const opener = document.activeElement;
+  const dialog = document.createElement('dialog');
+  dialog.className = 'office-preview-dialog';
+  const download = `${API_BASE}/access/download?${new URLSearchParams({ logicalPath: meta.logicalPath || '/', fileName: meta.fileName || '' })}`;
+  dialog.innerHTML = `<header class="office-dialog-heading"><div><span class="office-dialog-eyebrow">文档详情</span>
+      <h2>${escapeHtml(meta.fileName || '文档预览')}</h2></div><div class="office-dialog-actions">
+      <a href="${escapeHtml(download)}" class="btn btn-sm">下载原文件</a>
+      <button type="button" class="office-dialog-close" aria-label="关闭文档详情">×</button></div></header>
+    <div class="office-dialog-body"><aside class="office-dialog-sidebar">
+      ${meta.semanticSummary ? officeSummaryCard(meta.semanticSummary) : '<p class="office-no-summary">文件摘要尚未生成</p>'}
+      <div class="office-dialog-page-list" aria-label="选择预览页"></div>
+      <p class="office-dialog-limit">仅预览前 ${manifest.previewPages} 页<br>文档共 ${manifest.totalPages} 页</p></aside>
+      <section class="office-dialog-main"><div class="office-dialog-toolbar">
+        <button class="btn btn-sm" type="button" data-dialog-prev aria-label="上一页">←</button><span data-dialog-page></span>
+        <button class="btn btn-sm" type="button" data-dialog-next aria-label="下一页">→</button><span class="office-toolbar-divider"></span>
+        <button class="btn btn-sm" type="button" data-zoom-out aria-label="缩小">−</button><span data-zoom-label>适应宽度</span>
+        <button class="btn btn-sm" type="button" data-zoom-in aria-label="放大">＋</button><button class="btn btn-sm" type="button" data-zoom-fit>适应宽度</button>
+      </div><div class="office-dialog-canvas"><img alt="文档页面"></div><p class="office-dialog-page-error" role="status" hidden>页面加载失败或缓存已过期，请关闭并刷新预览。</p></section></div>`;
+  document.body.appendChild(dialog);
+  let page = initialPage, zoom = 100;
+  const image = dialog.querySelector('.office-dialog-canvas img');
+  const list = dialog.querySelector('.office-dialog-page-list');
+  manifest.pages.forEach((entry, index) => {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = `第 ${index + 1} 页`;
+    button.onclick = () => { page = index; showPage(); };
+    list.appendChild(button);
+  });
+  function showPage() {
+    image.src = `${API_BASE}${manifest.pages[page].url}`;
+    image.alt = `文档第 ${page + 1} 页`;
+    dialog.querySelector('[data-dialog-page]').textContent = `第 ${page + 1} 页 / ${manifest.previewPages}`;
+    dialog.querySelector('[data-dialog-prev]').disabled = page === 0;
+    dialog.querySelector('[data-dialog-next]').disabled = page === manifest.pages.length - 1;
+    Array.from(list.children).forEach((button, index) => {
+      button.classList.toggle('active', index === page);
+      button.setAttribute('aria-current', index === page ? 'page' : 'false');
+    });
+    dialog.querySelector('.office-dialog-canvas').scrollTop = 0;
+    dialog.querySelector('.office-dialog-page-error').hidden = true;
+  }
+  function setZoom(value) {
+    zoom = Math.min(200, Math.max(50, value));
+    image.style.width = `${zoom}%`;
+    image.style.maxWidth = 'none';
+    dialog.querySelector('[data-zoom-label]').textContent = zoom === 100 ? '适应宽度' : `${zoom}%`;
+    dialog.querySelector('[data-zoom-out]').disabled = zoom === 50;
+    dialog.querySelector('[data-zoom-in]').disabled = zoom === 200;
+  }
+  image.onerror = () => { dialog.querySelector('.office-dialog-page-error').hidden = false; };
+  dialog.querySelector('[data-dialog-prev]').onclick = () => { page--; showPage(); };
+  dialog.querySelector('[data-dialog-next]').onclick = () => { page++; showPage(); };
+  dialog.querySelector('[data-zoom-out]').onclick = () => setZoom(zoom - 25);
+  dialog.querySelector('[data-zoom-in]').onclick = () => setZoom(zoom + 25);
+  dialog.querySelector('[data-zoom-fit]').onclick = () => setZoom(100);
+  dialog.querySelector('.office-dialog-close').onclick = () => dialog.close();
+  dialog.addEventListener('click', event => { if (event.target === dialog) dialog.close(); });
+  dialog.addEventListener('close', () => { dialog.remove(); if (opener?.isConnected) opener.focus(); }, { once: true });
+  dialog.addEventListener('keydown', event => {
+    if (event.key === 'ArrowLeft' && page > 0) { event.preventDefault(); page--; showPage(); }
+    if (event.key === 'ArrowRight' && page < manifest.pages.length - 1) { event.preventDefault(); page++; showPage(); }
+  });
+  showPage();
+  dialog.showModal();
 }
 
 function formatDrawingType(type) {

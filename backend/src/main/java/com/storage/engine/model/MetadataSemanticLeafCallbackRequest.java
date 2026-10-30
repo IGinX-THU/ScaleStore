@@ -12,6 +12,10 @@ public class MetadataSemanticLeafCallbackRequest {
     private String dataType;
     private String fileFormat;
     private String drawingAnalysis;
+    private String semanticSummary;
+
+    public String getSemanticSummary() { return semanticSummary; }
+    public void setSemanticSummary(String semanticSummary) { this.semanticSummary = semanticSummary; }
 
     public Long getMetaKey() {
         return metaKey;

@@ -7,6 +7,7 @@ import com.storage.engine.model.DataItem;
 import com.storage.engine.service.adapter.StorageAdapter;
 import com.storage.engine.service.adapter.StorageAdapterFactory;
 import com.storage.engine.service.adapter.StorageUtils;
+import com.storage.engine.utils.FileSemanticSupport;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
@@ -142,6 +143,14 @@ public class AccessService {
     }
 
     private DataItem loadPreview(DataItem meta) {
+        if (FileSemanticSupport.isOffice(meta.getDataType(), meta.getFileFormat(), meta.getFileName())) {
+            // Fetch metadata immediately. The dedicated preview endpoint invokes the IGinX UDSF asynchronously.
+            Map<String, Object> descriptor = new LinkedHashMap<String, Object>();
+            descriptor.put("kind", "document");
+            descriptor.put("maxPages", 3);
+            meta.setPreviewData(descriptor);
+            return meta;
+        }
         String iginxPath = resolveIginxDataPath(meta);
         String dataType = meta.getDataType();
 
@@ -381,7 +390,7 @@ public class AccessService {
 
         if (keys == null || values == null || paths == null) return items;
 
-        int pathIdx = -1, typeIdx = -1, nameIdx = -1, contentPathIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1, semanticKeywordsIdx = -1;
+        int pathIdx = -1, typeIdx = -1, nameIdx = -1, contentPathIdx = -1, sizeIdx = -1, formatIdx = -1, timeIdx = -1, validIdx = -1, knowledgeStatusIdx = -1, semanticKeywordsIdx = -1, semanticSummaryIdx = -1;
 
         for (int i = 0; i < paths.size(); i++) {
             String path = paths.get(i);
@@ -395,6 +404,7 @@ public class AccessService {
             else if (path.endsWith("isValid")) validIdx = i;
             else if (path.endsWith("knowledgeExtractStatus")) knowledgeStatusIdx = i;
             else if (path.endsWith("semanticKeywords")) semanticKeywordsIdx = i;
+            else if (path.endsWith("semanticSummary")) semanticSummaryIdx = i;
         }
 
         for (int i = 0; i < keys.length; i++) {
@@ -417,6 +427,7 @@ public class AccessService {
             if (timeIdx != -1) item.setCreateTime(getValueAsString(row.get(timeIdx)));
             if (knowledgeStatusIdx != -1) item.setKnowledgeExtractStatus(getValueAsString(row.get(knowledgeStatusIdx)));
             if (semanticKeywordsIdx != -1) item.setSemanticKeywords(getValueAsString(row.get(semanticKeywordsIdx)));
+            if (semanticSummaryIdx != -1) item.setSemanticSummary(getValueAsString(row.get(semanticSummaryIdx)));
             item.setIsValid(true);
             items.add(item);
         }
@@ -448,7 +459,7 @@ public class AccessService {
         return name.trim();
     }
 
-    private String resolveIginxDataPath(DataItem item) {
+    public String resolveIginxDataPath(DataItem item) {
         if (item == null) {
             return "";
         }

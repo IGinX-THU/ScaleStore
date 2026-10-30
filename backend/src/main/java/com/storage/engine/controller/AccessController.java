@@ -3,7 +3,10 @@ package com.storage.engine.controller;
 import com.storage.engine.model.DataItem;
 import com.storage.engine.model.Response;
 import com.storage.engine.service.AccessService;
+import com.storage.engine.service.DocumentPreviewService;
+import com.storage.engine.service.DrawingAnalysisService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.CacheControl;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -13,12 +16,19 @@ import org.springframework.web.bind.annotation.*;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.Map;
 
 @RestController
 public class AccessController {
 
     @Autowired
     private AccessService accessService;
+
+    @Autowired
+    private DocumentPreviewService documentPreviewService;
+
+    @Autowired
+    private DrawingAnalysisService drawingAnalysisService;
 
     /**
      * Access data by logical path - returns metadata + preview data.
@@ -104,6 +114,59 @@ public class AccessController {
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(Response.error(500, "Failed to list data: " + e.getMessage()));
         }
+    }
+
+    /**
+     * Generate or reuse the Office preview through the IGinX UDF.
+     */
+    @GetMapping("/access/document-preview")
+    public ResponseEntity<Response<Map<String, Object>>> previewOffice(
+            @RequestParam("metaKey") long metaKey,
+            @RequestParam(value = "refresh", defaultValue = "false") boolean refresh) {
+        try {
+            return ResponseEntity.ok()
+                    .cacheControl(CacheControl.noStore())
+                    .body(Response.success(documentPreviewService.request(metaKey, refresh)));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Response.error(400, e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(Response.error(500, "预览请求失败：" + e.getMessage()));
+        }
+    }
+
+    /**
+     * Return one rendered Office preview page from the web-side cache.
+     */
+    @GetMapping("/access/document-preview/{metaKey}/pages/{page}")
+    public ResponseEntity<byte[]> previewOfficePage(
+            @PathVariable("metaKey") long metaKey,
+            @PathVariable("page") int page,
+            @RequestParam("token") String token) {
+        try {
+            return ResponseEntity.ok()
+                    .contentType(MediaType.IMAGE_JPEG)
+                    .cacheControl(CacheControl.noStore())
+                    .header("X-Content-Type-Options", "nosniff")
+                    .body(documentPreviewService.page(metaKey, token, page));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    /**
+     * Read the latest or specified engineering drawing analysis.
+     */
+    @GetMapping("/access/drawing-analysis")
+    public ResponseEntity<Response<Map<String, Object>>> getDrawingAnalysis(
+            @RequestParam("metaKey") long metaKey,
+            @RequestParam(value = "analysisId", required = false) String analysisId) {
+        Map<String, Object> analysis = drawingAnalysisService.getAnalysis(metaKey, analysisId);
+        if (analysis.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body(Response.error(404, "Drawing analysis not found for metaKey: " + metaKey));
+        }
+        return ResponseEntity.ok(Response.success(analysis));
     }
 
     private String buildDownloadName(DataItem meta) {

@@ -15,6 +15,9 @@ RUN apt-get update && \
         python3.11 \
         python3.11-venv \
         python3.11-distutils \
+        libreoffice-writer \
+        libreoffice-impress \
+        fonts-noto-cjk \
     && rm -rf /var/lib/apt/lists/*
 
 # Install pip for Python 3.11 and required packages
@@ -25,7 +28,11 @@ RUN python3.11 -m ensurepip --upgrade 2>/dev/null || true && \
         "neo4j==4.4.13" \
         "openai>=1.0.0" \
         requests \
-        "Pillow>=10.0.0"
+        "Pillow>=10.0.0" \
+        "python-docx>=1.1.2,<2" \
+        "python-pptx>=1.0.2,<2" \
+        "pypdf>=6.0,<7" \
+        "pypdfium2>=4.30,<6"
 
 # Make python3.11 the default python3
 RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 && \

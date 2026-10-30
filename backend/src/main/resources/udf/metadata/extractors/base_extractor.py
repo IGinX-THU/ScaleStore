@@ -86,26 +86,27 @@ class BaseMetadataExtractor(object):
         import base64
         return base64.b64encode(image_bytes).decode("utf-8")
 
-    def extract_binary_bytes(self, max_bytes=None):
+    def extract_binary_bytes(self, max_bytes=None, limit_name="maxRawImageBytes"):
         if max_bytes is None:
             max_bytes = self._to_int(
                 self.params.get("maxRawImageBytes", self.DEFAULT_MAX_RAW_IMAGE_BYTES),
                 self.DEFAULT_MAX_RAW_IMAGE_BYTES,
             )
         if max_bytes <= 0:
-            raise RuntimeError("maxRawImageBytes must be positive")
+            raise RuntimeError(limit_name + " must be positive")
 
-        # 只拼接足够大的 bytes 单元，过滤表头或普通短文本带来的伪二进制内容。
+        # Executor 已剔除元数据列；所有二进制尾块均须保留，不能按长度丢弃。
         values = []
         self.flatten_values(self.data_rows(), values)
         chunks = []
         total = 0
         for value in values:
-            if isinstance(value, bytes) and len(value) > 32:
+            if isinstance(value, (bytes, bytearray, memoryview)) and len(value) > 0:
                 total += len(value)
                 if total > max_bytes:
-                    raise RuntimeError("image bytes exceed maxRawImageBytes: " + str(total) + " > " + str(max_bytes))
-                chunks.append(value)
+                    kind = "image" if limit_name == "maxRawImageBytes" else "file"
+                    raise RuntimeError(kind + " bytes exceed " + limit_name + ": " + str(total) + " > " + str(max_bytes))
+                chunks.append(bytes(value))
         if not chunks:
             return b""
         return b"".join(chunks)
@@ -376,10 +377,15 @@ class BaseMetadataExtractor(object):
         except Exception as exc:
             raise RuntimeError("openai package is required: pip install openai") from exc
 
+        client_options = {"api_key": api_key}
         if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            client = OpenAI(api_key=api_key)
+            client_options["base_url"] = base_url
+        if "llmRequestTimeoutSeconds" in self.params:
+            client_options["timeout"] = float(self.params["llmRequestTimeoutSeconds"])
+            client_options["max_retries"] = 1
+        if "llmMaxRetries" in self.params:
+            client_options["max_retries"] = int(self.params["llmMaxRetries"])
+        client = OpenAI(**client_options)
 
         started = time.time()
         print(
@@ -391,11 +397,15 @@ class BaseMetadataExtractor(object):
             ),
             flush=True,
         )
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0.1,
-            messages=messages,
-        )
+        request_options = {"model": model, "temperature": 0.1, "messages": messages}
+        if "llmMaxOutputTokens" in self.params:
+            request_options["max_tokens"] = int(self.params["llmMaxOutputTokens"])
+        if self.params.get("llmExtraBody"):
+            request_options["extra_body"] = dict(self.params["llmExtraBody"])
+        try:
+            response = client.chat.completions.create(**request_options)
+        finally:
+            client.close()
         print(
             "[SemanticKeywordExtract][extractor] llm_chat_done metaKey=%s dataType=%s model=%s elapsedMs=%s"
             % (
@@ -410,6 +420,9 @@ class BaseMetadataExtractor(object):
         content = ""
         if response and response.choices and response.choices[0].message:
             content = self.extract_text_from_content(response.choices[0].message.content)
+        response_logger = getattr(self, "_log_llm_response", None)
+        if callable(response_logger):
+            response_logger(response, content)
         return content
 
     def llm_extract_with_retry(self, model, primary_messages, retry_messages=None, max_retry=1):

@@ -451,6 +451,13 @@ public class IGinxDao {
       return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + ";");
   }
 
+  public void updateMetaSemanticKeywordsAndSemanticSummary(long key, String status, String keywords, String summary) {
+      String sql = String.format(Locale.ROOT,
+          "insert into %s(key, knowledgeExtractStatus, semanticKeywords, semanticSummary) values (%d, '%s', '%s', '%s');",
+          IGinxConstants.STORAGE_META_PATH, key, escapeSql(status), escapeSql(keywords), escapeSql(summary));
+      executeSql(sql);
+  }
+
   public SessionExecuteSqlResult getMetaById(long key) {
       return executeSql("select * from " + IGinxConstants.STORAGE_META_PATH + " where key = " + key + ";");
   }
