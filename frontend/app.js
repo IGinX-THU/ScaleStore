@@ -2764,6 +2764,7 @@ const acceptMap = {
   file:       '',
   keyvalue:   '.properties,.env',
 };
+const MAX_UPLOAD_FILES = 20;
 
 function updateFileAccept() {
   const type = $('storage-type-select').value;
@@ -2771,7 +2772,8 @@ function updateFileAccept() {
   // Update hint text
   const hint = uploadZone.querySelector('.upload-hint');
   if (hint) {
-    hint.textContent = '支持格式: ' + (acceptMap[type] || '所有文件').replace(/\./g, '').toUpperCase();
+    hint.textContent = `一次最多 ${MAX_UPLOAD_FILES} 个；支持格式: `
+      + (acceptMap[type] || '所有文件').replace(/\./g, '').toUpperCase();
   }
 }
 
@@ -2807,8 +2809,30 @@ fileInput.addEventListener('change', e => {
 
 function handleFiles(files) {
   if (files.length === 0) return;
-  // Only keep the last selected file (single file mode)
-  selectedFiles = [files[0]];
+  const mergedFiles = [...selectedFiles];
+  const selectedNames = new Set(mergedFiles.map(file => file.name));
+  let duplicateCount = 0;
+
+  files.forEach(file => {
+    if (!selectedNames.has(file.name)) {
+      mergedFiles.push(file);
+      selectedNames.add(file.name);
+    } else {
+      duplicateCount += 1;
+    }
+  });
+
+  const notices = [];
+  if (duplicateCount > 0) {
+    notices.push(`${duplicateCount} 个同名文件未重复加入`);
+  }
+  if (mergedFiles.length > MAX_UPLOAD_FILES) {
+    notices.push(`一次最多上传 ${MAX_UPLOAD_FILES} 个文件，超出的文件未加入列表`);
+  }
+  if (notices.length > 0) {
+    alert(notices.join('\n'));
+  }
+  selectedFiles = mergedFiles.slice(0, MAX_UPLOAD_FILES);
   renderFileList();
 }
 
@@ -2818,7 +2842,7 @@ function renderFileList() {
     <div class="file-item">
       <div class="file-item-info">
         <span>📄</span>
-        <span class="file-item-name">${f.name}</span>
+        <span class="file-item-name">${escapeHtml(f.name)}</span>
         <span class="file-item-size">(${(f.size / 1024).toFixed(1)} KB)</span>
       </div>
       <button class="file-item-remove" data-index="${i}">&times;</button>
@@ -2841,22 +2865,28 @@ $('storage-save-btn').addEventListener('click', async () => {
   const storageAgentName = pickAgentName();
   const btn = $('storage-save-btn');
   btn.disabled = true;
-  btn.textContent = '存储中...';
+  btn.textContent = `存储中 (${selectedFiles.length} 个)...`;
 
   try {
     const formData = new FormData();
-    formData.append('file', selectedFiles[0]);
+    selectedFiles.forEach(file => formData.append('files', file));
     formData.append('logicalPath', path);
     formData.append('dataType', type);
 
-    const response = await fetch(`${API_BASE}/storage`, {
+    const response = await fetch(`${API_BASE}/storage/batch`, {
       method: 'POST',
       body: formData,
     });
 
     const result = await response.json();
-    if (result.code !== 200 && result.code !== 201) {
+    if (!response.ok || result.code !== 200 || !result.data) {
       throw new Error(result.message || '存储失败');
+    }
+    const successCount = Number(result.data.successCount || 0);
+    const failureCount = Number(result.data.failureCount || 0);
+    const failures = Array.isArray(result.data.failures) ? result.data.failures : [];
+    if (successCount === 0) {
+      throw new Error(failures.map(item => `${item.fileName}: ${item.message}`).join('；') || '存储失败');
     }
     const typeLabelMap = {
       relational: '关系数据',
@@ -2867,13 +2897,23 @@ $('storage-save-btn').addEventListener('click', async () => {
     };
     const typeLabel = typeLabelMap[type] || type;
     pushAgentMessage({
-      level: 'success',
-      status: '完成',
+      level: failureCount > 0 ? 'warn' : 'success',
+      status: failureCount > 0 ? '部分完成' : '完成',
       agentName: storageAgentName,
-      text: `${typeLabel}已存储成功，路径 ${path}，等待定时UDF抽取`,
+      text: `${typeLabel}批量存储完成：成功 ${successCount} 个，失败 ${failureCount} 个，路径 ${path}`,
     });
-    alert('存储成功！文件已保存到 ' + path);
-    selectedFiles = [];
+    if (failureCount > 0) {
+      const failedNames = new Set(failures.map(item => item.fileName));
+      selectedFiles = selectedFiles.filter(file => failedNames.has(file.name));
+      const failureDetails = failures
+        .slice(0, 5)
+        .map(item => `${item.fileName}: ${item.message}`)
+        .join('\n');
+      alert(`批量存储部分完成：成功 ${successCount} 个，失败 ${failureCount} 个。\n${failureDetails}`);
+    } else {
+      selectedFiles = [];
+      alert(`存储成功！${successCount} 个文件已保存到 ${path}`);
+    }
     renderFileList();
   } catch (e) {
     pushAgentMessage({
