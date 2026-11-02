@@ -400,6 +400,11 @@ class BaseMetadataExtractor(object):
         request_options = {"model": model, "temperature": 0.1, "messages": messages}
         if "llmMaxOutputTokens" in self.params:
             request_options["max_tokens"] = int(self.params["llmMaxOutputTokens"])
+        response_format = self.params.get("llmResponseFormat")
+        if response_format:
+            if not isinstance(response_format, dict) or not response_format.get("type"):
+                raise ValueError("llmResponseFormat must be a mapping with a non-empty type")
+            request_options["response_format"] = dict(response_format)
         if self.params.get("llmExtraBody"):
             request_options["extra_body"] = dict(self.params["llmExtraBody"])
         try:

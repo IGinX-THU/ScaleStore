@@ -26,6 +26,7 @@ OFFICE_DEFAULTS = {
     "officeChunkChars": 0,  # Optional legacy text cap; disabled by default.
     "officeContextTokens": 32768,
     "officeOutputTokens": 8192,
+    "officeResponseFormat": "json_object",
     "officeEnableThinking": False,
     "officeThinkingBudget": 2048,
     "officeImageTokens": 4096,
@@ -88,6 +89,10 @@ class OfficeFileMetadataExtractor(BaseMetadataExtractor):
         # Use the shared image/LLM request timeout behavior; no Office-specific deadline.
         self.params["llmMaxOutputTokens"] = self.limit("officeOutputTokens")
         self.params["llmMaxRetries"] = 0
+        response_format = str(self.params.get("officeResponseFormat", "json_object")).strip().lower()
+        if response_format not in ("json_object", "text"):
+            raise ValueError("officeResponseFormat must be json_object or text")
+        self.params["llmResponseFormat"] = {"type": response_format}
         thinking = str(self.params.get("officeEnableThinking", False)).strip().lower()
         if thinking not in ("true", "false", "auto"):
             raise ValueError("officeEnableThinking must be true, false or auto")
@@ -109,6 +114,7 @@ class OfficeFileMetadataExtractor(BaseMetadataExtractor):
         self._trace("extract_start", fileName=repr(self.params.get("fileName", "")),
                     contextTokens=self.limit("officeContextTokens"),
                     outputTokens=self.limit("officeOutputTokens"),
+                    responseFormat=self.params["llmResponseFormat"],
                     thinking=self.params["llmExtraBody"],
                     concurrency=self.limit("officeConcurrency"))
         try:
