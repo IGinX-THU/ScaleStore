@@ -10,6 +10,8 @@ public class IGinxConstants {
 
     // Storage metadata path
     public static final String STORAGE_META_PATH = "storage.meta";
+    // Versioned engineering drawing analysis documents.
+    public static final String DRAWING_ANALYSIS_PATH = "storage.drawing_analysis";
     // RESTful interface persistence path
     public static final String INTERFACE_RESTFUL_PATH = "interface.restful";
     public static final String INTERFACE_JAVA_GRPC_PATH = "interface.java_grpc";

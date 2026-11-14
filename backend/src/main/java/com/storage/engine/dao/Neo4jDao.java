@@ -1,5 +1,6 @@
 package com.storage.engine.dao;
 
+import com.storage.engine.service.DrawingGraphProjection;
 import org.neo4j.driver.*;
 import org.neo4j.driver.Record;
 import org.neo4j.driver.types.Node;
@@ -35,6 +36,70 @@ public class Neo4jDao {
 		return neo4jEnabled;
 	}
 
+	public Set<String> currentDrawingAnalysisIds(List<Long> metaKeys) {
+		if (!neo4jEnabled) return Collections.emptySet();
+		try (Session session = getDriver().session()) {
+			Set<String> ids = new HashSet<>();
+			for (Record record : session.run("MATCH (:DataAsset)-[:HAS_ANALYSIS]->(a:DrawingAnalysis) "
+					+ "WHERE a.projectionSchemaVersion=$schema AND a.sourceMetaKey IN $keys "
+					+ "RETURN a.analysisId AS analysisId",
+					Values.parameters("schema", DrawingGraphProjection.SCHEMA_VERSION, "keys", metaKeys)).list()) {
+				ids.add(record.get("analysisId").asString());
+			}
+			return ids;
+		}
+	}
+
+	/** Replace only this asset's engineering projection. IGinX has already committed the document. */
+	public boolean replaceDrawingProjection(DrawingGraphProjection projection) {
+		if (!neo4jEnabled) return false;
+		ensureConstraints();
+		try (Session session = getDriver().session()) {
+			return session.writeTransaction(tx -> {
+				// A property write locks the asset before checking the version, serializing replacements.
+				List<Record> assets = tx.run(
+						"MATCH (d:DataAsset) WHERE toString(d.metaKey) = $key "
+						+ "SET d.drawingProjectionLock = coalesce(d.drawingProjectionLock,0) "
+						+ "WITH d OPTIONAL MATCH (d)-[:HAS_ANALYSIS]->(a:DrawingAnalysis) "
+						+ "RETURN d,a",
+						Values.parameters("key", String.valueOf(projection.analysis.get("sourceMetaKey")))).list();
+				if (assets.isEmpty()) throw new IllegalStateException("Drawing DataAsset is not available");
+				for (Record record : assets) {
+					if (!record.get("a").isNull()) {
+						Node old = record.get("a").asNode();
+						int oldVersion = old.get("analysisVersion").asInt(0);
+						int nextVersion = ((Number) projection.analysis.get("analysisVersion")).intValue();
+						if (oldVersion > nextVersion || (oldVersion == nextVersion
+								&& old.get("analysisId").asString("").equals(projection.analysis.get("analysisId"))
+								&& old.get("projectionSchemaVersion").asInt(0) == DrawingGraphProjection.SCHEMA_VERSION)) {
+							return false;
+						}
+					}
+				}
+				long assetId = assets.get(0).get("d").asNode().id();
+				tx.run("MATCH (n) WHERE (n:DrawingAnalysis OR n:Component OR n:Dimension) "
+								+ "AND n.sourceMetaKey = $key DETACH DELETE n",
+						Values.parameters("key", projection.analysis.get("sourceMetaKey"))).consume();
+				tx.run("MATCH (d:DataAsset) WHERE id(d)=$assetId "
+								+ "CREATE (a:DrawingAnalysis) SET a=$props CREATE (d)-[:HAS_ANALYSIS]->(a)",
+						Values.parameters("assetId", assetId, "props", projection.analysis)).consume();
+				tx.run("UNWIND $rows AS row CREATE (n:Component) SET n=row",
+						Values.parameters("rows", projection.components)).consume();
+				tx.run("UNWIND $rows AS row CREATE (n:Dimension) SET n=row",
+						Values.parameters("rows", projection.dimensions)).consume();
+				tx.run("MATCH (a:DrawingAnalysis {graphId:$analysis}), (c:Component {graphId:$root}) "
+								+ "CREATE (a)-[:DEPICTS]->(c)",
+						Values.parameters("analysis", projection.analysis.get("graphId"), "root", projection.rootId)).consume();
+				tx.run("UNWIND $rows AS row MATCH (p:Component {graphId:row.source}), (c:Component {graphId:row.target}) "
+								+ "CREATE (p)-[:HAS_PART]->(c)", Values.parameters("rows", projection.parts)).consume();
+				tx.run("UNWIND $rows AS row MATCH (c:Component {graphId:row.source}), (d:Dimension {graphId:row.target}) "
+								+ "CREATE (c)-[:HAS_DIMENSION]->(d)",
+						Values.parameters("rows", projection.dimensionLinks)).consume();
+				return true;
+			});
+		}
+	}
+
 	/**
 	 * 创建图数据库约束（幂等）。
 	 */
@@ -51,6 +116,11 @@ public class Neo4jDao {
 				session.run("CREATE CONSTRAINT logical_path_unique IF NOT EXISTS FOR (p:LogicalPath) REQUIRE p.path IS UNIQUE");
 				session.run("CREATE CONSTRAINT data_asset_meta_key_unique IF NOT EXISTS FOR (d:DataAsset) REQUIRE d.metaKey IS UNIQUE");
 				session.run("CREATE CONSTRAINT entity_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.norm IS UNIQUE");
+				session.run("CREATE CONSTRAINT drawing_analysis_id_unique IF NOT EXISTS FOR (n:DrawingAnalysis) REQUIRE n.graphId IS UNIQUE");
+				session.run("CREATE CONSTRAINT drawing_component_id_unique IF NOT EXISTS FOR (n:Component) REQUIRE n.graphId IS UNIQUE");
+				session.run("CREATE CONSTRAINT drawing_dimension_id_unique IF NOT EXISTS FOR (n:Dimension) REQUIRE n.graphId IS UNIQUE");
+				session.run("CREATE INDEX drawing_component_analysis IF NOT EXISTS FOR (n:Component) ON (n.analysisId)");
+				session.run("CREATE INDEX drawing_dimension_analysis IF NOT EXISTS FOR (n:Dimension) ON (n.analysisId)");
 				constraintsReady = true;
 			} finally {
 				session.close();
@@ -81,9 +151,11 @@ public class Neo4jDao {
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "WITH pathChain,p,hd,d,m,e, assetRank, coalesce(m.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
+					+ "WHERE NOT EXISTS { MATCH (d)-[:HAS_ANALYSIS]->(:DrawingAnalysis) } "
+					+ "OPTIONAL MATCH drawing=(d)-[:HAS_ANALYSIS]->(:DrawingAnalysis)-[:DEPICTS]->(:Component) "
+					+ "WITH pathChain,p,hd,d,m,e,drawing, assetRank, coalesce(m.updatedAt,hd.updatedAt,d.updatedAt,id(d)) AS ord "
 				+ "ORDER BY assetRank ASC, ord DESC "
-				+ "RETURN pathChain,p,hd,d,m,e LIMIT $candidateRowLimit";
+					+ "RETURN pathChain,p,hd,d,drawing,m,e LIMIT $candidateRowLimit";
 
 		Session session = getDriver().session();
 		try {
@@ -106,7 +178,7 @@ public class Neo4jDao {
 				});
 				return buildGraph(nodeOnly, Collections.<Long>emptySet(), maxNodes);
 			}
-			return buildGraph(records, Collections.<Long>emptySet(), maxNodes);
+			return expandDrawingAssets(session, buildGraph(records, Collections.<Long>emptySet(), maxNodes), maxNodes);
 		} finally {
 			session.close();
 		}
@@ -162,6 +234,13 @@ public class Neo4jDao {
 				+ "OR toLower(coalesce(d.name,'')) CONTAINS toLower($kw) "
 				+ "OR toLower(assetPath) CONTAINS toLower($kw) "
 				+ "OR any(k IN coalesce(d.semanticKeywords, []) WHERE toLower(toString(k)) CONTAINS toLower($kw)) "
+					+ "OR EXISTS { MATCH (d)-[:HAS_ANALYSIS]->(a:DrawingAnalysis), (n:Component) "
+					+ "WHERE n.analysisId = a.analysisId "
+					+ "AND (toLower(coalesce(n.name,'')) CONTAINS toLower($kw) "
+					+ "OR toLower(coalesce(n.partNumber,'')) CONTAINS toLower($kw) "
+					+ "OR toLower(coalesce(n.specification,'')) CONTAINS toLower($kw)) } "
+					+ "OR EXISTS { MATCH (d)-[:HAS_ANALYSIS]->(a:DrawingAnalysis), (n:Dimension) "
+					+ "WHERE n.analysisId = a.analysisId AND toLower(coalesce(n.rawText,'')) CONTAINS toLower($kw) } "
 				+ "OR EXISTS { MATCH (d)-[:MENTIONS]->(e:Entity) WHERE toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) }) "
 				+ "WITH d ORDER BY coalesce(d.updatedAt, id(d)) DESC LIMIT $candidateAssetWindow "
 				+ "RETURN id(d) AS id";
@@ -180,14 +259,16 @@ public class Neo4jDao {
 				+ "OPTIONAL MATCH (p:LogicalPath)-[hd:HAS_DATA]->(d) "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
 				+ "OPTIONAL MATCH (d)-[m:MENTIONS]->(e:Entity) "
-				+ "WHERE $kw='' OR toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw) "
+					+ "WHERE NOT EXISTS { MATCH (d)-[:HAS_ANALYSIS]->(:DrawingAnalysis) } "
+					+ "AND ($kw='' OR toLower(coalesce(e.name,'')) CONTAINS toLower($kw) OR toLower(coalesce(e.norm,'')) CONTAINS toLower($kw)) "
 				+ "OPTIONAL MATCH (e)-[er:SEMANTIC_RELATION]-(relatedEntity:Entity) "
 				+ "WHERE $kw<>'' "
 				+ "AND er.assetKey = 'DataAsset::' + toString(d.metaKey) "
 				+ "AND coalesce(er.related, true) = true "
 				+ "AND EXISTS { MATCH (d)-[:MENTIONS]->(relatedEntity) } "
 				+ "OPTIONAL MATCH (d)-[relatedMention:MENTIONS]->(relatedEntity) "
-				+ "RETURN pathChain,p,hd,d,m,e,er,relatedEntity,relatedMention LIMIT $candidateRowLimit";
+					+ "OPTIONAL MATCH drawing=(d)-[:HAS_ANALYSIS]->(:DrawingAnalysis)-[:DEPICTS]->(:Component) "
+					+ "RETURN pathChain,p,hd,d,drawing,m,e,er,relatedEntity,relatedMention LIMIT $candidateRowLimit";
 
 		String directoryGraphCypher = "MATCH (p:LogicalPath) WHERE id(p) IN $directoryIds "
 				+ "OPTIONAL MATCH pathChain=(root:LogicalPath {path:'/'})-[:CONTAINS*0..32]->(p) "
@@ -222,12 +303,111 @@ public class Neo4jDao {
 						"directoryIds", directoryIds,
 						"candidateRowLimit", candidateRowLimit)).list());
 			}
-			Map<String, Object> graph = buildGraph(records, matchedIdSet, maxNodes);
+			Map<String, Object> graph = expandDrawingAssets(session, buildGraph(records, matchedIdSet, maxNodes), maxNodes);
 			graph.put("matchedNodeIds", new ArrayList<Long>(matchedIdSet));
 			return graph;
 		} finally {
 			session.close();
 		}
+	}
+
+	/** Expand the selected assets on the existing metadata canvas, not in a separate graph view. */
+	@SuppressWarnings("unchecked")
+	private Map<String, Object> expandDrawingAssets(Session session, Map<String, Object> base, int maxNodes) {
+		List<Long> assetIds = new ArrayList<>();
+		for (Map<String, Object> node : (List<Map<String, Object>>) base.get("nodes")) {
+			if ("DataAsset".equals(node.get("categoryName"))) assetIds.add(Long.valueOf(node.get("id").toString()));
+		}
+		if (assetIds.isEmpty()) return base;
+		List<Record> records = session.readTransaction(tx -> {
+			List<Record> result = new ArrayList<>(tx.run(
+					"MATCH (d:DataAsset)-[ha:HAS_ANALYSIS]->(a:DrawingAnalysis)-[dep:DEPICTS]->(root:Component) "
+					+ "WHERE id(d) IN $assetIds "
+					+ "MATCH ancestry=(root)-[:HAS_PART*0..64]->(c:Component) "
+					+ "OPTIONAL MATCH (parent:Component)-[part:HAS_PART]->(c) "
+					+ "RETURN d,ha,a,dep,root,parent,part,c ORDER BY length(ancestry),c.graphId",
+					Values.parameters("assetIds", assetIds)).list());
+			// Limit distinct dimension nodes, then return all their owner links (including shared dimensions).
+			result.addAll(tx.run(
+					"MATCH (d:DataAsset)-[:HAS_ANALYSIS]->(a:DrawingAnalysis), (dim:Dimension) "
+					+ "WHERE id(d) IN $assetIds AND dim.analysisId=a.analysisId "
+					+ "WITH DISTINCT dim ORDER BY dim.graphId LIMIT $limit "
+					+ "MATCH (c:Component)-[r:HAS_DIMENSION]->(dim) RETURN c,r,dim",
+					Values.parameters("assetIds", assetIds, "limit", maxNodes)).list());
+			return result;
+		});
+		return mergeDrawingGraph(base, buildGraph(records), maxNodes);
+	}
+
+	/**
+	 * The node budget still limits ordinary entities and dimensions. A selected drawing's BOM
+	 * is kept whole, even when its components alone exceed that budget.
+	 */
+	@SuppressWarnings("unchecked")
+	static Map<String, Object> mergeDrawingGraph(Map<String, Object> base, Map<String, Object> drawing, int maxNodes) {
+		Map<String, Map<String, Object>> nodes = new LinkedHashMap<>();
+		for (Map<String, Object> node : (List<Map<String, Object>>) base.get("nodes")) nodes.put(node.get("id").toString(), node);
+		List<Map<String, Object>> drawingNodes = (List<Map<String, Object>>) drawing.get("nodes");
+		// Replace stale roots if a concurrent projection replacement occurred between the queries.
+		Set<Object> sourceKeys = new HashSet<>();
+		for (Map<String, Object> node : drawingNodes) {
+			if ("DrawingAnalysis".equals(node.get("categoryName"))) {
+				sourceKeys.add(((Map<String, Object>) node.get("properties")).get("sourceMetaKey"));
+			}
+		}
+		nodes.values().removeIf(node -> Arrays.asList("DrawingAnalysis", "Component", "Dimension").contains(node.get("categoryName"))
+				&& sourceKeys.contains(((Map<String, Object>) node.get("properties")).get("sourceMetaKey")));
+		for (Map<String, Object> node : drawingNodes) {
+			if (!"Dimension".equals(node.get("categoryName"))) {
+				Map<String, Object> previous = nodes.get(node.get("id").toString());
+				if (previous != null) node.put("matched", previous.get("matched"));
+				nodes.put(node.get("id").toString(), node);
+			}
+		}
+		int effectiveLimit = Math.max(maxNodes, nodes.size());
+		for (Map<String, Object> node : drawingNodes) {
+			if ("Dimension".equals(node.get("categoryName")) && nodes.size() < effectiveLimit) {
+				nodes.put(node.get("id").toString(), node);
+			}
+		}
+		Map<String, Map<String, Object>> links = new LinkedHashMap<>();
+		List<Map<String, Object>> allLinks = new ArrayList<>((List<Map<String, Object>>) base.get("links"));
+		allLinks.addAll((List<Map<String, Object>>) drawing.get("links"));
+		for (Map<String, Object> link : allLinks) {
+			if (nodes.containsKey(link.get("source").toString()) && nodes.containsKey(link.get("target").toString())) {
+				links.put(link.get("source") + ":" + link.get("target") + ":" + link.get("type")
+						+ ":" + link.getOrDefault("relationText", ""), link);
+			}
+		}
+		Map<String, Integer> categories = new LinkedHashMap<>();
+		long totalDimensions = 0, visibleDimensions = 0;
+		for (Map<String, Object> node : nodes.values()) {
+			String category = node.get("categoryName").toString();
+			categories.putIfAbsent(category, categories.size());
+			node.put("category", categories.get(category));
+			if ("DrawingAnalysis".equals(category)) {
+				Object count = ((Map<String, Object>) node.get("properties")).get("dimensionCount");
+				if (count instanceof Number) totalDimensions += ((Number) count).longValue();
+			}
+			if ("Dimension".equals(category)) visibleDimensions++;
+		}
+		List<Map<String, Object>> categoryList = new ArrayList<>();
+		for (Map.Entry<String, Integer> entry : categories.entrySet()) {
+			Map<String, Object> category = new LinkedHashMap<>();
+			category.put("name", entry.getKey());
+			category.put("index", entry.getValue());
+			categoryList.add(category);
+		}
+		base.put("nodes", new ArrayList<>(nodes.values()));
+		base.put("links", new ArrayList<>(links.values()));
+		base.put("categories", categoryList);
+		base.put("nodeCount", nodes.size());
+		base.put("linkCount", links.size());
+		base.put("graphLimit", effectiveLimit);
+		base.put("configuredGraphLimit", maxNodes);
+		base.put("omittedDimensionCount", Math.max(0, totalDimensions - visibleDimensions));
+		base.put("truncated", Boolean.TRUE.equals(base.get("truncated")) || totalDimensions > visibleDimensions);
+		return base;
 	}
 
 	public List<String> findMatchedSemanticEntities(List<Long> metaKeys, String keyword) {
@@ -248,6 +428,7 @@ public class Neo4jDao {
 
 		String cypher = "MATCH (d:DataAsset)-[:MENTIONS]->(e:Entity) "
 				+ "WHERE toString(d.metaKey) IN $metaKeys "
+					+ "AND NOT EXISTS { MATCH (d)-[:HAS_ANALYSIS]->(:DrawingAnalysis) } "
 				+ "AND (toLower(coalesce(e.name,'')) CONTAINS toLower($keyword) "
 				+ "OR toLower(coalesce(e.norm,'')) CONTAINS toLower($keyword)) "
 				+ "RETURN DISTINCT e.name AS name ORDER BY name LIMIT 16";

@@ -12,6 +12,9 @@ class BaseMetadataExtractor(object):
     DEFAULT_MAX_VLM_IMAGE_SIDE = 1280
     DEFAULT_MIN_VLM_IMAGE_SIDE = 512
     DEFAULT_VLM_IMAGE_JPEG_QUALITY = 85
+    DEFAULT_DRAWING_TILE_SIDE = 1600
+    DEFAULT_DRAWING_TILE_MAX_BYTES = 1200 * 1024
+    DEFAULT_DRAWING_MAX_TILES = 6
 
     def __init__(self, data, args, params):
         self.data = data
@@ -83,26 +86,27 @@ class BaseMetadataExtractor(object):
         import base64
         return base64.b64encode(image_bytes).decode("utf-8")
 
-    def extract_binary_bytes(self, max_bytes=None):
+    def extract_binary_bytes(self, max_bytes=None, limit_name="maxRawImageBytes"):
         if max_bytes is None:
             max_bytes = self._to_int(
                 self.params.get("maxRawImageBytes", self.DEFAULT_MAX_RAW_IMAGE_BYTES),
                 self.DEFAULT_MAX_RAW_IMAGE_BYTES,
             )
         if max_bytes <= 0:
-            raise RuntimeError("maxRawImageBytes must be positive")
+            raise RuntimeError(limit_name + " must be positive")
 
-        # 只拼接足够大的 bytes 单元，过滤表头或普通短文本带来的伪二进制内容。
+        # Executor 已剔除元数据列；所有二进制尾块均须保留，不能按长度丢弃。
         values = []
         self.flatten_values(self.data_rows(), values)
         chunks = []
         total = 0
         for value in values:
-            if isinstance(value, bytes) and len(value) > 32:
+            if isinstance(value, (bytes, bytearray, memoryview)) and len(value) > 0:
                 total += len(value)
                 if total > max_bytes:
-                    raise RuntimeError("image bytes exceed maxRawImageBytes: " + str(total) + " > " + str(max_bytes))
-                chunks.append(value)
+                    kind = "image" if limit_name == "maxRawImageBytes" else "file"
+                    raise RuntimeError(kind + " bytes exceed " + limit_name + ": " + str(total) + " > " + str(max_bytes))
+                chunks.append(bytes(value))
         if not chunks:
             return b""
         return b"".join(chunks)
@@ -175,6 +179,112 @@ class BaseMetadataExtractor(object):
                 side = int(side * 0.75)
 
         raise RuntimeError("compressed image still exceeds maxVlmImageBytes")
+
+    def prepare_drawing_images_for_vlm(self):
+        """Build one overview plus overlapping high-resolution regions for drawing extraction.
+
+        Each region carries its normalized bounds in the original image coordinate system so
+        the VLM can return evidence boxes that the UI can map back to the source image.
+        """
+        import base64
+        import io
+
+        try:
+            from PIL import Image, ImageOps
+        except Exception as exc:
+            raise RuntimeError("Pillow is required for engineering drawing tiling") from exc
+
+        image_bytes = self.extract_binary_bytes()
+        if not image_bytes:
+            return []
+
+        tile_side = self._to_int(
+            self.params.get("drawingTileSide", self.DEFAULT_DRAWING_TILE_SIDE),
+            self.DEFAULT_DRAWING_TILE_SIDE,
+        )
+        tile_max_bytes = self._to_int(
+            self.params.get("drawingTileMaxBytes", self.DEFAULT_DRAWING_TILE_MAX_BYTES),
+            self.DEFAULT_DRAWING_TILE_MAX_BYTES,
+        )
+        max_tiles = self._to_int(
+            self.params.get("drawingMaxTiles", self.DEFAULT_DRAWING_MAX_TILES),
+            self.DEFAULT_DRAWING_MAX_TILES,
+        )
+        tile_side = max(768, min(tile_side, 2400))
+        tile_max_bytes = max(256 * 1024, min(tile_max_bytes, 2 * 1024 * 1024))
+        max_tiles = max(0, min(max_tiles, 9))
+
+        with Image.open(io.BytesIO(image_bytes)) as source:
+            source = ImageOps.exif_transpose(source)
+            if getattr(source, "is_animated", False):
+                source.seek(0)
+            if source.mode != "RGB":
+                source = source.convert("RGB")
+            width, height = source.size
+
+            variants = []
+            overview = self._encode_drawing_region(source, tile_side, tile_max_bytes)
+            variants.append({
+                "label": "overview",
+                "bbox": [0.0, 0.0, 1.0, 1.0],
+                "mime": "image/jpeg",
+                "base64": base64.b64encode(overview).decode("utf-8"),
+            })
+
+            if max_tiles <= 0 or (width <= tile_side and height <= tile_side):
+                return variants
+
+            # Use the long edge to choose a 3x2 or 2x3 grid. A small overlap keeps
+            # leaders, dimension lines and table rows intact near region boundaries.
+            cols, rows = (3, 2) if width >= height else (2, 3)
+            overlap = 0.08
+            for row in range(rows):
+                for col in range(cols):
+                    if len(variants) - 1 >= max_tiles:
+                        break
+                    x0 = max(0.0, (float(col) / cols) - (overlap if col > 0 else 0.0))
+                    y0 = max(0.0, (float(row) / rows) - (overlap if row > 0 else 0.0))
+                    x1 = min(1.0, (float(col + 1) / cols) + (overlap if col < cols - 1 else 0.0))
+                    y1 = min(1.0, (float(row + 1) / rows) + (overlap if row < rows - 1 else 0.0))
+                    crop = source.crop((
+                        int(x0 * width),
+                        int(y0 * height),
+                        max(int(x0 * width) + 1, int(x1 * width)),
+                        max(int(y0 * height) + 1, int(y1 * height)),
+                    ))
+                    encoded = self._encode_drawing_region(crop, tile_side, tile_max_bytes)
+                    variants.append({
+                        "label": "tile-r%sc%s" % (row + 1, col + 1),
+                        "bbox": [round(x0, 6), round(y0, 6), round(x1, 6), round(y1, 6)],
+                        "mime": "image/jpeg",
+                        "base64": base64.b64encode(encoded).decode("utf-8"),
+                    })
+            return variants
+
+    def _encode_drawing_region(self, image, max_side, max_bytes):
+        import io
+
+        candidate = image.copy()
+        candidate.thumbnail((max_side, max_side))
+        quality = 85
+        while quality >= 45:
+            out = io.BytesIO()
+            candidate.save(out, format="JPEG", quality=quality, optimize=True)
+            data = out.getvalue()
+            if len(data) <= max_bytes:
+                return data
+            quality -= 10
+
+        # Extremely detailed scans may still be too large. Reduce dimensions in
+        # bounded steps rather than returning an unbounded request body.
+        while max(candidate.size) > 640:
+            candidate.thumbnail((int(candidate.size[0] * 0.8), int(candidate.size[1] * 0.8)))
+            out = io.BytesIO()
+            candidate.save(out, format="JPEG", quality=55, optimize=True)
+            data = out.getvalue()
+            if len(data) <= max_bytes:
+                return data
+        return data
 
     def _image_mime_type(self):
         ext = self._safe(self.params.get("fileFormat", "")).lower().lstrip(".")
@@ -267,10 +377,15 @@ class BaseMetadataExtractor(object):
         except Exception as exc:
             raise RuntimeError("openai package is required: pip install openai") from exc
 
+        client_options = {"api_key": api_key}
         if base_url:
-            client = OpenAI(api_key=api_key, base_url=base_url)
-        else:
-            client = OpenAI(api_key=api_key)
+            client_options["base_url"] = base_url
+        if "llmRequestTimeoutSeconds" in self.params:
+            client_options["timeout"] = float(self.params["llmRequestTimeoutSeconds"])
+            client_options["max_retries"] = 1
+        if "llmMaxRetries" in self.params:
+            client_options["max_retries"] = int(self.params["llmMaxRetries"])
+        client = OpenAI(**client_options)
 
         started = time.time()
         print(
@@ -282,11 +397,20 @@ class BaseMetadataExtractor(object):
             ),
             flush=True,
         )
-        response = client.chat.completions.create(
-            model=model,
-            temperature=0.1,
-            messages=messages,
-        )
+        request_options = {"model": model, "temperature": 0.1, "messages": messages}
+        if "llmMaxOutputTokens" in self.params:
+            request_options["max_tokens"] = int(self.params["llmMaxOutputTokens"])
+        response_format = self.params.get("llmResponseFormat")
+        if response_format:
+            if not isinstance(response_format, dict) or not response_format.get("type"):
+                raise ValueError("llmResponseFormat must be a mapping with a non-empty type")
+            request_options["response_format"] = dict(response_format)
+        if self.params.get("llmExtraBody"):
+            request_options["extra_body"] = dict(self.params["llmExtraBody"])
+        try:
+            response = client.chat.completions.create(**request_options)
+        finally:
+            client.close()
         print(
             "[SemanticKeywordExtract][extractor] llm_chat_done metaKey=%s dataType=%s model=%s elapsedMs=%s"
             % (
@@ -301,6 +425,9 @@ class BaseMetadataExtractor(object):
         content = ""
         if response and response.choices and response.choices[0].message:
             content = self.extract_text_from_content(response.choices[0].message.content)
+        response_logger = getattr(self, "_log_llm_response", None)
+        if callable(response_logger):
+            response_logger(response, content)
         return content
 
     def llm_extract_with_retry(self, model, primary_messages, retry_messages=None, max_retry=1):
@@ -370,6 +497,24 @@ class BaseMetadataExtractor(object):
         if classify_image:
             result["isIndustrialDrawing"] = industrial
         return result
+
+    def parse_llm_json_object(self, llm_text):
+        """Parse a strict JSON object while tolerating common model wrappers."""
+        cleaned = self.strip_code_fence(self.strip_think(llm_text or ""))
+        try:
+            node = json.loads(cleaned)
+        except Exception:
+            start = cleaned.find("{")
+            end = cleaned.rfind("}")
+            if start < 0 or end <= start:
+                raise RuntimeError("vision model did not return a JSON object")
+            try:
+                node = json.loads(cleaned[start:end + 1])
+            except Exception as exc:
+                raise RuntimeError("invalid vision JSON: " + str(exc))
+        if not isinstance(node, dict):
+            raise RuntimeError("vision JSON root must be an object")
+        return node
 
     def extract_text_from_content(self, content):
         if isinstance(content, str):

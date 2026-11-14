@@ -1,4 +1,10 @@
 {
+  "office": {
+    "officeOutputTokens": 8192,
+    "officeEnableThinking": true,
+    "officeThinkingBudget": 2048,
+    "officeSofficePath": "soffice"
+  },
   "llm": {
     "enabled": true,
     "baseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",

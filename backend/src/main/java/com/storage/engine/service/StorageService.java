@@ -9,6 +9,7 @@ import com.storage.engine.service.adapter.StorageAdapter;
 import com.storage.engine.service.adapter.StorageAdapterFactory;
 import com.storage.engine.service.adapter.StorageUtils;
 import com.storage.engine.utils.ScriptExecutionUtils;
+import com.storage.engine.utils.FileSemanticSupport;
 import org.springframework.beans.factory.annotation.Value;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -39,9 +40,6 @@ public class StorageService {
     private static final String DEFAULT_FILESYSTEM_STRUCT = "FileTree";
     private static final String STATUS_PENDING = "PENDING";
     private static final String STATUS_SKIPPED = "SKIPPED";
-    private static final Set<String> IMAGE_FILE_EXTENSIONS = new HashSet<String>(Arrays.asList(
-            "jpg", "jpeg", "png", "bmp", "gif", "webp"
-    ));
 
     @Autowired
     private IGinxDao iginxDao;
@@ -1421,18 +1419,7 @@ public class StorageService {
         if (!IGinxConstants.TYPE_FILE.equals(safe(dataType).toLowerCase(Locale.ROOT))) {
             return false;
         }
-        String normalizedFileFormat = safe(fileFormat).toLowerCase(Locale.ROOT);
-        if (normalizedFileFormat.startsWith(".")) {
-            normalizedFileFormat = normalizedFileFormat.substring(1);
-        }
-        if (normalizedFileFormat.isEmpty()) {
-            String normalizedFileName = safe(fileName).toLowerCase(Locale.ROOT);
-            int dotIndex = normalizedFileName.lastIndexOf('.');
-            if (dotIndex >= 0 && dotIndex + 1 < normalizedFileName.length()) {
-                normalizedFileFormat = normalizedFileName.substring(dotIndex + 1);
-            }
-        }
-        return !IMAGE_FILE_EXTENSIONS.contains(normalizedFileFormat);
+        return !FileSemanticSupport.isSupported(fileFormat, fileName);
     }
 
     private void publishInitialKnowledgeExtractEvent(String agentName,
@@ -1451,7 +1438,7 @@ public class StorageService {
                 + ", dataType=" + safe(dataType).toLowerCase(Locale.ROOT)
                 + ", fileName=" + filePart
                 + ", fileFormat=" + safe(fileFormat)
-                + ", reason=non-image file blocked before extraction";
+                + ", reason=unsupported file format blocked before extraction";
         metadataExtractionSchedulerService.publishExternalSourceEvent(
                 "info",
                 STATUS_SKIPPED,
@@ -2065,18 +2052,6 @@ public class StorageService {
         return "csv".equals(ext)
                 || "tsv".equals(ext)
                 || "txt".equals(ext);
-    }
-
-    private boolean isDocumentExtension(String ext) {
-        return "xml".equals(ext)
-                || "json".equals(ext)
-                || "md".equals(ext)
-                || "rst".equals(ext)
-                || "html".equals(ext)
-                || "htm".equals(ext)
-                || "pdf".equals(ext)
-                || "doc".equals(ext)
-                || "docx".equals(ext);
     }
 
     private boolean isExpandedDocumentExtension(String ext) {
